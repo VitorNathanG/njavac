@@ -85,16 +85,27 @@ impl Config {
     }
 }
 
-/// All `*.java` fixtures, sorted by name for stable output.
+/// Every `*.java` fixture under `dir`, **recursively** (fixtures are grouped into
+/// topical subfolders), sorted by path for stable output.
 fn discover_fixtures(dir: &str) -> Vec<PathBuf> {
-    let mut v: Vec<PathBuf> = std::fs::read_dir(dir)
-        .unwrap_or_else(|e| panic!("cannot read fixtures dir {dir}: {e}"))
-        .filter_map(|e| e.ok().map(|e| e.path()))
-        .filter(|p| p.extension().is_some_and(|x| x == "java"))
-        .collect();
+    let mut v = Vec::new();
+    collect_java(Path::new(dir), &mut v);
     v.sort();
-    assert!(!v.is_empty(), "no .java fixtures in {dir}");
+    assert!(!v.is_empty(), "no .java fixtures under {dir}");
     v
+}
+
+/// Recurse into `dir`, appending every `*.java` file to `out`.
+fn collect_java(dir: &Path, out: &mut Vec<PathBuf>) {
+    let entries = std::fs::read_dir(dir)
+        .unwrap_or_else(|e| panic!("cannot read fixtures dir {}: {e}", dir.display()));
+    for p in entries.filter_map(|e| e.ok().map(|e| e.path())) {
+        if p.is_dir() {
+            collect_java(&p, out);
+        } else if p.extension().is_some_and(|x| x == "java") {
+            out.push(p);
+        }
+    }
 }
 
 /// Run a command to completion, discarding output. Returns whether it succeeded

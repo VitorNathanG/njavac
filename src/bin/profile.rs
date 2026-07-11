@@ -23,13 +23,14 @@ fn main() {
     let rounds: usize = a.next().and_then(|s| s.parse().ok()).unwrap_or(30_000);
     let trials: usize = a.next().and_then(|s| s.parse().ok()).unwrap_or(5);
 
-    let mut fixtures: Vec<(String, String)> = std::fs::read_dir("fixtures")
-        .expect("read fixtures dir")
-        .filter_map(|e| e.ok().map(|e| e.path()))
-        .filter(|p| p.extension().is_some_and(|x| x == "java"))
+    let mut paths = Vec::new();
+    collect_java(std::path::Path::new("fixtures"), &mut paths);
+    let mut fixtures: Vec<(String, String)> = paths
+        .iter()
         .map(|p| {
+            // SourceFile is the bare basename, so that is the compile name.
             let name = p.file_name().unwrap().to_string_lossy().into_owned();
-            (std::fs::read_to_string(&p).unwrap(), name)
+            (std::fs::read_to_string(p).unwrap(), name)
         })
         .collect();
     fixtures.sort_by(|a, b| a.1.cmp(&b.1));
@@ -88,6 +89,19 @@ fn main() {
         full,
         mb_s
     );
+}
+
+/// Recurse into `dir`, appending every `*.java` file (fixtures are grouped into
+/// topical subfolders).
+fn collect_java(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+    let entries = std::fs::read_dir(dir).expect("read fixtures dir");
+    for p in entries.filter_map(|e| e.ok().map(|e| e.path())) {
+        if p.is_dir() {
+            collect_java(&p, out);
+        } else if p.extension().is_some_and(|x| x == "java") {
+            out.push(p);
+        }
+    }
 }
 
 /// Minimum (over `trials`) nanoseconds to run `f` over every fixture `rounds`

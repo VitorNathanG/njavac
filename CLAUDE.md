@@ -60,10 +60,21 @@ Key points, several of which are non-obvious:
 - **Run counts are per-compiler and asymmetric**: njavac is timed 1000×, javac
   5× (`--njavac-runs` / `--javac-runs`), because javac pays ~700 ms of JVM
   startup per run. njavac spawns once per file.
-- **Adding a test = drop a `.java` in `fixtures/`.** The filename must match the
-  `public class` name (so both compilers emit `<Name>.class`). Aim new fixtures
-  at byte-identity edge cases (constant-load opcode boundaries, slot allocation,
-  LineNumberTable, constant folding).
+- **Adding a test = drop a `.java` under `fixtures/`.** Fixtures are grouped into
+  **topical subfolders** (`basics/`, `literals/`, `operators/`, `conversions/`,
+  `compound-assign/`, `folding/`, `types/`, `println/`); the bench and profiler
+  discover `*.java` **recursively**, so any depth works. A file's directory does
+  **not** affect its bytes — the `SourceFile` attribute is the bare basename
+  (`main.rs` uses `file_name()`), so moving a fixture between folders is
+  byte-neutral. The filename must match the `public class` name (so both
+  compilers emit `<Name>.class`), and basenames must stay **globally unique**
+  (the output `.class` dir is flat). Aim new fixtures at byte-identity edge cases
+  (constant-load opcode boundaries, slot allocation, LineNumberTable, folding).
+  Note: once `package`/`import`/multi-type land, a fixture will need to become a
+  **directory of `.java` files compiled together** (output nested by package);
+  the recursive discovery already walks the tree, but the per-fixture compile
+  step (one `javac`/`njavac` call, compared by basename) will need to grow into a
+  compile-the-whole-case-dir + compare-every-emitted-`.class` shape.
 - **There is no single-fixture flag.** To iterate on one case, either point
   `--fixtures` at a directory containing just that file, or run the pair by hand:
   `javac -d /tmp/j F.java && njavac F.java /tmp/n.class && cmp /tmp/j/F.class /tmp/n.class`,
