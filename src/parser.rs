@@ -1,15 +1,20 @@
 //! Recursive-descent parser: tokens -> AST.
 //!
-//! Parses the Tier-1 straight-line subset: one `public class` holding a single
-//! `public static void main(String[] args)` method whose body is a sequence of
-//! `int` local declarations, assignments, and `System.out.println(...)` calls.
+//! Parses the Tier-2 straight-line numeric subset: one `public class` holding a
+//! single `public static void main(String[] args)` method whose body is a
+//! sequence of primitive local declarations, plain and compound assignments,
+//! `++`/`--` statements, and `System.out.println(...)` calls.
 //!
-//! Expression precedence (tightest first): unary minus, then `* / %`, then
-//! `+ -`, both binary levels left-associative; parentheses group. Each statement
-//! is tagged with the 1-based source line it begins on so codegen can rebuild the
-//! `LineNumberTable` byte-identically to javac.
+//! Expression precedence (loosest to tightest), all binary levels
+//! left-associative:
 //!
-//! The parser panics on malformed input; the Tier-1 fixtures are well-formed.
+//!   `|`  <  `^`  <  `&`  <  `<< >> >>>`  <  `+ -`  <  `* / %`  <  unary
+//!
+//! Unary covers `-`, `~`, and primitive casts `(T) e`. Parentheses group. Each
+//! statement is tagged with the 1-based source line it begins on so codegen can
+//! rebuild the `LineNumberTable` byte-identically to javac.
+//!
+//! The parser panics on malformed input; the fixtures are well-formed.
 
 use crate::ast::{
     BinOp, Class, CompilationUnit, Expr, Method, Param, Stmt, StmtKind, Type,
@@ -18,7 +23,7 @@ use crate::lexer::{Token, TokenKind};
 
 /// Parse a token stream (as produced by `lexer::lex`) into a `CompilationUnit`.
 ///
-/// Panics on any syntax error outside the Tier-1 subset.
+/// Panics on any syntax error outside the supported subset.
 pub fn parse(tokens: Vec<Token>) -> CompilationUnit {
     Parser { tokens, pos: 0 }.compilation_unit()
 }
@@ -136,59 +141,104 @@ impl Parser {
         params
     }
 
-    // A parameter type: `int` or `String[]`.
+    // A parameter type: a primitive or `String[]`.
     fn param_type(&mut self) -> Type {
-        match self.peek().clone() {
-            TokenKind::Int => {
-                self.bump();
-                Type::Int
-            }
-            TokenKind::Ident(name) if name == "String" => {
+        if let TokenKind::Ident(name) = self.peek().clone() {
+            if name == "String" {
                 self.bump();
                 self.expect(&TokenKind::LBracket);
                 self.expect(&TokenKind::RBracket);
-                Type::StringArray
+                return Type::StringArray;
             }
-            other => panic!("unexpected parameter type: {:?}", other),
         }
+        self.primitive_type()
+    }
+
+    /// Consume a primitive type keyword, or panic.
+    fn primitive_type(&mut self) -> Type {
+        let ty = match self.peek() {
+            TokenKind::Int => Type::Int,
+            TokenKind::Long => Type::Long,
+            TokenKind::Float => Type::Float,
+            TokenKind::Double => Type::Double,
+            TokenKind::Boolean => Type::Boolean,
+            TokenKind::Char => Type::Char,
+            TokenKind::Byte => Type::Byte,
+            TokenKind::Short => Type::Short,
+            other => panic!("expected a type, found {:?}", other),
+        };
+        self.bump();
+        ty
     }
 
     // A single statement.
     fn statement(&mut self) -> Stmt {
         let line = self.line();
-        let kind = match self.peek() {
-            // `int name = init;` (initializer optional).
-            TokenKind::Int => {
-                self.bump();
-                let name = self.expect_ident();
-                let init = if matches!(self.peek(), TokenKind::Assign) {
-                    self.bump();
-                    Some(self.expression())
-                } else {
-                    None
-                };
-                self.expect(&TokenKind::Semicolon);
-                StmtKind::LocalDecl { name, init }
-            }
-            // Either `name = value;` (assignment) or an expression statement
-            // (`System.out.println(...)`). Distinguish by the token after the
-            // leading identifier.
-            TokenKind::Ident(_) => {
-                if matches!(self.peek_kind(1), TokenKind::Assign) {
-                    let name = self.expect_ident();
-                    self.expect(&TokenKind::Assign);
-                    let value = self.expression();
-                    self.expect(&TokenKind::Semicolon);
-                    StmtKind::Assign { name, value }
-                } else {
-                    let expr = self.expression();
-                    self.expect(&TokenKind::Semicolon);
-                    StmtKind::Expr(expr)
-                }
-            }
-            other => panic!("unexpected statement start: {:?}", other),
+        let kind = if is_primitive_type(self.peek()) {
+            self.local_decl()
+        } else if matches!(self.peek(), TokenKind::PlusPlus | TokenKind::MinusMinus) {
+            // Prefix `++x;` / `--x;` — in statement position the produced value is
+            // discarded, so pre/post is irrelevant.
+            let op = if matches!(self.peek(), TokenKind::PlusPlus) { BinOp::Add } else { BinOp::Sub };
+            self.bump();
+            let name = self.expect_ident();
+            self.expect(&TokenKind::Semicolon);
+            StmtKind::CompoundAssign { name, op, value: Expr::IntLit(1) }
+        } else if matches!(self.peek(), TokenKind::Ident(_)) {
+            self.ident_statement()
+        } else {
+            panic!("unexpected statement start: {:?}", self.peek());
         };
         Stmt { line, kind }
+    }
+
+    // `<ty> name = init;` (initializer optional).
+    fn local_decl(&mut self) -> StmtKind {
+        let ty = self.primitive_type();
+        let name = self.expect_ident();
+        let init = if matches!(self.peek(), TokenKind::Assign) {
+            self.bump();
+            Some(self.expression())
+        } else {
+            None
+        };
+        self.expect(&TokenKind::Semicolon);
+        StmtKind::LocalDecl { ty, name, init }
+    }
+
+    // A statement beginning with an identifier: plain/compound assignment,
+    // post-`++`/`--`, or an expression statement (`System.out.println(...)`).
+    fn ident_statement(&mut self) -> StmtKind {
+        // `System.out.println(...)` is the only expression statement; it is an
+        // identifier followed by `.`, so anything with a `.` next is that form.
+        match self.peek_kind(1) {
+            TokenKind::Assign => {
+                let name = self.expect_ident();
+                self.expect(&TokenKind::Assign);
+                let value = self.expression();
+                self.expect(&TokenKind::Semicolon);
+                StmtKind::Assign { name, value }
+            }
+            k if compound_op(k).is_some() => {
+                let name = self.expect_ident();
+                let op = compound_op(&self.bump().kind).unwrap();
+                let value = self.expression();
+                self.expect(&TokenKind::Semicolon);
+                StmtKind::CompoundAssign { name, op, value }
+            }
+            TokenKind::PlusPlus | TokenKind::MinusMinus => {
+                let name = self.expect_ident();
+                let op = if matches!(self.peek(), TokenKind::PlusPlus) { BinOp::Add } else { BinOp::Sub };
+                self.bump();
+                self.expect(&TokenKind::Semicolon);
+                StmtKind::CompoundAssign { name, op, value: Expr::IntLit(1) }
+            }
+            _ => {
+                let expr = self.expression();
+                self.expect(&TokenKind::Semicolon);
+                StmtKind::Expr(expr)
+            }
+        }
     }
 
     /// Look ahead `n` tokens from the current position (saturating at Eof).
@@ -197,12 +247,58 @@ impl Parser {
         &self.tokens[i].kind
     }
 
-    // expression -> additive
+    // ---- expressions, loosest precedence first ----
+
     fn expression(&mut self) -> Expr {
-        self.additive()
+        self.bit_or()
     }
 
-    // additive -> multiplicative ( (+|-) multiplicative )*   (left-associative)
+    fn bit_or(&mut self) -> Expr {
+        let mut left = self.bit_xor();
+        while matches!(self.peek(), TokenKind::Pipe) {
+            self.bump();
+            let right = self.bit_xor();
+            left = binary(BinOp::Or, left, right);
+        }
+        left
+    }
+
+    fn bit_xor(&mut self) -> Expr {
+        let mut left = self.bit_and();
+        while matches!(self.peek(), TokenKind::Caret) {
+            self.bump();
+            let right = self.bit_and();
+            left = binary(BinOp::Xor, left, right);
+        }
+        left
+    }
+
+    fn bit_and(&mut self) -> Expr {
+        let mut left = self.shift();
+        while matches!(self.peek(), TokenKind::Amp) {
+            self.bump();
+            let right = self.shift();
+            left = binary(BinOp::And, left, right);
+        }
+        left
+    }
+
+    fn shift(&mut self) -> Expr {
+        let mut left = self.additive();
+        loop {
+            let op = match self.peek() {
+                TokenKind::Shl => BinOp::Shl,
+                TokenKind::Shr => BinOp::Shr,
+                TokenKind::UShr => BinOp::UShr,
+                _ => break,
+            };
+            self.bump();
+            let right = self.additive();
+            left = binary(op, left, right);
+        }
+        left
+    }
+
     fn additive(&mut self) -> Expr {
         let mut left = self.multiplicative();
         loop {
@@ -213,12 +309,11 @@ impl Parser {
             };
             self.bump();
             let right = self.multiplicative();
-            left = Expr::Binary { op, left: Box::new(left), right: Box::new(right) };
+            left = binary(op, left, right);
         }
         left
     }
 
-    // multiplicative -> unary ( (*|/|%) unary )*   (left-associative)
     fn multiplicative(&mut self) -> Expr {
         let mut left = self.unary();
         loop {
@@ -230,41 +325,69 @@ impl Parser {
             };
             self.bump();
             let right = self.unary();
-            left = Expr::Binary { op, left: Box::new(left), right: Box::new(right) };
+            left = binary(op, left, right);
         }
         left
     }
 
-    // unary -> '-' unary | primary
+    // unary -> '-' unary | '~' unary | '(' primitive ')' unary | primary
     fn unary(&mut self) -> Expr {
-        if matches!(self.peek(), TokenKind::Minus) {
-            self.bump();
-            // Special case `-2147483648`: the magnitude overflows i32 on its own
-            // but is exactly `i32::MIN` once negated. Fold it directly so the
-            // literal fits the `i32` AST slot.
-            if let TokenKind::IntLit(text) = self.peek() {
-                if text == "2147483648" {
-                    self.bump();
-                    return Expr::IntLit(i32::MIN);
-                }
+        match self.peek() {
+            TokenKind::Minus => {
+                self.bump();
+                Expr::Neg(Box::new(self.unary()))
             }
-            let operand = self.unary();
-            Expr::Neg(Box::new(operand))
-        } else {
-            self.primary()
+            TokenKind::Tilde => {
+                self.bump();
+                Expr::BitNot(Box::new(self.unary()))
+            }
+            TokenKind::LParen if self.is_cast() => {
+                self.bump(); // (
+                let ty = self.primitive_type();
+                self.expect(&TokenKind::RParen);
+                Expr::Cast { ty, expr: Box::new(self.unary()) }
+            }
+            _ => self.primary(),
         }
     }
 
-    // primary -> int literal | string literal | '(' expression ')'
-    //          | System.out.println(arg) | name
+    /// A `(` begins a cast iff it is immediately followed by a primitive type
+    /// keyword and a `)` — reference casts are out of the subset, so this is
+    /// unambiguous against a parenthesized expression.
+    fn is_cast(&self) -> bool {
+        is_primitive_type(self.peek_kind(1)) && matches!(self.peek_kind(2), TokenKind::RParen)
+    }
+
+    // primary -> literal | '(' expression ')' | System.out.println(arg) | name
     fn primary(&mut self) -> Expr {
         match self.peek().clone() {
-            TokenKind::IntLit(text) => {
+            TokenKind::IntLit(v) => {
                 self.bump();
-                let value: i32 = text
-                    .parse()
-                    .unwrap_or_else(|_| panic!("integer literal out of range: {}", text));
-                Expr::IntLit(value)
+                Expr::IntLit(v)
+            }
+            TokenKind::LongLit(v) => {
+                self.bump();
+                Expr::LongLit(v)
+            }
+            TokenKind::FloatLit(v) => {
+                self.bump();
+                Expr::FloatLit(v)
+            }
+            TokenKind::DoubleLit(v) => {
+                self.bump();
+                Expr::DoubleLit(v)
+            }
+            TokenKind::CharLit(v) => {
+                self.bump();
+                Expr::CharLit(v)
+            }
+            TokenKind::True => {
+                self.bump();
+                Expr::BoolLit(true)
+            }
+            TokenKind::False => {
+                self.bump();
+                Expr::BoolLit(false)
             }
             TokenKind::StringLit(s) => {
                 self.bump();
@@ -277,7 +400,6 @@ impl Parser {
                 inner
             }
             // `System.out.println(arg)` — the only call shape in the subset.
-            // `System` is an identifier; recognize the fixed member chain.
             TokenKind::Ident(name) if name == "System" => {
                 self.bump();
                 self.expect(&TokenKind::Dot);
@@ -302,4 +424,40 @@ impl Parser {
             other => panic!("unexpected token in expression: {:?}", other),
         }
     }
+}
+
+fn binary(op: BinOp, left: Expr, right: Expr) -> Expr {
+    Expr::Binary { op, left: Box::new(left), right: Box::new(right) }
+}
+
+/// The compound-assignment operator a token denotes, if any.
+fn compound_op(k: &TokenKind) -> Option<BinOp> {
+    Some(match k {
+        TokenKind::PlusEq => BinOp::Add,
+        TokenKind::MinusEq => BinOp::Sub,
+        TokenKind::StarEq => BinOp::Mul,
+        TokenKind::SlashEq => BinOp::Div,
+        TokenKind::PercentEq => BinOp::Rem,
+        TokenKind::AmpEq => BinOp::And,
+        TokenKind::PipeEq => BinOp::Or,
+        TokenKind::CaretEq => BinOp::Xor,
+        TokenKind::ShlEq => BinOp::Shl,
+        TokenKind::ShrEq => BinOp::Shr,
+        TokenKind::UShrEq => BinOp::UShr,
+        _ => return None,
+    })
+}
+
+fn is_primitive_type(k: &TokenKind) -> bool {
+    matches!(
+        k,
+        TokenKind::Int
+            | TokenKind::Long
+            | TokenKind::Float
+            | TokenKind::Double
+            | TokenKind::Boolean
+            | TokenKind::Char
+            | TokenKind::Byte
+            | TokenKind::Short
+    )
 }

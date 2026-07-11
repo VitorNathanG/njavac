@@ -15,20 +15,36 @@ were wrong, the row says so.
 
 ---
 
-## Implemented today (Tier-1: "straight-line int")
+## Implemented today (Tier-2: "straight-line numeric")
 
 The entire supported language is:
 
 - **One** `public class Name { … }` — the file's only top-level type.
 - **One** method, exactly `public static void main(String[] args)`.
-- Types: `int` locals; `String[]` only as `main`'s parameter (never read).
-- Statements: `int` local declaration (initializer optional), assignment to an
-  already-declared local, and `System.out.println(…)` as an expression statement.
-- Expressions: `int` literals, string literals, local reads, unary minus,
-  binary `+ - * / %`, parentheses. Literal-only subtrees are constant-folded.
-- `System.out.println` of an `int` or a `String` literal.
+- Types: locals of any of the **eight primitives** — `int`, `long`, `float`,
+  `double`, `boolean`, `char`, `byte`, `short` — with the two-slot local model
+  for `long`/`double`; `String[]` only as `main`'s parameter (never read).
+- Statements: primitive local declaration (initializer optional), plain
+  assignment, **compound assignment** (`+= -= *= /= %= &= |= ^= <<= >>= >>>=`),
+  **`++`/`--`** (prefix or postfix, statement position), and
+  `System.out.println(…)` as an expression statement.
+- Expressions: literals in every form (all int radices + underscores, `long`/
+  `float`/`double` suffixes, `char` literals with escapes incl. octal and
+  `\uXXXX`, `true`/`false`), string literals, local reads, unary `-` and `~`,
+  primitive casts `(T) e`, binary `+ - * / %`, bitwise/shift `& | ^ << >> >>>`
+  (and `& | ^` on `boolean`), parentheses. **Binary numeric promotion** and
+  explicit conversions emit the exact widening/narrowing opcodes; literal-only
+  subtrees are constant-folded (wrapping integer / exact IEEE-754 arithmetic,
+  with JLS shift masking) to a single typed load.
+- `System.out.println` of any primitive (the right `(I)V`/`(J)V`/`(F)V`/`(D)V`/
+  `(C)V`/`(Z)V` overload) or a `String` literal.
 - Line (`//`) and block (`/* */`) comments; `LineNumberTable` + `SourceFile`;
   the implicit no-arg `<init>`.
+
+Everything below still forces a class-file subsystem this emitter does not yet
+have: real control flow (`StackMapTable`), `String` concatenation
+(`invokedynamic`), objects/arrays/methods. The numeric surface deliberately
+stops just short of the first branch.
 
 ---
 
@@ -61,24 +77,24 @@ not the parsing — is where byte-identity is won or lost.
 
 ### A. Primitive types & values
 
-- [ ] `boolean` (+ `true`/`false`) — type itself is free (`iconst_0/1`,
-      `istore`); **[SMT]** only when used in a branch. Verified: `boolean b =
-      true;` emits no StackMapTable.
-- [ ] `long` — **[pool: Long, `ldc2_w`]**, plus **`lconst_0`/`lconst_1`** fast
-      path for `0L`/`1L`, and a **two-slot** local model (`lstore`/`lload`)
-- [ ] `double` — **[pool: Double, `ldc2_w`]**, **`dconst_0`/`dconst_1`** fast
-      path, **two-slot** local model
-- [ ] `float` — **[pool: Float]**, but loaded with **single-word `ldc`** (not
-      `ldc2_w`), **`fconst_0/1/2`** fast path, and it is **single-slot**
-- [ ] `byte`, `short`, `char` — **int-family, no new pool kind**; stored as their
-      numeric value; narrowing needs an explicit `(byte)`→`i2b`, `(char)`→`i2c`,
-      `(short)`→`i2s` cast; a `char` literal `'a'` loads as `bipush 97`
-- [ ] **Two-slot local model** for `long`/`double` — the biggest slot-allocator
-      change: slot indices skip by 2 (`lstore_1`, `lstore_3`, …), and
-      `max_locals` grows accordingly
-- [ ] Numeric conversions — the full opcode set (`i2l l2i i2d d2i i2f f2i d2l d2f
-      f2d i2b i2c i2s`), **including implicit widening** in mixed-type arithmetic
-      (`long + int` emits `iload; i2l; ladd`)
+- [x] `boolean` (+ `true`/`false`) — done. `iconst_0/1`, `istore`, `println (Z)V`;
+      `& | ^` on two booleans lower to `iand`/`ior`/`ixor`. (**[SMT]** would only
+      be forced by a branch or a *materialized* comparison, still out of scope.)
+- [x] `long` — done. **[pool: Long, `ldc2_w`]**, `lconst_0`/`lconst_1` for
+      `0L`/`1L`, the **two-slot** local model (`lstore`/`lload`)
+- [x] `double` — done. **[pool: Double, `ldc2_w`]**, `dconst_0`/`dconst_1`,
+      two-slot model
+- [x] `float` — done. **[pool: Float]**, single-word `ldc`, `fconst_0/1/2`,
+      single-slot
+- [x] `byte`, `short`, `char` — done. Int-family, no new pool kind; a narrowing
+      cast emits `(byte)`→`i2b`, `(char)`→`i2c`, `(short)`→`i2s` (a constant
+      narrowing folds instead); `'a'` loads as `bipush 97`
+- [x] **Two-slot local model** for `long`/`double` — done. Slot indices skip by 2
+      and `max_locals`/`max_stack` count category-2 values as two words
+- [x] Numeric conversions — done. The full opcode set (`i2l l2i i2d d2i i2f f2i
+      d2l d2f f2d i2b i2c i2s`) plus implicit widening in mixed arithmetic
+      (`long + int` emits `iload; i2l; ladd`, with the conversion placed exactly
+      where javac puts it — see the `MixedPromotion`/`ExplicitCasts` fixtures)
 - [ ] `null` — single opcode `aconst_null`, no pool entry
 - [ ] Boxing / unboxing — `Integer.valueOf(I)` / `intValue()` etc. via
       `invokestatic`/`invokevirtual`; unavoidable at **varargs** and **generic**
@@ -86,19 +102,20 @@ not the parsing — is where byte-identity is won or lost.
 
 ### B. Literals
 
-- [ ] `long` literals (`123L`), `float`/`double` literals (`1.5`, `2f`, `1e9`)
-- [ ] Hex / octal / binary literals (`0xFF`, `010`, `0b1010`) and underscores
-      (`1_000_000`) — all **normalized to numeric value**; the source radix/form
-      leaves no trace (`0xFF`→`sipush 255`, `010`→`bipush 8`)
-- [ ] Character literals (`'a'`) — become their numeric code, never a pool entry
+- [x] `long` literals (`123L`), `float`/`double` literals (`1.5`, `2f`, `1e9`) — done
+- [x] Hex / octal / binary literals (`0xFF`, `010`, `0b1010`) and underscores
+      (`1_000_000`) — done; all normalized to numeric value, source radix/form
+      leaves no trace (`0xFF`→`sipush 255`, `010`→`bipush 8`, `0xFFFFFFFF`→`iconst_m1`)
+- [x] Character literals (`'a'`) — done; become their numeric code (a `char` in
+      `32768..65535` still needs a `CONSTANT_Integer` via `ldc`)
 - [ ] Text blocks (`"""…"""`) — Java 15; compile to a **single `String`
       constant** after javac's incidental-whitespace stripping (see gotchas)
-- [ ] Unicode escapes in source (`\uXXXX`); non-ASCII content — stored as
-      **modified UTF-8** in the `Utf8` entry (`"étude"` → `… c3 a9 …`)
-- [ ] Remaining escape sequences the lexer doesn't yet decode — octal (`\0`–
-      `\377`), `\s` (space, Java 15), and the text-block line-continuation `\`
-      before a newline (join without a break); the current lexer handles only
-      `\t \n \r \" \\ \' \b \f`
+- [~] Unicode escapes (`\uXXXX`) — **partially done**: decoded *inside* `char`
+      (and string) literals; the general pre-lexer `\uXXXX` pass and non-ASCII
+      source stored as **modified UTF-8** (`"étude"` → `… c3 a9 …`) are still open
+- [x] Escape sequences — done for octal (`\0`–`\377`) and `\s` (Java 15) on top of
+      `\t \n \r \" \\ \' \b \f`; the text-block line-continuation `\` before a
+      newline remains (text blocks are out of scope)
 - [ ] Class literals — split codegen: reference type `String.class` → `ldc`
       of a `Class`; **primitive `int.class` → `getstatic Integer.TYPE`**
       (a `Fieldref`, not `ldc`)
@@ -110,11 +127,14 @@ not the parsing — is where byte-identity is won or lost.
       `if_icmp*`/`iconst_1`/`goto`/`iconst_0` diamond). Used directly as a branch
       condition (`if (a < 5)`) they emit just `if_icmpge` with no diamond —
       codegen must know the usage context
-- [ ] Bitwise / shift `& | ^ ~ << >> >>>`
-- [ ] Compound assignment `+= -= *= /= %= &= |= ^= <<= >>= >>>=` — a narrowing
-      target inserts a hidden narrowing cast (`byte b += 1;` → `… iadd; i2b;
-      istore`)
-- [ ] Increment / decrement `++ --` (the `iinc` fast path for local `int`s)
+- [x] Bitwise / shift `& | ^ ~ << >> >>>` — done, on `int` and `long`. `~x` is
+      `iconst_m1; ixor` (int) / `ldc2_w -1L; lxor` (long); a long shift by a long
+      amount narrows the amount with `l2i`
+- [x] Compound assignment `+= -= *= /= %= &= |= ^= <<= >>= >>>=` — done, with the
+      narrowing-target cast (`byte b += 1;` → `… iadd; i2b; istore`) and the
+      `iinc`/`iinc_w`/full-form boundary on the *effective* delta
+- [x] Increment / decrement `++ --` — done; the `iinc`/`iinc_w` fast path for
+      local `int`s, load/op/store for wider types
 - [ ] Assignment **as an expression** — `a = b = c;` leaves the value on the
       stack via `dup` (`dup; istore; istore`); `arr[i] = x` used as a value uses
       `dup_x2; iastore`, `obj.f = x` uses `dup_x1; putfield` — the `dup_x*`
@@ -433,19 +453,21 @@ scope. Three qualifications shape njavac's design:
 
 ## Suggested next rungs
 
-Cheapest-first, given the byte-identity constraint:
+The whole **Tier-2 numeric surface** (§A primitives + two-slot model +
+conversions, §B literals, §C bitwise/shift/compound/inc-dec) is now done —
+verified by the fixtures under `fixtures/` (`MixedPromotion`, `ExplicitCasts`,
+`Long*`, `Double*`, `Float*`, `Iinc*`, `Compound*`, `Narrow*`, `Fold*`, …).
+Cheapest-first from here, given the byte-identity constraint:
 
-1. **`boolean` + comparisons + `if`/`else`** — the first branch, which forces the
+1. **comparisons + `if`/`else`** — the first branch, which forces the
    **`StackMapTable`** (and its frame-selection optimizer). The single hardest
    class-file subsystem and the gate to all of §D; do it once and most control
-   flow follows.
+   flow follows. (Booleans, the value type it needs, already exist.)
 2. **`while` / `for`** — backward branches; reuse the `StackMapTable` machinery.
 3. **String concatenation** — the first **`invokedynamic`** + `BootstrapMethods`
    (+ the `InnerClasses`/`MethodHandles$Lookup` row), unlocking realistic
    `println`. Remember the runtime-operand condition and the raw recipe bytes.
-4. **`long` / `double`** — new pool kinds, the two-slot value model, and the
-   `lconst`/`dconst`/`ldc2_w` load ladder.
-5. **Multiple methods, fields, constructors** — the move from "one main" to real
+4. **Multiple methods, fields, constructors** — the move from "one main" to real
    class structure (`<clinit>`, `ConstantValue`, member ordering).
 
 Byte-invisible freebies you can add any time once the surrounding machinery

@@ -84,6 +84,14 @@ pub enum Entry {
     Utf8(String),
     /// A CONSTANT_Integer: a 4-byte `int` value. A leaf (no children).
     Integer(i32),
+    /// A CONSTANT_Long: an 8-byte `long`. A leaf; **occupies two pool indices**.
+    Long(i64),
+    /// A CONSTANT_Float, stored as its raw 32-bit pattern so that `-0.0f`/`NaN`
+    /// dedup by bits (a distinct entry from `+0.0f`), matching javac. A leaf.
+    Float(u32),
+    /// A CONSTANT_Double, stored as its raw 64-bit pattern (same bit-dedup rule).
+    /// A leaf; **occupies two pool indices**.
+    Double(u64),
     /// Class by internal name, e.g. "java/lang/Object". Child: Utf8(name).
     Class(String),
     /// name + descriptor. Children: Utf8(name), Utf8(desc).
@@ -99,8 +107,11 @@ impl Entry {
     /// Direct children in the order javac enqueues them.
     fn children(&self) -> Vec<Entry> {
         match self {
-            Entry::Utf8(_) => vec![],
-            Entry::Integer(_) => vec![],
+            Entry::Utf8(_)
+            | Entry::Integer(_)
+            | Entry::Long(_)
+            | Entry::Float(_)
+            | Entry::Double(_) => vec![],
             Entry::Class(n) => vec![Entry::Utf8(n.clone())],
             Entry::NameAndType(n, d) => vec![Entry::Utf8(n.clone()), Entry::Utf8(d.clone())],
             Entry::Fieldref(o, n, d) | Entry::Methodref(o, n, d) => vec![
@@ -110,30 +121,54 @@ impl Entry {
             Entry::StringConst(s) => vec![Entry::Utf8(s.clone())],
         }
     }
+
+    /// Number of constant-pool indices this entry consumes. `Long`/`Double` take
+    /// two (the second index is an unusable phantom), per JVMS 4.4.5; everything
+    /// else takes one.
+    fn width(&self) -> u16 {
+        match self {
+            Entry::Long(_) | Entry::Double(_) => 2,
+            _ => 1,
+        }
+    }
 }
 
 pub struct ConstantPool {
     entries: Vec<Entry>,
+    /// The 1-based pool index assigned to `entries[i]`. Diverges from `i + 1`
+    /// once any `Long`/`Double` (which each burn two indices) has been interned.
+    slots: Vec<u16>,
     index: FxHashMap<Entry, u16>,
+    /// Index the next interned entry will receive (also the `constant_pool_count`).
+    next_index: u16,
 }
 
 impl ConstantPool {
     pub fn new() -> Self {
-        ConstantPool { entries: Vec::new(), index: HashMap::default() }
+        ConstantPool {
+            entries: Vec::new(),
+            slots: Vec::new(),
+            index: HashMap::default(),
+            next_index: 1,
+        }
     }
 
-    /// Number stored in the class file: entry count + 1 (slot 0 is reserved).
+    /// The `constant_pool_count` field: one past the last assigned index, which
+    /// already accounts for every phantom `Long`/`Double` slot.
     pub fn count(&self) -> u16 {
-        self.entries.len() as u16 + 1
+        self.next_index
     }
 
-    /// Append a single entry (no child handling), assigning it the next 1-based slot.
+    /// Append a single entry (no child handling), assigning it the next index and
+    /// advancing the counter by the entry's width.
     fn alloc(&mut self, e: Entry) -> u16 {
         if let Some(&i) = self.index.get(&e) {
             return i;
         }
-        let idx = self.entries.len() as u16 + 1;
+        let idx = self.next_index;
+        self.next_index += e.width();
         self.entries.push(e.clone());
+        self.slots.push(idx);
         self.index.insert(e, idx);
         idx
     }
@@ -165,6 +200,15 @@ impl ConstantPool {
     pub fn integer(&mut self, v: i32) -> u16 {
         self.intern(Entry::Integer(v))
     }
+    pub fn long(&mut self, v: i64) -> u16 {
+        self.intern(Entry::Long(v))
+    }
+    pub fn float(&mut self, v: f32) -> u16 {
+        self.intern(Entry::Float(v.to_bits()))
+    }
+    pub fn double(&mut self, v: f64) -> u16 {
+        self.intern(Entry::Double(v.to_bits()))
+    }
     pub fn class(&mut self, internal_name: &str) -> u16 {
         self.intern(Entry::Class(internal_name.to_string()))
     }
@@ -187,7 +231,7 @@ impl ConstantPool {
         let mut class_of: FxHashMap<&str, u16> = HashMap::default();
         let mut nat_of: FxHashMap<(&str, &str), u16> = HashMap::default();
         for (i, e) in self.entries.iter().enumerate() {
-            let slot = (i + 1) as u16;
+            let slot = self.slots[i];
             match e {
                 Entry::Utf8(s) => {
                     utf8_of.insert(s.as_str(), slot);
@@ -215,6 +259,20 @@ impl ConstantPool {
                 Entry::Integer(v) => {
                     buf.u8(3);
                     buf.u32(*v as u32);
+                }
+                Entry::Float(bits) => {
+                    buf.u8(4);
+                    buf.u32(*bits);
+                }
+                Entry::Long(v) => {
+                    buf.u8(5);
+                    buf.u32((*v as u64 >> 32) as u32);
+                    buf.u32(*v as u64 as u32);
+                }
+                Entry::Double(bits) => {
+                    buf.u8(6);
+                    buf.u32((*bits >> 32) as u32);
+                    buf.u32(*bits as u32);
                 }
                 Entry::Class(n) => {
                     buf.u8(7);

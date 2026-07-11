@@ -1,37 +1,115 @@
-//! Semantic analysis: name/slot resolution and expression typing (int vs
-//! String), just enough to drive descriptor and opcode selection.
+//! Semantic analysis: name/slot resolution and expression typing.
 //!
-//! The Tier-1 subset has one class with one `main` method. Analysis walks the
-//! method's statements, assigns each `int` local a JVM slot (static method =>
-//! parameters occupy the low slots, locals follow in declaration order), and
-//! records the static type of the single `println` argument so codegen can pick
-//! the right descriptor. There is no control flow and no user-defined types, so
-//! this stays a single linear pass.
+//! Walks `main`'s statements, assigns each local a JVM slot (parameters occupy
+//! the low slots; locals follow in declaration order), and records each local's
+//! type. `long`/`double` are **two slots wide**, so slot indices bump by width —
+//! this is the allocator change the whole numeric subset rests on.
+//!
+//! `type_of` computes the static type of any expression, implementing Java's
+//! unary and binary numeric promotion. Codegen consults it to pick load/store
+//! opcodes, conversion opcodes, `println` descriptors, and constant-load ladders.
+//! There is still no control flow and no user-defined types, so this is a single
+//! linear pass.
 
 use std::collections::HashMap;
 
-use crate::ast::{CompilationUnit, Expr, Method, StmtKind, Type};
+use crate::ast::{BinOp, CompilationUnit, Expr, Method, StmtKind, Type};
 
-/// The static type of an expression in the subset: either `int` or `String`.
-///
-/// Only ever needed to choose the `println` descriptor and (for future use) to
-/// validate operands; all arithmetic operands are `int`.
+/// The static type of an expression / local in the subset: the eight primitives
+/// plus `String` (only ever a string-literal `println` argument).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ValType {
     Int,
+    Long,
+    Float,
+    Double,
+    Boolean,
+    Char,
+    Byte,
+    Short,
     String,
 }
 
-/// Analysis result for a single method: how many local slots it needs and, for
-/// each local name, which slot it lives in. Codegen consults `slot_of` to emit
-/// the right load/store opcode.
+impl ValType {
+    /// Local-slot / operand-stack width in words: `long`/`double` are 2, all
+    /// others (including the sub-int types, which live as `int` on the stack) 1.
+    pub fn width(self) -> u16 {
+        match self {
+            ValType::Long | ValType::Double => 2,
+            _ => 1,
+        }
+    }
+
+    /// The JVM *computational* type this value occupies on the operand stack. The
+    /// sub-int types (`boolean`/`char`/`byte`/`short`) are all `Int` on the stack.
+    pub fn stack(self) -> StackTy {
+        match self {
+            ValType::Long => StackTy::Long,
+            ValType::Float => StackTy::Float,
+            ValType::Double => StackTy::Double,
+            _ => StackTy::Int,
+        }
+    }
+
+    /// Whether this is one of the sub-int integral types stored as an `int`.
+    pub fn is_subint(self) -> bool {
+        matches!(self, ValType::Boolean | ValType::Char | ValType::Byte | ValType::Short)
+    }
+}
+
+/// The four JVM operand-stack computational types the subset can produce (plus
+/// `reference`, which only `String` uses and which never participates in
+/// arithmetic here).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum StackTy {
+    Int,
+    Long,
+    Float,
+    Double,
+}
+
+/// The `ValType` an AST declared type denotes.
+pub fn valtype(ty: Type) -> ValType {
+    match ty {
+        Type::Int => ValType::Int,
+        Type::Long => ValType::Long,
+        Type::Float => ValType::Float,
+        Type::Double => ValType::Double,
+        Type::Boolean => ValType::Boolean,
+        Type::Char => ValType::Char,
+        Type::Byte => ValType::Byte,
+        Type::Short => ValType::Short,
+        // `String[]` is only ever `main`'s parameter, never read as a value; give
+        // it a placeholder so slot allocation can size it (one slot).
+        Type::StringArray => ValType::String,
+    }
+}
+
+/// Analysis result for one method: local slots, local types, and the slot count.
 pub struct MethodInfo {
-    /// slot index for each local variable name (parameters included).
+    /// Slot index for each local (parameters included).
     pub slots: HashMap<String, u16>,
-    /// Number of local slots occupied by parameters + declared locals. This is a
-    /// lower bound on `max_locals`; codegen still takes the max with the highest
-    /// slot it actually references (they coincide for the subset).
+    /// Declared type of each local (parameters included).
+    pub types: HashMap<String, ValType>,
+    /// Number of local slots occupied by parameters + declared locals, counting
+    /// `long`/`double` as two. A lower bound on `max_locals`.
     pub local_count: u16,
+}
+
+impl MethodInfo {
+    pub fn slot(&self, name: &str) -> u16 {
+        *self
+            .slots
+            .get(name)
+            .unwrap_or_else(|| panic!("undeclared local: {name}"))
+    }
+
+    pub fn ty(&self, name: &str) -> ValType {
+        *self
+            .types
+            .get(name)
+            .unwrap_or_else(|| panic!("undeclared local: {name}"))
+    }
 }
 
 /// Whole-program analysis result: one `MethodInfo` per method, in method order.
@@ -40,8 +118,6 @@ pub struct Analysis {
 }
 
 /// Analyze a parsed compilation unit, assigning local slots for each method.
-///
-/// Panics on a reference to an undeclared name (the fixtures are well-formed).
 pub fn analyze(unit: &CompilationUnit) -> Analysis {
     let methods = unit.class.methods.iter().map(analyze_method).collect();
     Analysis { methods }
@@ -49,44 +125,87 @@ pub fn analyze(unit: &CompilationUnit) -> Analysis {
 
 fn analyze_method(method: &Method) -> MethodInfo {
     let mut slots: HashMap<String, u16> = HashMap::new();
+    let mut types: HashMap<String, ValType> = HashMap::new();
     let mut next: u16 = 0;
 
-    // Parameters take the low slots. In this subset the only parameter is
-    // `String[] args`, one slot wide; an `int` parameter would also be one slot.
-    for param in &method.params {
-        let width = match param.ty {
-            Type::Int => 1,
-            Type::StringArray => 1,
-        };
-        slots.insert(param.name.clone(), next);
-        next += width;
-    }
+    let mut declare = |name: &str, ty: ValType, next: &mut u16| {
+        slots.insert(name.to_string(), *next);
+        types.insert(name.to_string(), ty);
+        *next += ty.width();
+    };
 
-    // Locals follow in declaration order. Each `int` occupies one slot; a slot is
-    // reserved at the declaration point (before the initializer is evaluated, but
-    // that ordering never matters here since the name is not in scope yet).
+    // Parameters take the low slots (only `String[] args` in the subset).
+    for param in &method.params {
+        declare(&param.name, valtype(param.ty), &mut next);
+    }
+    // Locals follow in declaration order, each bumping by its width.
     for stmt in &method.body {
-        if let StmtKind::LocalDecl { name, .. } = &stmt.kind {
-            slots.insert(name.clone(), next);
-            next += 1;
+        if let StmtKind::LocalDecl { ty, name, .. } = &stmt.kind {
+            declare(name, valtype(*ty), &mut next);
         }
     }
 
-    MethodInfo { slots, local_count: next }
+    MethodInfo { slots, types, local_count: next }
 }
 
-/// Static type of an expression. `Println` is a `void` call and never appears as
-/// an operand, so it is not a value-typed form here; codegen types the argument.
-pub fn type_of(expr: &Expr) -> ValType {
+/// Unary numeric promotion: `byte`/`short`/`char` (and `boolean`) become `int`;
+/// wider types are unchanged. Applied to the operand of a unary op and to the
+/// left operand of a shift.
+pub fn unary_promote(t: ValType) -> ValType {
+    match t {
+        ValType::Long => ValType::Long,
+        ValType::Float => ValType::Float,
+        ValType::Double => ValType::Double,
+        ValType::Boolean => ValType::Boolean,
+        _ => ValType::Int,
+    }
+}
+
+/// Binary numeric promotion: the wider of the two operand types, with everything
+/// narrower than `int` promoted to `int`.
+pub fn binary_promote(a: ValType, b: ValType) -> ValType {
+    use ValType::*;
+    if a == Double || b == Double {
+        Double
+    } else if a == Float || b == Float {
+        Float
+    } else if a == Long || b == Long {
+        Long
+    } else {
+        Int
+    }
+}
+
+/// The static type of an expression, implementing promotion. `Println` is a
+/// `void` call and never appears as a value operand.
+pub fn type_of(expr: &Expr, info: &MethodInfo) -> ValType {
     match expr {
         Expr::IntLit(_) => ValType::Int,
+        Expr::LongLit(_) => ValType::Long,
+        Expr::FloatLit(_) => ValType::Float,
+        Expr::DoubleLit(_) => ValType::Double,
+        Expr::BoolLit(_) => ValType::Boolean,
+        Expr::CharLit(_) => ValType::Char,
         Expr::StringLit(_) => ValType::String,
-        // All names in the subset are `int` locals (only `int` locals are
-        // declarable, and `args` is never read).
-        Expr::Name(_) => ValType::Int,
-        Expr::Neg(_) => ValType::Int,
-        Expr::Binary { .. } => ValType::Int,
-        // Not a value in expression position; treated as int by convention.
+        Expr::Name(n) => info.ty(n),
+        Expr::Neg(e) => unary_promote(type_of(e, info)),
+        Expr::BitNot(e) => unary_promote(type_of(e, info)),
+        Expr::Cast { ty, .. } => valtype(*ty),
+        Expr::Binary { op, left, right } => {
+            let lt = type_of(left, info);
+            let rt = type_of(right, info);
+            // `&`/`|`/`^` on two booleans is boolean (non-short-circuit logical).
+            if matches!(op, BinOp::And | BinOp::Or | BinOp::Xor)
+                && lt == ValType::Boolean
+                && rt == ValType::Boolean
+            {
+                ValType::Boolean
+            } else if op.is_shift() {
+                unary_promote(lt)
+            } else {
+                binary_promote(lt, rt)
+            }
+        }
         Expr::Println(_) => ValType::Int,
     }
 }

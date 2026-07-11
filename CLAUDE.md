@@ -10,12 +10,16 @@ constraint is **byte-identical output to the reference `javac`** (GraalVM CE
 `.class` must equal javac's `.class` byte-for-byte. Everything about the design
 follows from that one invariant.
 
-Current scope is the **"straight-line int" subset**: one `public class` with a
-`static void main`, `int` locals + arithmetic (`+ - * / %`, unary minus,
-parens), and `System.out.println` of an `int` or a string literal. Deliberately
-out of scope (each is a future rung): any control flow — which forces a
-`StackMapTable` — string concatenation (`invokedynamic`), other types, objects,
-multiple methods.
+Current scope is the **"straight-line numeric" subset**: one `public class` with
+a `static void main`, locals of any of the eight primitives (`int`/`long`/`float`/
+`double`/`boolean`/`char`/`byte`/`short`, with the two-slot `long`/`double`
+model), the full arithmetic/bitwise/shift/unary operator set (`+ - * / % & | ^ ~
+<< >> >>>`), compound assignment and `++`/`--`, primitive casts with binary
+numeric promotion, every literal form, and `System.out.println` of any primitive
+or a string literal. Deliberately out of scope (each is a future rung): any
+control flow — which forces a `StackMapTable` — string concatenation
+(`invokedynamic`), objects/arrays/methods, multiple methods. See `README.md` for
+the checked-off feature map and the ordered next rungs.
 
 ## Commands
 
@@ -94,10 +98,11 @@ source → lexer::lex → parser::parse → sema::analyze → codegen::generate 
   for a byte-identical `LineNumberTable`).
 - **`ast`** → plain enums, `Box` for recursion; statements/braces carry lines.
 - **`parser`** → recursive descent; precedence unary → `* / %` → `+ -`.
-- **`sema`** → local-slot allocation and int-vs-String typing (just enough to
-  choose the `println` descriptor and constant-load opcode).
-- **`codegen`** → bytecode + `max_stack`/`max_locals` + `LineNumberTable`, via
-  the `classfile` backend.
+- **`sema`** → local-slot allocation (two-slot `long`/`double` model), per-local
+  typing, and `type_of` implementing unary/binary numeric promotion (enough to
+  drive descriptor, conversion-opcode, and constant-load selection).
+- **`codegen`** → typed bytecode + `max_stack`/`max_locals` + `LineNumberTable`,
+  via the `classfile` backend.
 - **`main`** is a thin CLI; the class name comes from the source, and the
   `SourceFile` attribute from the input file's basename.
 
@@ -116,18 +121,29 @@ match. Two rules encoded here:
   top-level intern). This BFS order is why the pool matches javac.
 
 If you touch the constant pool, **preserve entry insertion order** — it is the
-only thing the class file depends on. The dedup map uses a custom FxHash purely
-for speed; the hash never affects output, and serialization is deliberately
-allocation-free (child indices resolved through borrowed lookup tables, not
-cloned `Entry` keys). Always re-run the bench's correctness pass after changes.
+only thing the class file depends on. `Long`/`Double` entries each **consume two
+pool indices** (the pool tracks an explicit `next_index`, so the second slot is a
+phantom and `constant_pool_count` includes it); `Float`/`Double` are keyed by
+their raw **bit pattern** so `-0.0`/`NaN` dedup as distinct entries, matching
+javac. The dedup map uses a custom FxHash purely for speed; the hash never
+affects output, and serialization is deliberately allocation-free (child indices
+resolved through borrowed lookup tables, not cloned `Entry` keys). Always re-run
+the bench's correctness pass after changes.
 
-**`src/codegen.rs`** mirrors javac's exact choices: `iconst`/`bipush`/`sipush`/
-`ldc` at javac's magnitude boundaries; short-form `iload_0..3`/`istore_0..3`;
-`max_stack` by modeling operand-stack depth; the trailing `return` mapped to the
-closing-brace line. The one subtle rule: javac **constant-folds literal
-subtrees** (`100 % 7` → a single `iconst_2`) but emits real bytecode once a local
-is involved — codegen folds with wrapping arithmetic so a folded constant is
-bit-identical to the unfolded computation.
+**`src/codegen.rs`** mirrors javac's exact choices with a fully typed emitter:
+the per-type constant-load ladders (`iconst`/`bipush`/`sipush`/`ldc` by
+magnitude; `lconst`/`ldc2_w`; `fconst`/`ldc`; `dconst`/`ldc2_w`, floats compared
+by *bit pattern* so `-0.0` pools separately); per-type load/store families with
+the slot-0..3 short forms; binary numeric promotion that places each `i2l`/`i2d`/…
+conversion exactly where javac does (left operand widened before the right is
+pushed, right operand just before the op); the `iinc`/`iinc_w`/full-form boundary
+for compound assignment (decided on the *effective* delta); `~` lowered to
+`… ixor`; a running operand-stack model that counts category-2 values as two
+words; the trailing `return` mapped to the closing-brace line. The load-bearing
+rule: javac **constant-folds literal subtrees** (`100 % 7` → `iconst_2`,
+`1 + 2L` → `ldc2_w 3L`) with wrapping integer / exact IEEE-754 arithmetic and JLS
+shift masking, but emits real bytecode once a local is involved — so a folded
+constant is bit-identical to the unfolded computation.
 
 ## Determinism / Docker
 
