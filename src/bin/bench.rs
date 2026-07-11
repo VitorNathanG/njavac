@@ -111,6 +111,19 @@ fn bench(name: &str, argv: &[String], cfg: &Config) -> Stats {
 
 fn main() {
     let cfg = Config::from_args();
+
+    // Benchmarking is only meaningful inside the deterministic Docker harness
+    // (pinned CPU, fixed memory, no other tenants). On a bare host the numbers
+    // are noise, so refuse to produce them there — ./docker-bench.sh is the one
+    // supported way to run this. The escape hatch is for throwaway local checks.
+    let in_container = std::env::var_os("NJAVAC_IN_CONTAINER").is_some()
+        || std::path::Path::new("/.dockerenv").exists();
+    if !in_container && std::env::var_os("NJAVAC_BENCH_ALLOW_HOST").is_none() {
+        eprintln!("bench runs in the deterministic Docker harness: ./docker-bench.sh");
+        eprintln!("(host timings are noise; set NJAVAC_BENCH_ALLOW_HOST=1 to force anyway)");
+        std::process::exit(2);
+    }
+
     // Each compiler writes into its own subdir so the file name stays
     // HelloWorld.class (matching the class name) and the two never clobber.
     let javac_dir = PathBuf::from(&cfg.out_dir).join("javac");

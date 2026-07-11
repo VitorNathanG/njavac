@@ -49,6 +49,8 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 # ---- Stage 3: runtime — JDK base + the small, frequently-changing layers ----
 FROM jdk AS bench
 WORKDIR /work
+# Marks this as the deterministic harness so `bench` will produce timings.
+ENV NJAVAC_IN_CONTAINER=1
 # reference/ changes rarely; binaries change most, so copy them last.
 COPY reference ./reference
 COPY --from=build /out/njavac /usr/local/bin/njavac
