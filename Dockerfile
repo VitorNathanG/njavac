@@ -51,9 +51,9 @@ FROM jdk AS bench
 WORKDIR /work
 # Marks this as the deterministic harness so `bench` will produce timings.
 ENV NJAVAC_IN_CONTAINER=1
-# reference/ changes rarely; binaries change most, so copy them last.
-COPY reference ./reference
+# fixtures change rarely; binaries change most, so copy them last.
+COPY fixtures ./fixtures
 COPY --from=build /out/njavac /usr/local/bin/njavac
 COPY --from=build /out/bench  /usr/local/bin/bench
 ENTRYPOINT ["bench", "--njavac", "/usr/local/bin/njavac"]
-CMD ["--runs", "5", "--warmup", "5"]
+CMD ["--njavac-runs", "1000", "--javac-runs", "5", "--warmup", "5"]

@@ -1,6 +1,1 @@
 /target
-
-# njavac's own generated class files are build artifacts, not source of truth.
-# javac's reference output (out/javac/, reference/*.class) IS tracked, as the
-# golden bytes we compile against.
-/out/njavac/

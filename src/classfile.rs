@@ -16,6 +16,8 @@ use std::collections::VecDeque;
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub enum Entry {
     Utf8(String),
+    /// A CONSTANT_Integer: a 4-byte `int` value. A leaf (no children).
+    Integer(i32),
     /// Class by internal name, e.g. "java/lang/Object". Child: Utf8(name).
     Class(String),
     /// name + descriptor. Children: Utf8(name), Utf8(desc).
@@ -32,6 +34,7 @@ impl Entry {
     fn children(&self) -> Vec<Entry> {
         match self {
             Entry::Utf8(_) => vec![],
+            Entry::Integer(_) => vec![],
             Entry::Class(n) => vec![Entry::Utf8(n.clone())],
             Entry::NameAndType(n, d) => vec![Entry::Utf8(n.clone()), Entry::Utf8(d.clone())],
             Entry::Fieldref(o, n, d) | Entry::Methodref(o, n, d) => vec![
@@ -53,13 +56,13 @@ impl ConstantPool {
         ConstantPool { entries: Vec::new(), index: HashMap::new() }
     }
 
+    fn idx_of(&self, e: &Entry) -> u16 {
+        *self.index.get(e).expect("entry must be interned before lookup")
+    }
+
     /// Number stored in the class file: entry count + 1 (slot 0 is reserved).
     pub fn count(&self) -> u16 {
         self.entries.len() as u16 + 1
-    }
-
-    fn idx_of(&self, e: &Entry) -> u16 {
-        *self.index.get(e).expect("entry must be interned before lookup")
     }
 
     /// Append a single entry (no child handling), assigning it the next 1-based slot.
@@ -97,6 +100,9 @@ impl ConstantPool {
     pub fn utf8(&mut self, s: &str) -> u16 {
         self.intern(Entry::Utf8(s.to_string()))
     }
+    pub fn integer(&mut self, v: i32) -> u16 {
+        self.intern(Entry::Integer(v))
+    }
     pub fn class(&mut self, internal_name: &str) -> u16 {
         self.intern(Entry::Class(internal_name.to_string()))
     }
@@ -120,6 +126,10 @@ impl ConstantPool {
                     let bytes = s.as_bytes();
                     buf.u16(bytes.len() as u16);
                     buf.bytes(bytes);
+                }
+                Entry::Integer(v) => {
+                    buf.u8(3);
+                    buf.u32(*v as u32);
                 }
                 Entry::Class(n) => {
                     buf.u8(7);
