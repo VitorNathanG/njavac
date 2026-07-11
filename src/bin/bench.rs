@@ -125,6 +125,13 @@ fn correctness(cfg: &Config, fixtures: &[PathBuf], javac_dir: &Path, njavac_dir:
         let base = base_name(fix);
         let fix_s = fix.to_string_lossy().into_owned();
         let njavac_out = njavac_dir.join(format!("{base}.class"));
+        let javac_out = javac_dir.join(format!("{base}.class"));
+
+        // Delete both expected outputs first, so a compiler that panics/errors
+        // and writes nothing yields a *missing* file (a FAIL) rather than a false
+        // pass off a stale artifact left by an earlier run.
+        let _ = std::fs::remove_file(&njavac_out);
+        let _ = std::fs::remove_file(&javac_out);
 
         run_quiet(&[cfg.javac.clone(), "-d".into(), javac_dir.display().to_string(), fix_s.clone()]);
         run_quiet(&[cfg.njavac.clone(), fix_s, njavac_out.display().to_string()]);
