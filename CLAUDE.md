@@ -25,8 +25,13 @@ the checked-off feature map and the ordered next rungs.
 
 ```bash
 cargo build --release                       # build lib + the njavac/bench/profile bins
-./target/release/njavac <in.java> <out.class>   # compile one file
+./target/release/njavac [-d <dir>] <file.java> [<file.java> ...]   # javac-like: many files, one invocation
 ```
+
+The CLI mirrors javac's surface: any number of `.java` sources in a single
+invocation, each class written to `<Name>.class` under `-d <dir>` (or beside its
+source if `-d` is omitted). One source failing does not abort the rest; the
+process exits non-zero if any did.
 
 The reference toolchain is `~/.sdkman/candidates/java/25.0.2-graalce/bin/{javac,javap}`.
 Byte-identity is specific to that exact JDK build — a different `javac` version
@@ -59,7 +64,10 @@ Key points, several of which are non-obvious:
   the environment. Do not reintroduce checked-in goldens.
 - **Run counts are per-compiler and asymmetric**: njavac is timed 1000×, javac
   5× (`--njavac-runs` / `--javac-runs`), because javac pays ~700 ms of JVM
-  startup per run. njavac spawns once per file.
+  startup per run. Both timing runs are a **single invocation over the whole
+  suite** — one javac process vs one njavac process — so the numbers are a fair
+  apples-to-apples wall-clock (process startup + compiling every file), not
+  njavac's old spawn-per-file model.
 - **Adding a test = drop a `.java` under `fixtures/`.** Fixtures are grouped into
   **topical subfolders** (`basics/`, `literals/`, `operators/`, `conversions/`,
   `compound-assign/`, `folding/`, `types/`, `println/`); the bench and profiler
@@ -76,8 +84,9 @@ Key points, several of which are non-obvious:
   step (one `javac`/`njavac` call, compared by basename) will need to grow into a
   compile-the-whole-case-dir + compare-every-emitted-`.class` shape.
 - **There is no single-fixture flag.** To iterate on one case, either point
-  `--fixtures` at a directory containing just that file, or run the pair by hand:
-  `javac -d /tmp/j F.java && njavac F.java /tmp/n.class && cmp /tmp/j/F.class /tmp/n.class`,
+  `--fixtures` at a directory containing just that file, or run the pair by hand
+  (both compilers now share the same `-d` calling convention):
+  `javac -d /tmp/j F.java && njavac -d /tmp/n F.java && cmp /tmp/j/F.class /tmp/n/F.class`,
   then `javap -v -p` both and diff.
 - Env/flags: `JAVAC`/`JAVAP` (or `--javac`/`--javap`) override tool paths (the
   Docker image sets them); `--fixtures`, `--warmup`, `--out-dir` exist too.
@@ -114,8 +123,11 @@ source → lexer::lex → parser::parse → sema::analyze → codegen::generate 
   drive descriptor, conversion-opcode, and constant-load selection).
 - **`codegen`** → typed bytecode + `max_stack`/`max_locals` + `LineNumberTable`,
   via the `classfile` backend.
-- **`main`** is a thin CLI; the class name comes from the source, and the
-  `SourceFile` attribute from the input file's basename.
+- **`main`** is a thin javac-like CLI (`njavac [-d <dir>] <file.java> …`): it
+  compiles each source in one invocation, deriving the output `<Name>.class` and
+  the `SourceFile` attribute from the input file's basename (the class name comes
+  from the source). A per-file compile error is caught so one bad source does not
+  abort the batch — the process just exits non-zero.
 
 ### Where byte-identity is won or lost
 

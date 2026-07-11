@@ -145,7 +145,7 @@ fn correctness(cfg: &Config, fixtures: &[PathBuf], javac_dir: &Path, njavac_dir:
         let _ = std::fs::remove_file(&javac_out);
 
         run_quiet(&[cfg.javac.clone(), "-d".into(), javac_dir.display().to_string(), fix_s.clone()]);
-        run_quiet(&[cfg.njavac.clone(), fix_s, njavac_out.display().to_string()]);
+        run_quiet(&[cfg.njavac.clone(), "-d".into(), njavac_dir.display().to_string(), fix_s]);
 
         let want = std::fs::read(javac_dir.join(format!("{base}.class")));
         let got = std::fs::read(&njavac_out);
@@ -257,9 +257,11 @@ fn bench_block<F: Fn()>(name: &str, cfg: &Config, runs: usize, work: F) -> Stats
     s
 }
 
-/// Time compiling the entire suite with each compiler. javac gets a single
-/// invocation (it amortizes JVM startup across all files, which is how it is
-/// actually used); njavac spawns once per file, reflecting its process model.
+/// Time compiling the entire suite with each compiler. Both get a *single*
+/// invocation over all fixtures — the way each is actually used, and now that
+/// njavac accepts many sources like javac does, an apples-to-apples wall-clock
+/// of one javac process against one njavac process (each: process startup +
+/// compiling every file).
 fn timing(cfg: &Config, fixtures: &[PathBuf], javac_dir: &Path, njavac_dir: &Path) {
     let in_harness = std::env::var_os("NJAVAC_IN_CONTAINER").is_some()
         || Path::new("/.dockerenv").exists();
@@ -280,21 +282,21 @@ fn timing(cfg: &Config, fixtures: &[PathBuf], javac_dir: &Path, njavac_dir: &Pat
     };
 
     let njavac = cfg.njavac.clone();
+    let njavac_out = njavac_dir.display().to_string();
     let njavac_all = || {
-        for fix in fixtures {
-            let out = njavac_dir.join(format!("{}.class", base_name(fix)));
-            run_quiet(&[njavac.clone(), fix.to_string_lossy().into_owned(), out.display().to_string()]);
-        }
+        let mut argv = vec![njavac.clone(), "-d".into(), njavac_out.clone()];
+        argv.extend(fix_paths.iter().cloned());
+        run_quiet(&argv);
     };
 
-    println!("timing (compile the whole {}-fixture suite):", fixtures.len());
+    println!("timing (compile the whole {}-fixture suite in one invocation):", fixtures.len());
     let j = bench_block("javac", cfg, cfg.javac_runs, javac_all);
     let n = bench_block("njavac", cfg, cfg.njavac_runs, njavac_all);
     println!(
-        "\nnjavac median is {:.1}x faster (wall-clock incl. process spawn)",
+        "\nnjavac median is {:.1}x faster (single invocation, wall-clock incl. process startup)",
         j.median / n.median
     );
-    println!("note: javac's time is dominated by JVM startup; njavac spawns once per file.");
+    println!("note: javac's time is dominated by JVM startup; njavac is one native process over all files.");
 }
 
 fn main() {
