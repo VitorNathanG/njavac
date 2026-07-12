@@ -55,12 +55,11 @@ any backup. (Committing itself still happens only when the user asks; pushing is
 the standing follow-through once a commit exists.)
 
 **Run 100% of tests through Docker; local test runs are disallowed.** Only the
-pinned GraalVM `javac` in the image reproduces the golden bytes, so the two Docker
-entry points — `docker-verify.sh` (fast, cached pinned goldens) and
-`docker-bench.sh` (authoritative online + timing), both of which build the image
-and run `bench` inside it — are the only sanctioned ways to validate byte-identity;
-see §Testing. The raw `./target/release/*` binaries are for compiler-internal
-debugging only, never for acceptance.
+pinned GraalVM `javac` in the image reproduces the golden bytes, so the `Makefile`
+is the single sanctioned command surface — `make verify` (fast, cached pinned
+goldens) and `make bench` (authoritative online + timing) both build the image and
+run inside it; see §Testing. `make check` is a *local* release build for
+compiler-internal debugging only, never for acceptance.
 
 **Reflect at the end of each development cycle.** When a cycle wraps up — a rung
 landed, a feature shipped, an infra change finished — stop and reflect, then bring
@@ -98,19 +97,26 @@ is the cautionary tale) and the rework that follows.
 
 ## Commands
 
+The `Makefile` is the command surface — run `make help` to list it (`verify`,
+`record`, `bench`, `probe`, `diff`, `image`, `check`). Building and running the
+compiler itself:
+
 ```bash
-cargo build --release                       # build lib + the njavac/bench/profile bins
-./target/release/njavac [-d <dir>] <file.java> [<file.java> ...]   # javac-like: many files, one invocation
+make check                                  # local release build (lib + njavac/bench/classdiff/profile bins)
+./target/release/njavac [-d <dir>] <file.java> [<file.java> ...]   # the njavac CLI, javac-like
 ```
 
 The CLI mirrors javac's surface: any number of `.java` sources in a single
 invocation, each class written to `<Name>.class` under `-d <dir>` (or beside its
 source if `-d` is omitted). One source failing does not abort the rest; the
-process exits non-zero if any did.
+process exits non-zero if any did. `make check` is a *local* build for
+compiler-internal debugging; byte-identity is only ever validated through Docker
+(see §Testing).
 
-The reference toolchain is `~/.sdkman/candidates/java/25.0.2-graalce/bin/{javac,javap}`.
-Byte-identity is specific to that exact JDK build — a different `javac` version
-can legitimately produce different golden bytes.
+The reference toolchain is the pinned GraalVM CE `25.0.2-graalce` `javac`/`javap`
+baked into the image; inspect its output for any program with
+`make probe FILE=Probe.java`. Byte-identity is specific to that exact JDK build —
+a different `javac` version can legitimately produce different golden bytes.
 
 ## Testing = the benchmark (there is no `cargo test`)
 
@@ -129,30 +135,29 @@ passes over `fixtures/*.java`:
 **All tests run through Docker; local runs are disallowed.** Byte-identity is only
 *reproducible* against the exact pinned `javac` (GraalVM CE 25.0.2-graalce, major
 69) baked into the image — a host with any other `javac` build can legitimately
-emit different golden bytes, so a green *local* run proves nothing. There are two
-Docker entry points, both building and running `bench` inside the pinned image and
-passing trailing args straight through: **`docker-verify.sh`** — the fast
-correctness gate (njavac vs goldens the *pinned* javac recorded into a persisted
-Docker volume) — and **`docker-bench.sh`** — the authoritative from-scratch run
-(freshly-invoked pinned javac) plus deterministic timing.
+emit different golden bytes, so a green *local* run proves nothing. The `Makefile`
+wraps two Docker gates, both building and running `bench` inside the pinned image:
+**`make verify`** — the fast correctness gate (njavac vs goldens the *pinned* javac
+recorded into a persisted Docker volume) — and **`make bench`** — the authoritative
+from-scratch run (freshly-invoked pinned javac) plus deterministic timing.
 
 ```bash
-./docker-verify.sh                         # FAST correctness: njavac vs cached pinned goldens (~1s)
-./docker-verify.sh fixtures/x/Foo.java     # fast correctness for ONE fixture
-./docker-verify.sh --record                # re-record goldens (after fixtures/JDK change), then verify
-./docker-bench.sh                          # authoritative: full online correctness + deterministic timing
-./docker-bench.sh fixtures/x/Foo.java      # ONE fixture, online (no timing)
+make verify                            # FAST correctness: njavac vs cached pinned goldens (~1s)
+make verify FILE=fixtures/x/Foo.java   # fast correctness for ONE fixture
+make record                            # re-record goldens (after fixtures/JDK change), then verify
+make bench                             # authoritative: full online correctness + deterministic timing
+make bench FILE=fixtures/x/Foo.java    # ONE fixture, online (no timing)
 ```
 
-The raw `./target/release/bench` binary and the `NJAVAC_BENCH_ALLOW_HOST=1` escape
-hatch still exist for compiler-internal debugging, but a host run is **not** a
-sanctioned way to validate byte-identity — only the Docker run is.
+`make check` builds the binaries locally for compiler-internal debugging; running
+them directly (or `NJAVAC_BENCH_ALLOW_HOST=1 bench` to force host timing) is for
+debugging only and is **not** a sanctioned way to validate byte-identity.
 
 **Dev-loop tooling** (ROADMAP.md §Phase 0; fuzzer 0.1 and CI gate 0.4 deferred),
 all invoked *through Docker* per the policy above:
 
-- **Single-fixture verify (0.2).** `docker-verify.sh <File.java>` (fast, cached
-  goldens) or `docker-bench.sh <File.java>` (online) compiles just that fixture
+- **Single-fixture verify (0.2).** `make verify FILE=<File.java>` (fast, cached
+  goldens) or `make bench FILE=<File.java>` (online) compiles just that fixture
   inside the container, byte-compares, prints the localized diff on mismatch, and
   skips timing. This is the edit→verify inner loop — not a hand-run
   `javac && njavac && cmp`.
@@ -161,17 +166,17 @@ all invoked *through Docker* per the policy above:
   context (`methods[0].attr[0].Code.max_stack`, `cp[17].bytes`) — *before* the
   javap diff. It localizes to the cause and works even when javap output matches
   ("bytes differ, javap agrees"). The same engine (`njavac::classdump`) backs the
-  standalone `classdiff` bin, which is baked into the image; diff two class files
-  with `docker run --rm -v "$PWD:/w" -w /w --entrypoint classdiff njavac-bench a.class b.class`.
-- **Fast offline gate (0.5).** `docker-verify.sh` records goldens from the
-  **pinned** javac *inside* the image (one batch javac invocation) and persists
-  them to a Docker volume (`njavac-goldens`), then byte-compares njavac against
-  that cache with **no javac spawns** — ~1.3s for the whole suite vs ~30s online,
-  entirely in Docker. It auto-records when the volume is empty; **re-record with
-  `docker-verify.sh --record` after changing fixtures or the JDK**, or the cache
-  goes stale. `docker-bench.sh` stays the authoritative from-scratch check. Under
-  the hood these are `bench --record` / `bench --offline --golden-dir <dir>`; the
-  cache is never committed and never hand-edited. (A locally-recorded cache would
+  `classdiff` bin, baked into the image; diff two class files with
+  `make diff A=a.class B=b.class`.
+- **Fast offline gate (0.5).** `make verify` records goldens from the **pinned**
+  javac *inside* the image (one batch javac invocation) and persists them to a
+  Docker volume (`njavac-goldens`), then byte-compares njavac against that cache
+  with **no javac spawns** — ~1.3s for the whole suite vs ~30s online, entirely in
+  Docker. It auto-records when the volume is empty; **re-record with `make record`
+  after changing fixtures or the JDK**, or the cache goes stale. `make bench` stays
+  the authoritative from-scratch check. Under the hood these are `bench --record` /
+  `bench --offline --golden-dir <dir>`; the cache is never committed and never
+  hand-edited. (A locally-recorded cache would
   be untrusted — the goldens must come from the pinned in-image javac, which is
   exactly what the volume holds.)
 
@@ -201,14 +206,14 @@ Key points, several of which are non-obvious:
   the recursive discovery already walks the tree, but the per-fixture compile
   step (one `javac`/`njavac` call, compared by basename) will need to grow into a
   compile-the-whole-case-dir + compare-every-emitted-`.class` shape.
-- **Iterating on one case** is a first-class command now — `docker-verify.sh
-  <File.java>` (fast) or `docker-bench.sh <File.java>` (online) (see "Dev-loop
+- **Iterating on one case** is a first-class command now — `make verify
+  FILE=<File.java>` (fast) or `make bench FILE=<File.java>` (online) (see "Dev-loop
   tooling" above), which prints the structural classdiff + javap diff on mismatch.
   No more hand-run `javac && njavac && cmp`.
-- Env/flags: `JAVAC`/`JAVAP` (or `--javac`/`--javap`) override tool paths (the
-  Docker image sets them); `--fixtures`, `--warmup`, `--out-dir`, `--record`,
-  `--offline`, `--golden-dir` exist too. `docker-bench.sh` honors `BENCH_CPU`
-  (default core 2) and `BENCH_MEM` (2g).
+- Env/flags: the underlying `bench` binary takes `JAVAC`/`JAVAP` (or
+  `--javac`/`--javap`) tool-path overrides (the Docker image sets them) and
+  `--fixtures`, `--warmup`, `--out-dir`, `--record`, `--offline`, `--golden-dir`;
+  `make bench` honors `BENCH_CPU` (default core 2) and `BENCH_MEM` (2g).
 
 ### Profiling (`profile` bin)
 
@@ -323,4 +328,5 @@ declare no locals in this subset, so the snapshot only ever grows (no `chop`).
 `Dockerfile` installs the *same* `25.0.2-graalce` (via SDKMAN) so the container
 reproduces the golden bytes; the JDK is the base layer and cargo/SDKMAN use
 BuildKit cache mounts. Timing repeatability comes from the `docker run` flags in
-`docker-bench.sh` (pinned single core, fixed memory, no swap), not the image.
+the `Makefile`'s `bench` target (pinned single core, fixed memory, no swap), not
+the image.

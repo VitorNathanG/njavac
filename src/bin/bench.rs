@@ -9,8 +9,8 @@
 //!
 //!   2. TIMING (deterministic harness only): time compiling the whole suite with
 //!      each compiler. Host timings are noise (JVM startup jitter, scheduler,
-//!      thermal), so timings are only produced inside the Docker harness — see
-//!      docker-bench.sh. Correctness still runs on the host.
+//!      thermal), so timings are only produced inside the Docker harness — run
+//!      `make bench`. Correctness still runs on the host.
 //!
 //! Dependency-free on purpose. Configure via flags (see `--help`).
 
@@ -360,7 +360,7 @@ fn timing(cfg: &Config, fixtures: &[PathBuf], javac_dir: &Path, njavac_dir: &Pat
     let in_harness = std::env::var_os("NJAVAC_IN_CONTAINER").is_some()
         || Path::new("/.dockerenv").exists();
     if !in_harness && std::env::var_os("NJAVAC_BENCH_ALLOW_HOST").is_none() {
-        println!("timing skipped: run ./docker-bench.sh for deterministic numbers");
+        println!("timing skipped: run `make bench` for deterministic numbers");
         println!("(host timings are noise; set NJAVAC_BENCH_ALLOW_HOST=1 to force anyway)");
         return;
     }

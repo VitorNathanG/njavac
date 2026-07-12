@@ -100,10 +100,9 @@ making `Unsupported` (skip) genuinely distinct from an njavac invariant violatio
 ### 0.2 Single-fixture verify command — ✅ DONE (2026-07)
 - **What.** Teach `bench` to accept a single `.java` *file* (not just a
   directory): compile just that one, byte-compare, and on mismatch print the
-  existing `print_first_divergence` diff, then exit. Add a thin
-  `scripts/verify.sh <file.java>` wrapper (build-if-stale + run) and document it in
-  CLAUDE.md as *the* verify command, replacing the "there is no single-fixture
-  flag / hand-run the pipeline" paragraph.
+  existing `print_first_divergence` diff, then exit. Expose it as a first-class
+  command and document it in CLAUDE.md as *the* verify command, replacing the
+  "there is no single-fixture flag / hand-run the pipeline" paragraph.
 - **Why.** Today iterating on one case means hand-running
   `javac && njavac && cmp && javap -diff` from memory — error-prone (wrong `-d`,
   stale artifacts, forgetting the header-line filtering the bench already does).
@@ -112,10 +111,10 @@ making `Unsupported` (skip) genuinely distinct from an njavac invariant violatio
 - **Effort.** Small (~1 hr) — reuses 100% of the existing correctness + diff
   machinery in `bench.rs`.
 - **As built.** `bench` takes a `<File.java>` positional; under the Docker-only
-  test policy it is invoked through Docker — `docker-verify.sh <File.java>` (fast)
-  or `docker-bench.sh <File.java>` (online). (The earlier local `scripts/verify.sh`
-  wrapper was removed as off-policy.)
-- **Done when.** `docker-verify.sh fixtures/branches/IfElse.java` prints pass or a
+  test policy it is invoked through the `Makefile` — `make verify FILE=<File.java>`
+  (fast) or `make bench FILE=<File.java>` (online). (An earlier local wrapper and
+  the raw `docker-*.sh` scripts were folded into the self-contained Makefile.)
+- **Done when.** `make verify FILE=fixtures/branches/IfElse.java` prints pass or a
   localized diff. ✅
 
 ### 0.3 Structured class-file differ — ✅ DONE (2026-07)
@@ -155,18 +154,18 @@ making `Unsupported` (skip) genuinely distinct from an njavac invariant violatio
 - **As built (Docker-only policy).** The original design was a *local* javac-free
   loop, which the "all tests via Docker; local runs disallowed" policy forbids — a
   host-recorded cache could reflect a non-pinned `javac`. The on-policy form is
-  `docker-verify.sh`: it records the goldens **inside the image** (pinned javac)
-  into a **Docker volume** (`njavac-goldens`), then runs `bench --offline` against
-  that volume. Everything stays in Docker; the volume is just cache storage
-  populated by the pinned compiler, never committed, never hand-edited. Auto-records
-  when the volume is empty; `--record` forces a refresh after fixtures/JDK change.
+  `make verify`: it records the goldens **inside the image** (pinned javac) into a
+  **Docker volume** (`njavac-goldens`), then runs `bench --offline` against that
+  volume. Everything stays in Docker; the volume is just cache storage populated by
+  the pinned compiler, never committed, never hand-edited. Auto-records when the
+  volume is empty; `make record` forces a refresh after fixtures/JDK change.
 - **Why.** Makes the *mandatory* Docker correctness gate fast: ~1.3s for the whole
   183-fixture suite (warm volume) vs ~30s for a full online run, because the online
   path pays one javac JVM-startup per fixture and the offline path pays none.
-  `docker-bench.sh` stays the authoritative from-scratch check (live pinned javac)
-  plus timing.
-- **Caveat.** The volume can go stale — re-record (`docker-verify.sh --record`)
-  after changing fixtures or rebuilding on a new JDK.
+  `make bench` stays the authoritative from-scratch check (live pinned javac) plus
+  timing.
+- **Caveat.** The volume can go stale — re-record (`make record`) after changing
+  fixtures or rebuilding on a new JDK.
 - **Effort.** Small (~2 hr).
 
 ---
@@ -321,8 +320,8 @@ Phase 0's net (fuzzer + differ + single-fixture verify + CI) proves it.
 - **Phase 0** — landed 0.2 (single-fixture verify), 0.3 (structured class-file
   differ), 0.5 (fast offline gate, volume-backed & on-policy); commands documented
   in CLAUDE.md §Testing. **0.1 (fuzzer) and 0.4 (CI gate) deferred** by decision.
-  All test execution runs through Docker (`docker-verify.sh` fast / `docker-bench.sh`
-  authoritative); local runs are disallowed.
+  All test execution runs through Docker via the `Makefile` (`make verify` fast /
+  `make bench` authoritative); local runs are disallowed.
 - **Phase 1–3** — not started.
 
 As items land, check them off here and record the resulting mechanics in CLAUDE.md

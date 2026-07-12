@@ -17,7 +17,8 @@
 # Determinism:
 #   * 25.0.2-graalce matches the host build that produced the golden bytes.
 #   * pinned rust:1.95 toolchain + `cargo build --locked`.
-# Timing repeatability (CPU pinning, memory caps) lives in docker-bench.sh.
+# Timing repeatability (CPU pinning, memory caps) lives in the Makefile `bench`
+# target's `docker run` flags.
 
 # ---- Stage 1: JDK — set up first, forms the base of the runtime image -------
 FROM debian:bookworm-slim AS jdk
@@ -55,9 +56,8 @@ ENV NJAVAC_IN_CONTAINER=1
 COPY fixtures ./fixtures
 COPY --from=build /out/njavac    /usr/local/bin/njavac
 COPY --from=build /out/bench     /usr/local/bin/bench
-# The structural class-file differ, reachable in-container for debugging via
-# `docker run --entrypoint classdiff …`; it also backs the diff `bench` prints
-# on a mismatch.
+# The structural class-file differ, reachable for debugging via `make diff`; it
+# also backs the diff `bench` prints on a mismatch.
 COPY --from=build /out/classdiff /usr/local/bin/classdiff
 ENTRYPOINT ["bench", "--njavac", "/usr/local/bin/njavac"]
 CMD ["--njavac-runs", "1000", "--javac-runs", "5", "--warmup", "5"]
