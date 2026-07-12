@@ -27,6 +27,17 @@ struct Config {
     njavac: String,
     fixtures_dir: String,
     out_dir: String,
+    /// A single `.java` file to verify instead of the whole corpus (ROADMAP §0.2).
+    /// `Some` ⇒ correctness over just this file, no timing.
+    single: Option<PathBuf>,
+    /// Write current javac outputs to the golden cache and exit (ROADMAP §0.5).
+    record: bool,
+    /// Byte-compare njavac against the golden cache instead of live javac —
+    /// a javac-free inner loop (ROADMAP §0.5).
+    offline: bool,
+    /// The git-ignored golden cache dir (`--record` writes it, `--offline` reads
+    /// it). Under `target/`, so it is never committed and `cargo clean` drops it.
+    golden_dir: String,
 }
 
 impl Config {
@@ -45,6 +56,10 @@ impl Config {
             njavac: "target/release/njavac".into(),
             fixtures_dir: "fixtures".into(),
             out_dir: "target/bench-out".into(),
+            single: None,
+            record: false,
+            offline: false,
+            golden_dir: "target/bench-golden".into(),
         };
         if let Ok(v) = std::env::var("JAVAC") {
             c.javac = v;
@@ -67,16 +82,27 @@ impl Config {
                 "--njavac" => c.njavac = val(),
                 "--fixtures" => c.fixtures_dir = val(),
                 "--out-dir" => c.out_dir = val(),
+                "--golden-dir" => c.golden_dir = val(),
+                "--record" => c.record = true,
+                "--offline" => c.offline = true,
                 "--help" | "-h" => {
                     println!(
-                        "usage: bench [--javac-runs N] [--njavac-runs N] [--warmup N] \
-                         [--fixtures DIR] [--javac PATH] [--javap PATH] [--njavac PATH] \
-                         [--out-dir DIR]"
+                        "usage: bench [<File.java> | --fixtures DIR] [--record] [--offline] \
+                         [--golden-dir DIR] [--javac-runs N] [--njavac-runs N] [--warmup N] \
+                         [--javac PATH] [--javap PATH] [--njavac PATH] [--out-dir DIR]\n\
+                         \n  <File.java>   verify just this one fixture (no timing)\
+                         \n  --record      compile all fixtures with javac into the golden cache, then exit\
+                         \n  --offline     byte-compare njavac against the golden cache (no javac needed)"
                     );
                     std::process::exit(0);
                 }
+                // A bare positional is a single `.java` file to verify; anything
+                // else beginning with '-' is an unknown flag.
+                path if !path.starts_with('-') && path.ends_with(".java") => {
+                    c.single = Some(PathBuf::from(path));
+                }
                 other => {
-                    eprintln!("unknown flag: {other}");
+                    eprintln!("unknown argument: {other}");
                     std::process::exit(2);
                 }
             }
@@ -126,28 +152,39 @@ fn base_name(fix: &Path) -> String {
     fix.file_stem().unwrap().to_string_lossy().into_owned()
 }
 
-/// Compile every fixture with both compilers and byte-compare. Exits the process
-/// (non-zero) on the first mismatch after showing a localized javap diff.
+/// The reference `.class` for `base`: the golden cache in `--offline` mode, else
+/// the freshly-compiled javac output.
+fn want_path(cfg: &Config, javac_dir: &Path, base: &str) -> PathBuf {
+    let dir = if cfg.offline { Path::new(&cfg.golden_dir) } else { javac_dir };
+    dir.join(format!("{base}.class"))
+}
+
+/// Compile every fixture with njavac and byte-compare against the reference
+/// (live javac, or the golden cache in `--offline` mode). Exits the process
+/// (non-zero) on the first mismatch after showing a localized diff.
 fn correctness(cfg: &Config, fixtures: &[PathBuf], javac_dir: &Path, njavac_dir: &Path) {
-    println!("correctness ({} fixtures):", fixtures.len());
+    let source = if cfg.offline { "golden cache" } else { "live javac" };
+    println!("correctness ({} fixtures, vs {source}):", fixtures.len());
     let mut failures: Vec<String> = Vec::new();
 
     for fix in fixtures {
         let base = base_name(fix);
         let fix_s = fix.to_string_lossy().into_owned();
         let njavac_out = njavac_dir.join(format!("{base}.class"));
-        let javac_out = javac_dir.join(format!("{base}.class"));
 
-        // Delete both expected outputs first, so a compiler that panics/errors
-        // and writes nothing yields a *missing* file (a FAIL) rather than a false
-        // pass off a stale artifact left by an earlier run.
+        // Delete njavac's output first, so a compiler that panics/errors and
+        // writes nothing yields a *missing* file (a FAIL) rather than a false
+        // pass off a stale artifact left by an earlier run. In online mode do the
+        // same for javac and recompile; offline reads the pre-recorded cache.
         let _ = std::fs::remove_file(&njavac_out);
-        let _ = std::fs::remove_file(&javac_out);
-
-        run_quiet(&[cfg.javac.clone(), "-d".into(), javac_dir.display().to_string(), fix_s.clone()]);
+        if !cfg.offline {
+            let javac_out = javac_dir.join(format!("{base}.class"));
+            let _ = std::fs::remove_file(&javac_out);
+            run_quiet(&[cfg.javac.clone(), "-d".into(), javac_dir.display().to_string(), fix_s.clone()]);
+        }
         run_quiet(&[cfg.njavac.clone(), "-d".into(), njavac_dir.display().to_string(), fix_s]);
 
-        let want = std::fs::read(javac_dir.join(format!("{base}.class")));
+        let want = std::fs::read(want_path(cfg, javac_dir, &base));
         let got = std::fs::read(&njavac_out);
         match (want, got) {
             (Ok(a), Ok(b)) if a == b => println!("  PASS  {base}  ({} bytes)", a.len()),
@@ -163,13 +200,70 @@ fn correctness(cfg: &Config, fixtures: &[PathBuf], javac_dir: &Path, njavac_dir:
         return;
     }
 
-    // Localize the first failure with a noise-stripped javap diff.
+    // Localize the first failure: the structural classdiff (byte-offset precise,
+    // works even when javap agrees) followed by the noise-stripped javap diff.
     let base = &failures[0];
     println!("\n{}/{} failed. First mismatch: {base}", failures.len(), fixtures.len());
-    let a = javap_lines(cfg, &javac_dir.join(format!("{base}.class")));
-    let b = javap_lines(cfg, &njavac_dir.join(format!("{base}.class")));
-    print_first_divergence(&a, &b);
+    if cfg.offline && fixtures.len() > 1 && failures.len() == fixtures.len() {
+        println!("(every fixture failed in --offline mode — is the golden cache stale or empty? \
+                  run `bench --record` to (re)build {})", cfg.golden_dir);
+    }
+
+    let want_file = want_path(cfg, javac_dir, base);
+    let njavac_file = njavac_dir.join(format!("{base}.class"));
+    match (std::fs::read(&want_file), std::fs::read(&njavac_file)) {
+        (Ok(a), Ok(b)) => {
+            match njavac::classdump::diff_report(&a, &b) {
+                Some(report) => {
+                    println!("\nstructural divergence (classdiff):");
+                    for line in report.lines() {
+                        println!("  {line}");
+                    }
+                }
+                None => println!("(files are byte-identical — nothing to localize)"),
+            }
+            println!("\njavap divergence:");
+            print_first_divergence(&javap_lines(cfg, &want_file), &javap_lines(cfg, &njavac_file));
+        }
+        _ => println!(
+            "(one output is missing: {} / {} — cannot diff)",
+            want_file.display(),
+            njavac_file.display()
+        ),
+    }
     std::process::exit(1);
+}
+
+/// Compile every fixture with javac into the golden cache and exit (ROADMAP §0.5).
+/// The cache is a convenience mirror, always re-recorded from javac — never
+/// committed, never hand-edited. Intended to be run *inside the Docker image* so
+/// the goldens come from the pinned `javac`, then persisted to a volume.
+fn record_goldens(cfg: &Config, fixtures: &[PathBuf], golden_dir: &Path) {
+    std::fs::create_dir_all(golden_dir).expect("create golden dir");
+    // Clear the goldens we're about to regenerate, so a renamed/removed fixture
+    // can't leave a stale orphan in the cache.
+    for fix in fixtures {
+        let _ = std::fs::remove_file(golden_dir.join(format!("{}.class", base_name(fix))));
+    }
+    // One javac invocation over the whole suite. The fixtures are independent
+    // single-class files, so batch output is byte-identical to per-file javac —
+    // but it pays ONE JVM startup instead of one per fixture, which is the point
+    // of a persisted cache: recording stays cheap.
+    println!(
+        "recording {} goldens into {} (pinned javac, one invocation):",
+        fixtures.len(),
+        golden_dir.display()
+    );
+    let mut argv = vec![cfg.javac.clone(), "-d".into(), golden_dir.display().to_string()];
+    argv.extend(fixtures.iter().map(|p| p.to_string_lossy().into_owned()));
+    if !run_quiet(&argv) {
+        eprintln!("  WARN  javac exited non-zero while recording");
+    }
+    let ok = fixtures
+        .iter()
+        .filter(|f| golden_dir.join(format!("{}.class", base_name(f))).exists())
+        .count();
+    println!("  -> recorded {ok}/{} goldens", fixtures.len());
 }
 
 /// `javap -v -p` output as lines, with the header lines that legitimately differ
@@ -301,12 +395,35 @@ fn timing(cfg: &Config, fixtures: &[PathBuf], javac_dir: &Path, njavac_dir: &Pat
 
 fn main() {
     let cfg = Config::from_args();
-    let fixtures = discover_fixtures(&cfg.fixtures_dir);
+
+    // A single `.java` file verifies just that fixture; otherwise the whole
+    // corpus (discovered recursively under --fixtures).
+    let fixtures = match &cfg.single {
+        Some(f) => {
+            if !f.is_file() {
+                eprintln!("bench: no such fixture file: {}", f.display());
+                std::process::exit(2);
+            }
+            vec![f.clone()]
+        }
+        None => discover_fixtures(&cfg.fixtures_dir),
+    };
+
+    if cfg.record {
+        record_goldens(&cfg, &fixtures, Path::new(&cfg.golden_dir));
+        return;
+    }
+
     let javac_dir = PathBuf::from(&cfg.out_dir).join("javac");
     let njavac_dir = PathBuf::from(&cfg.out_dir).join("njavac");
     std::fs::create_dir_all(&javac_dir).expect("create javac out dir");
     std::fs::create_dir_all(&njavac_dir).expect("create njavac out dir");
 
     correctness(&cfg, &fixtures, &javac_dir, &njavac_dir);
-    timing(&cfg, &fixtures, &javac_dir, &njavac_dir);
+
+    // Timing is a whole-suite, live-javac measurement: skip it for a single
+    // fixture (meaningless) and in --offline mode (no javac to time against).
+    if cfg.single.is_none() && !cfg.offline {
+        timing(&cfg, &fixtures, &javac_dir, &njavac_dir);
+    }
 }
