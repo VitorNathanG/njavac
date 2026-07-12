@@ -136,18 +136,16 @@ passes over `fixtures/*.java`:
 *reproducible* against the exact pinned `javac` (GraalVM CE 25.0.2-graalce, major
 69) baked into the image — a host with any other `javac` build can legitimately
 emit different golden bytes, so a green *local* run proves nothing. The `Makefile`
-wraps two Docker gates, both building and running `bench` inside the pinned image:
-**`make verify`** — the fast correctness gate (njavac vs goldens the *pinned* javac
-recorded into a persisted Docker volume) — and **`make bench`** — the authoritative
-from-scratch run (freshly-invoked pinned javac) plus deterministic timing.
+is the command surface (**`make help`** lists it, so it stays the single source of
+truth); its gates all build and run `bench` inside the pinned image:
 
-```bash
-make verify                            # FAST correctness: njavac vs cached pinned goldens (~1s)
-make verify FILE=fixtures/x/Foo.java   # fast correctness for ONE fixture
-make record                            # re-record goldens (after fixtures/JDK change), then verify
-make bench                             # authoritative: full online correctness + deterministic timing
-make bench FILE=fixtures/x/Foo.java    # ONE fixture, online (no timing)
-```
+- **`make verify`** — fast (~1s): njavac vs goldens the *pinned* javac recorded into
+  a persisted Docker volume. The everyday inner loop; the cache can go stale, so
+  re-record with `make record` after changing fixtures or the JDK.
+- **`make correctness`** — fresh & authoritative (~3s): full online check against
+  freshly-invoked pinned javac, no timing. The pre-commit gate.
+- **`make bench`** — authoritative + deterministic timing (~15s). Add `FILE=<f>` to
+  any gate to check a single fixture.
 
 `make check` builds the binaries locally for compiler-internal debugging; running
 them directly (or `NJAVAC_BENCH_ALLOW_HOST=1 bench` to force host timing) is for
