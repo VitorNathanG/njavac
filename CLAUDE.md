@@ -38,6 +38,12 @@ Where a change is documented depends on what kind it is:
   standing instruction the user gives or way of working we agree on — so it
   survives across sessions. If the user tells you to do something a certain way,
   write it down here.
+- **ROADMAP.md** is the **infrastructure & architecture evolution** plan: the
+  ordered work that makes the codebase ready to take new language rungs cheaply
+  and safely (fuzzer/verify/CI tooling, diagnostics, the sema-scoping and
+  attribute-abstraction keystones). It is orthogonal to README's *language*-rung
+  list. When one of its items lands, check it off there and record the resulting
+  mechanics here. Read it when planning infrastructure or a large refactor.
 - Apply the same discipline to whatever else a change touches (a new fixture
   subfolder, a CLI flag, an env var, a doc comment that is now wrong): document
   it where a future reader would look for it.
@@ -47,6 +53,14 @@ a private GitHub repo (`origin` → `github.com/VitorNathanG/njavac`, default
 branch `main`), and an unpushed commit is invisible to the next session and to
 any backup. (Committing itself still happens only when the user asks; pushing is
 the standing follow-through once a commit exists.)
+
+**Run 100% of tests through Docker; local test runs are disallowed.** Only the
+pinned GraalVM `javac` in the image reproduces the golden bytes, so the two Docker
+entry points — `docker-verify.sh` (fast, cached pinned goldens) and
+`docker-bench.sh` (authoritative online + timing), both of which build the image
+and run `bench` inside it — are the only sanctioned ways to validate byte-identity;
+see §Testing. The raw `./target/release/*` binaries are for compiler-internal
+debugging only, never for acceptance.
 
 ## Commands
 
@@ -69,20 +83,63 @@ can legitimately produce different golden bytes.
 The `bench` bin is the entire test suite **and** the benchmark. It has two
 passes over `fixtures/*.java`:
 
-1. **Correctness (always, any host).** Compiles every fixture with both `javac`
-   and njavac and byte-compares. Byte-identity is deterministic, so this runs
-   anywhere and is the acceptance gate: **exits non-zero on any mismatch**, and
-   prints a noise-stripped `javap -v` divergence (the `Classfile`/`Last modified`/
-   `SHA-256` header lines are filtered out) to localize the first failure.
+1. **Correctness (always).** Compiles every fixture with both `javac` and njavac
+   and byte-compares: **exits non-zero on any mismatch**, printing a structural
+   `classdiff` (byte-offset precise) then a noise-stripped `javap -v` divergence
+   (the `Classfile`/`Last modified`/`SHA-256` header lines are filtered out) to
+   localize the first failure.
 2. **Timing (deterministic harness only).** Times compiling the whole suite with
-   each compiler. Host timings are noise (JVM-startup jitter, scheduler,
-   thermal), so timing is gated to run only inside the Docker harness.
+   each compiler. Host timings are noise (JVM-startup jitter, scheduler, thermal),
+   so timing runs only inside the Docker harness.
+
+**All tests run through Docker; local runs are disallowed.** Byte-identity is only
+*reproducible* against the exact pinned `javac` (GraalVM CE 25.0.2-graalce, major
+69) baked into the image — a host with any other `javac` build can legitimately
+emit different golden bytes, so a green *local* run proves nothing. There are two
+Docker entry points, both building and running `bench` inside the pinned image and
+passing trailing args straight through: **`docker-verify.sh`** — the fast
+correctness gate (njavac vs goldens the *pinned* javac recorded into a persisted
+Docker volume) — and **`docker-bench.sh`** — the authoritative from-scratch run
+(freshly-invoked pinned javac) plus deterministic timing.
 
 ```bash
-./target/release/bench          # correctness over all fixtures; timing skipped with a note
-./docker-bench.sh               # build the pinned image, run correctness + deterministic timing
-NJAVAC_BENCH_ALLOW_HOST=1 ./target/release/bench   # force host timing (noisy; for quick checks)
+./docker-verify.sh                         # FAST correctness: njavac vs cached pinned goldens (~1s)
+./docker-verify.sh fixtures/x/Foo.java     # fast correctness for ONE fixture
+./docker-verify.sh --record                # re-record goldens (after fixtures/JDK change), then verify
+./docker-bench.sh                          # authoritative: full online correctness + deterministic timing
+./docker-bench.sh fixtures/x/Foo.java      # ONE fixture, online (no timing)
 ```
+
+The raw `./target/release/bench` binary and the `NJAVAC_BENCH_ALLOW_HOST=1` escape
+hatch still exist for compiler-internal debugging, but a host run is **not** a
+sanctioned way to validate byte-identity — only the Docker run is.
+
+**Dev-loop tooling** (ROADMAP.md §Phase 0; fuzzer 0.1 and CI gate 0.4 deferred),
+all invoked *through Docker* per the policy above:
+
+- **Single-fixture verify (0.2).** `docker-verify.sh <File.java>` (fast, cached
+  goldens) or `docker-bench.sh <File.java>` (online) compiles just that fixture
+  inside the container, byte-compares, prints the localized diff on mismatch, and
+  skips timing. This is the edit→verify inner loop — not a hand-run
+  `javac && njavac && cmp`.
+- **Structured differ (0.3).** On any mismatch the bench prints a **classdiff** —
+  the first *structurally*-divergent field with its byte offset and readable
+  context (`methods[0].attr[0].Code.max_stack`, `cp[17].bytes`) — *before* the
+  javap diff. It localizes to the cause and works even when javap output matches
+  ("bytes differ, javap agrees"). The same engine (`njavac::classdump`) backs the
+  standalone `classdiff` bin, which is baked into the image; diff two class files
+  with `docker run --rm -v "$PWD:/w" -w /w --entrypoint classdiff njavac-bench a.class b.class`.
+- **Fast offline gate (0.5).** `docker-verify.sh` records goldens from the
+  **pinned** javac *inside* the image (one batch javac invocation) and persists
+  them to a Docker volume (`njavac-goldens`), then byte-compares njavac against
+  that cache with **no javac spawns** — ~1.3s for the whole suite vs ~30s online,
+  entirely in Docker. It auto-records when the volume is empty; **re-record with
+  `docker-verify.sh --record` after changing fixtures or the JDK**, or the cache
+  goes stale. `docker-bench.sh` stays the authoritative from-scratch check. Under
+  the hood these are `bench --record` / `bench --offline --golden-dir <dir>`; the
+  cache is never committed and never hand-edited. (A locally-recorded cache would
+  be untrusted — the goldens must come from the pinned in-image javac, which is
+  exactly what the volume holds.)
 
 Key points, several of which are non-obvious:
 
@@ -110,14 +167,14 @@ Key points, several of which are non-obvious:
   the recursive discovery already walks the tree, but the per-fixture compile
   step (one `javac`/`njavac` call, compared by basename) will need to grow into a
   compile-the-whole-case-dir + compare-every-emitted-`.class` shape.
-- **There is no single-fixture flag.** To iterate on one case, either point
-  `--fixtures` at a directory containing just that file, or run the pair by hand
-  (both compilers now share the same `-d` calling convention):
-  `javac -d /tmp/j F.java && njavac -d /tmp/n F.java && cmp /tmp/j/F.class /tmp/n/F.class`,
-  then `javap -v -p` both and diff.
+- **Iterating on one case** is a first-class command now — `docker-verify.sh
+  <File.java>` (fast) or `docker-bench.sh <File.java>` (online) (see "Dev-loop
+  tooling" above), which prints the structural classdiff + javap diff on mismatch.
+  No more hand-run `javac && njavac && cmp`.
 - Env/flags: `JAVAC`/`JAVAP` (or `--javac`/`--javap`) override tool paths (the
-  Docker image sets them); `--fixtures`, `--warmup`, `--out-dir` exist too.
-  `docker-bench.sh` honors `BENCH_CPU` (default core 2) and `BENCH_MEM` (2g).
+  Docker image sets them); `--fixtures`, `--warmup`, `--out-dir`, `--record`,
+  `--offline`, `--golden-dir` exist too. `docker-bench.sh` honors `BENCH_CPU`
+  (default core 2) and `BENCH_MEM` (2g).
 
 ### Profiling (`profile` bin)
 
@@ -155,6 +212,12 @@ source → lexer::lex → parser::parse → sema::analyze → codegen::generate 
   the `SourceFile` attribute from the input file's basename (the class name comes
   from the source). A per-file compile error is caught so one bad source does not
   abort the batch — the process just exits non-zero.
+- **`classdump`** is not part of the pipeline — it is the *inverse*: a structural
+  reader that parses `.class` bytes back into an ordered list of fields (byte
+  offset + path + value), and a `diff_report` that localizes the first structural
+  divergence between two class files. It is the mirror of the `classfile` writer
+  and the byte-identity debugging tool (the `classdiff` bin, and the diff the
+  bench prints on a mismatch). See §Testing.
 
 ### Where byte-identity is won or lost
 

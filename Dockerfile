@@ -44,7 +44,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/target \
     cargo build --release --locked \
     && mkdir -p /out \
-    && cp target/release/njavac target/release/bench /out/
+    && cp target/release/njavac target/release/bench target/release/classdiff /out/
 
 # ---- Stage 3: runtime — JDK base + the small, frequently-changing layers ----
 FROM jdk AS bench
@@ -53,7 +53,11 @@ WORKDIR /work
 ENV NJAVAC_IN_CONTAINER=1
 # fixtures change rarely; binaries change most, so copy them last.
 COPY fixtures ./fixtures
-COPY --from=build /out/njavac /usr/local/bin/njavac
-COPY --from=build /out/bench  /usr/local/bin/bench
+COPY --from=build /out/njavac    /usr/local/bin/njavac
+COPY --from=build /out/bench     /usr/local/bin/bench
+# The structural class-file differ, reachable in-container for debugging via
+# `docker run --entrypoint classdiff …`; it also backs the diff `bench` prints
+# on a mismatch.
+COPY --from=build /out/classdiff /usr/local/bin/classdiff
 ENTRYPOINT ["bench", "--njavac", "/usr/local/bin/njavac"]
 CMD ["--njavac-runs", "1000", "--javac-runs", "5", "--warmup", "5"]
