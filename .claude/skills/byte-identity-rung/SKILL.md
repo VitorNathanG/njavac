@@ -41,6 +41,24 @@ and whether javac **constant-folds** the construct. Vary the probe across
 boundaries (literal magnitudes, slot indices, branch offsets, operand types) to
 find exactly where the bytes change — those boundaries become your fixtures.
 
+**When the construct has a hidden *model*, not just a fixed opcode choice** — e.g.
+`&&`/`||` are javac's `Gen.genCond`/`Items.CondItem`/`Code.mergeChains` jump-chain
+model, `switch` is a density cost model, string concat is a recipe encoding — do
+not code against a few examples. Reverse-engineer the model:
+
+1. **Build a probe *corpus*** — a written file of every boundary (`make probe`
+   output + the rule you infer for each), covering the corners the obvious cases
+   are silent on (for `&&`/`||`: constant operands, `q && false` residuals,
+   materialization, deep nesting). This corpus is the ground truth the rest hangs
+   on; it is worth writing down in full.
+2. **For a gnarly model, design against the corpus with an adversarial workflow**
+   before writing code — independent architects → judge → critics that hunt for
+   the cases the design gets wrong → a finalized plan. On `&&`/`||` this caught
+   real silent-wrong-byte bugs (an `if`/`else` drop, a mis-routed chain) *before*
+   a line was written, and the implementation was byte-identical on the first run.
+3. **Re-probe the design's riskiest predictions** (the corpus is silent on some)
+   and reconcile the bytes *before* implementing the dependent code.
+
 ## 2. Locate the code (the pipeline)
 `source → lexer → parser → sema → codegen → classfile`
 - **lexer / ast / parser** — the source surface (tokens, AST nodes, precedence).
@@ -80,11 +98,21 @@ a path like `methods[0].attr[0].Code.max_stack`) before the javap diff — read 
 localize the *cause*, not a downstream symptom. After changing fixtures, run
 `make record` to refresh the golden volume.
 
-## 6. Refuse, never mis-compile
-Out-of-subset input must be **rejected**, not compiled to wrong bytes. An
-`assert!`/`panic!` is caught by the CLI as "unsupported (compiler error)" and no
-`.class` is written. Never weaken a check to make something "work" — a wrong byte
-is worse than an honest refusal.
+## 6. No concessions; refuse only what needs an unbuilt subsystem
+The default is to **match javac for every case the construct can reach**, even when
+that means reverse-engineering a hidden model (§1). Do **not** refuse a case just
+because it turned out bigger than expected — "this is more than I thought" is not a
+reason to scope it out. Refuse *only* what genuinely requires a class-file subsystem
+this emitter does not yet have (e.g. materializing a boolean onto a non-empty stack
+needs `full_frame`; string concat needs `invokedynamic`) — a principled subset edge,
+not an avoidance of work.
+
+When you *do* refuse, refuse **honestly**: out-of-subset input must be **rejected**,
+not compiled to wrong bytes. An `assert!`/`panic!` is caught by the CLI as
+"unsupported (compiler error)" and no `.class` is written. Never weaken a check to
+make something "work" — a wrong byte is worse than an honest refusal. And when a
+refusal *is* the right call, say so explicitly and get the user's agreement rather
+than silently narrowing the rung.
 
 ## 7. Docs in lockstep — in the *same* commit
 - **README**: check off the feature map, update scope prose.

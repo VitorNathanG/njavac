@@ -76,10 +76,11 @@ making `Unsupported` (skip) genuinely distinct from an njavac invariant violatio
 
 ## Phase 0 — Enablers
 
-### 0.1 Differential fuzzer  *(the single highest-leverage item)* — DEFERRED
+### 0.1 Differential fuzzer  *(the single highest-leverage item)* — NEXT UP (un-deferred 2026-07)
 - **What.** A new dependency-free `src/bin/fuzz.rs` that generates random *in-scope*
   Java (`main` bodies: N primitive locals, literals across the constant-load
-  boundaries, random operator/cast/compound-assign trees, nested `if/else`),
+  boundaries, random operator/cast/compound-assign trees, nested `if/else`, and now
+  **boolean expression trees over `&& || ! < > == …` incl. constant operands**),
   compiles each with both compilers, and byte-compares. On mismatch it
   **auto-minimizes** (delete statements / shrink literals while the mismatch
   persists) and dumps the reduced `.java` ready to drop into `fixtures/`.
@@ -91,6 +92,12 @@ making `Unsupported` (skip) genuinely distinct from an njavac invariant violatio
   slot-allocation, constant-load-boundary, promotion-placement, and StackMapTable
   bugs no human will hand-enumerate. It grows one rung at a time alongside the
   compiler and becomes a permanent regression net.
+- **Un-deferred because** the `&&`/`||` rung proved the point: its hazards lived in
+  a *constant-operand matrix* (`true && q`, `q && false`, nested collapses) that had
+  to be hand-enumerated by probing, and the rung nearly shipped with those cases
+  *refused* rather than matched. A differential fuzzer over boolean trees is exactly
+  the tool that would have surfaced them automatically — and every rung from here
+  (`?:`, loops, switch) has the same combinatorial-corner risk. Build v1 next.
 - **Effort.** Medium (~half a day for v1).
 - **Note.** `Math.random()`/`Date::now` are irrelevant here (this is a separate
   bin, not a workflow); use a seeded PRNG so failures reproduce.
@@ -335,9 +342,11 @@ files its "what would help" items here.
 
 - **Phase 0** — landed 0.2 (single-fixture verify), 0.3 (structured class-file
   differ), 0.5 (fast offline gate, volume-backed & on-policy); commands documented
-  in CLAUDE.md §Testing. **0.1 (fuzzer) and 0.4 (CI gate) deferred** by decision.
-  All test execution runs through Docker via the `Makefile` (`make verify` fast /
-  `make bench` authoritative); local runs are disallowed.
+  in CLAUDE.md §Testing. **0.1 (fuzzer) is now NEXT UP** (un-deferred 2026-07 after
+  the `&&`/`||` rung showed hand-enumeration missing combinatorial corners); **0.4
+  (CI gate) remains deferred** by decision. All test execution runs through Docker
+  via the `Makefile` (`make verify` fast / `make bench` authoritative); local runs
+  are disallowed.
 - **Phase 1–3** — not started.
 
 As items land, check them off here and record the resulting mechanics in CLAUDE.md

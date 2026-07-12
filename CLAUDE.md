@@ -99,6 +99,19 @@ constraints. Surfacing these up front avoids building the right thing for the wr
 environment (the local test loop that had to be reworked for the Docker-only policy
 is the cautionary tale) and the rework that follows.
 
+**No concessions: match javac for every reachable case.** The default is to
+reproduce javac's exact bytes for everything a construct can reach — even when that
+means reverse-engineering a hidden model (javac's `CondItem` jump-chains, the
+`switch` density heuristic, the concat recipe). *"This is bigger than I expected"
+is never a reason to scope a case out.* Refuse **only** what genuinely needs a
+class-file subsystem this emitter does not yet have (non-empty-stack boolean
+materialization → `full_frame`; string concat → `invokedynamic`) — a principled
+subset edge, and even then say so and get agreement rather than silently narrowing
+the rung. (The `&&`/`||` cycle is the cautionary tale: the first instinct was to
+refuse the constant-operand cases as "too big"; the right move was to model javac's
+`genCond` exactly — build the ground-truth corpus and reverse-engineer it, per the
+`byte-identity-rung` skill §1/§6.)
+
 ## Commands
 
 The `Makefile` is the command surface — run `make help` to list it (`verify`,
