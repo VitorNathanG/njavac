@@ -6,6 +6,7 @@
 //! other modules are being filled in to replace the earlier hand-lowering.
 
 pub mod classfile;
+pub mod classdump;
 pub mod lexer;
 pub mod ast;
 pub mod parser;
