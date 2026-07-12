@@ -48,11 +48,14 @@ Where a change is documented depends on what kind it is:
   subfolder, a CLI flag, an env var, a doc comment that is now wrong): document
   it where a future reader would look for it.
 
-**Push after every commit.** Once you commit, run `git push` — the code lives in
-a private GitHub repo (`origin` → `github.com/VitorNathanG/njavac`, default
-branch `main`), and an unpushed commit is invisible to the next session and to
-any backup. (Committing itself still happens only when the user asks; pushing is
-the standing follow-through once a commit exists.)
+**Commit and push directly to `main`; never branch.** This repo does not use
+feature branches — commit straight onto `main` and `git push` to
+`origin/main` (`github.com/VitorNathanG/njavac`, a private repo). Do **not**
+create a branch, even when starting from the default branch (this overrides the
+generic "branch off the default" habit). Once you commit, run `git push` — an
+unpushed commit is invisible to the next session and to any backup. (Committing
+itself still happens only when the user asks; pushing directly to `main` is the
+standing follow-through once a commit exists.)
 
 **Run 100% of tests through Docker; local test runs are disallowed.** Only the
 pinned GraalVM `javac` in the image reproduces the golden bytes, so the `Makefile`
