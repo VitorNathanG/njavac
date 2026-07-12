@@ -24,6 +24,30 @@ materialization (`println(a < b)`), loops and `switch`, string concatenation
 (`invokedynamic`), objects/arrays/methods, multiple methods. See `README.md` for
 the checked-off feature map and the ordered next rungs.
 
+## Working conventions
+
+**Keep the docs in lockstep with the code, in the *same* commit as the change.**
+Where a change is documented depends on what kind it is:
+
+- **README.md** is the **language-coverage** record: update the checked-off
+  feature map (§A–§I, `[ ]`→`[x]`) and any conceptual/scope prose whenever a rung
+  lands or the supported surface moves. It is the source of truth for "what
+  compiles today" and the ordered next rungs.
+- **CLAUDE.md** (this file) is **how the compiler works and how we work on it**:
+  record architectural specifics and byte-identity gotchas here, and *also* any
+  standing instruction the user gives or way of working we agree on — so it
+  survives across sessions. If the user tells you to do something a certain way,
+  write it down here.
+- Apply the same discipline to whatever else a change touches (a new fixture
+  subfolder, a CLI flag, an env var, a doc comment that is now wrong): document
+  it where a future reader would look for it.
+
+**Push after every commit.** Once you commit, run `git push` — the code lives in
+a private GitHub repo (`origin` → `github.com/VitorNathanG/njavac`, default
+branch `main`), and an unpushed commit is invisible to the next session and to
+any backup. (Committing itself still happens only when the user asks; pushing is
+the standing follow-through once a commit exists.)
+
 ## Commands
 
 ```bash
