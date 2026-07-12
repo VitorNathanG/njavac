@@ -193,6 +193,7 @@ pub fn type_of(expr: &Expr, info: &MethodInfo) -> ValType {
         Expr::BitNot(e) => unary_promote(type_of(e, info)),
         Expr::Not(_) => ValType::Boolean,
         Expr::Compare { .. } => ValType::Boolean,
+        Expr::Logical { .. } => ValType::Boolean,
         Expr::Cast { ty, .. } => valtype(*ty),
         Expr::Binary { op, left, right } => {
             let lt = type_of(left, info);

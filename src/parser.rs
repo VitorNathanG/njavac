@@ -9,8 +9,9 @@
 //! Expression precedence (loosest to tightest), all binary levels
 //! left-associative:
 //!
-//!   `|` < `^` < `&` < `== !=` < `< <= > >=` < `<< >> >>>` < `+ -` < `* / %` < unary
+//!   `||` < `&&` < `|` < `^` < `&` < `== !=` < `< <= > >=` < `<< >> >>>` < `+ -` < `* / %` < unary
 //!
+//! The short-circuit `||`/`&&` are the two loosest levels (below the bitwise `|`).
 //! Unary covers `-`, `~`, `!`, and primitive casts `(T) e`. Parentheses group.
 //! Each statement is tagged with the 1-based source line it begins on so codegen
 //! can rebuild the `LineNumberTable` byte-identically to javac.
@@ -18,7 +19,7 @@
 //! The parser panics on malformed input; the fixtures are well-formed.
 
 use crate::ast::{
-    BinOp, Class, CmpOp, CompilationUnit, Expr, Method, Param, Stmt, StmtKind, Type,
+    BinOp, Class, CmpOp, CompilationUnit, Expr, LogOp, Method, Param, Stmt, StmtKind, Type,
 };
 use crate::lexer::{Token, TokenKind};
 
@@ -286,7 +287,30 @@ impl Parser {
     // ---- expressions, loosest precedence first ----
 
     fn expression(&mut self) -> Expr {
-        self.bit_or()
+        self.logical_or()
+    }
+
+    // `||` — the loosest binary level, below `&&`. Left-associative
+    // (`a || b || c` = `Or(Or(a, b), c)`, matching javac's genCond nesting).
+    fn logical_or(&mut self) -> Expr {
+        let mut left = self.logical_and();
+        while matches!(self.peek(), TokenKind::PipePipe) {
+            self.bump();
+            let right = self.logical_and();
+            left = logical(LogOp::Or, left, right);
+        }
+        left
+    }
+
+    // `&&` — below `||`, above the bitwise `|`.
+    fn logical_and(&mut self) -> Expr {
+        let mut left = self.bit_or();
+        while matches!(self.peek(), TokenKind::AmpAmp) {
+            self.bump();
+            let right = self.bit_or();
+            left = logical(LogOp::And, left, right);
+        }
+        left
     }
 
     fn bit_or(&mut self) -> Expr {
@@ -504,6 +528,10 @@ fn binary(op: BinOp, left: Expr, right: Expr) -> Expr {
 
 fn compare(op: CmpOp, left: Expr, right: Expr) -> Expr {
     Expr::Compare { op, left: Box::new(left), right: Box::new(right) }
+}
+
+fn logical(op: LogOp, left: Expr, right: Expr) -> Expr {
+    Expr::Logical { op, left: Box::new(left), right: Box::new(right) }
 }
 
 /// The compound-assignment operator a token denotes, if any.

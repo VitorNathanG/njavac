@@ -24,7 +24,7 @@
 //! unconditional `goto` are threaded through — both exactly as javac does, so a
 //! method whose branches all fold stays byte-identical to its straight-line form.
 
-use crate::ast::{BinOp, Class, CmpOp, Expr, Method, Stmt, StmtKind, Type};
+use crate::ast::{BinOp, Class, CmpOp, Expr, LogOp, Method, Stmt, StmtKind, Type};
 use crate::classfile::{ClassFile, ConstantPool, Method as CfMethod, StackFrame, VerificationType};
 use crate::sema::{self, Analysis, MethodInfo, StackTy, ValType};
 
@@ -165,6 +165,8 @@ enum Const {
 
 /// Compile one parsed+analyzed class into `.class` bytes.
 pub fn generate(class: &Class, analysis: &Analysis, source_file: &str) -> Vec<u8> {
+    #[cfg(debug_assertions)]
+    assert_negate_op_consistent();
     let mut cp = ConstantPool::new();
 
     let mut methods = Vec::new();
@@ -230,7 +232,10 @@ fn gen_method(cp: &mut ConstantPool, method: &Method, info: &MethodInfo) -> CfMe
         // Maintain the running assigned-locals snapshot: a top-level declaration
         // brings its local into scope for every subsequent branch's frames. (In
         // this subset such locals are declared with an initializer, so they are
-        // definitely assigned from here on.)
+        // definitely assigned from here on.) The push MUST stay *after* gen_stmt:
+        // a frame emitted while materializing the declaration's own initializer
+        // (e.g. `boolean r = a && b`) snapshots `self.locals` without `r` — that is
+        // exactly what makes javac's frame there `append` without the new local.
         if let StmtKind::LocalDecl { ty, .. } = &stmt.kind {
             g.locals.push(local_vti(sema::valtype(*ty)));
         }
@@ -295,6 +300,69 @@ struct FrameReq {
     stack: Vec<VerificationType>,
 }
 
+/// javac's `Items.CondItem`, restricted to njavac's side-effect-free boolean
+/// subset. Lowering a boolean expression (`gen_cond`) emits every operand load
+/// eagerly but leaves the *deciding branch* pending in `opcode`; the not-yet-
+/// resolved jump sites are collected in `true_chain`/`false_chain`. Consumers
+/// (`gen_if`, `gen_bool_value`) then resolve those chains to concrete pcs. This is
+/// the one representation that expresses javac's constant short-circuit collapse
+/// (`true || q`, `q && false`, …) — see the `&&`/`||` corpus.
+struct CondItem {
+    /// The pending deciding branch, or a static verdict.
+    opcode: CondOp,
+    /// Chains as label ids collecting pending jump sites. `None` = the empty chain
+    /// (javac's null): nothing targets it, so resolving it places no frame. A
+    /// `Some` chain always has ≥1 live fixup.
+    true_chain: Option<usize>,
+    false_chain: Option<usize>,
+    /// True iff an un-branched boolean 0/1 is currently on the operand stack (the
+    /// bare-value leaf sets it; any emitted branch consumes and clears it). The
+    /// only item whose materialization needs no diamond.
+    value_on_stack: bool,
+}
+
+/// The deciding branch of a `CondItem`: a real conditional test (taken when the
+/// condition is *true*), or a static verdict mirroring javac's `goto_`/`dontgoto`.
+enum CondOp {
+    Test(u8), // conditional branch opcode taken when TRUE (ifne / if_icmplt / …)
+    Goto,     // statically TRUE
+    DontGoto, // statically FALSE
+}
+
+impl CondItem {
+    /// Statically always-true: an unconditional `goto` sense with no pending
+    /// false jumps. Exactly javac's `CondItem.isTrue()`.
+    fn is_true(&self) -> bool {
+        matches!(self.opcode, CondOp::Goto) && self.false_chain.is_none()
+    }
+    /// Statically always-false: never jumps true and no pending true jumps.
+    fn is_false(&self) -> bool {
+        matches!(self.opcode, CondOp::DontGoto) && self.true_chain.is_none()
+    }
+    /// `!e`: swap the true/false chains and negate the deciding branch.
+    fn negate(self) -> CondItem {
+        CondItem {
+            opcode: match self.opcode {
+                CondOp::Goto => CondOp::DontGoto,
+                CondOp::DontGoto => CondOp::Goto,
+                CondOp::Test(op) => CondOp::Test(negate_op(op)),
+            },
+            true_chain: self.false_chain,
+            false_chain: self.true_chain,
+            value_on_stack: self.value_on_stack,
+        }
+    }
+}
+
+/// A statically-true `CondItem` (no code emitted); javac's `goto_` verdict.
+fn cond_true() -> CondItem {
+    CondItem { opcode: CondOp::Goto, true_chain: None, false_chain: None, value_on_stack: false }
+}
+/// A statically-false `CondItem` (no code emitted); javac's `dontgoto` verdict.
+fn cond_false() -> CondItem {
+    CondItem { opcode: CondOp::DontGoto, true_chain: None, false_chain: None, value_on_stack: false }
+}
+
 /// Per-method emission state, with a running operand-stack depth (`cur`) tracked
 /// in words so category-2 values count as two.
 struct Gen<'a> {
@@ -352,10 +420,13 @@ impl<'a> Gen<'a> {
         }
     }
 
-    /// `if (cond) then [else els]`. A constant condition is folded away (only the
-    /// taken arm is emitted, no branch, no frame — javac's dead-branch rule);
-    /// otherwise the condition is a negated branch over the then-body, an `else`
-    /// adds a `goto` past it, and a stack-map frame is placed at each target.
+    /// `if (cond) then [else els]`, a faithful port of javac's `visitIf`. A
+    /// whole-constant condition folds away (only the taken arm is emitted, no
+    /// branch, no frame — the dead-branch rule); otherwise `gen_cond` lowers the
+    /// condition to a `CondItem` and its chains are resolved to the then/else/end
+    /// targets. When the condition is statically false only the *then* is dropped
+    /// (the else still runs); the trailing `goto`+else block is emitted only when
+    /// the else is actually reachable (no spurious `goto`, no dead else).
     fn gen_if(&mut self, line: u16, cond: &Expr, then_b: &[Stmt], else_b: Option<&[Stmt]>) {
         if let Some(taken) = fold_bool(cond) {
             let arm = if taken { Some(then_b) } else { else_b };
@@ -365,73 +436,122 @@ impl<'a> Gen<'a> {
             return;
         }
 
-        // Condition: its LineNumberTable entry sits at the first condition
-        // instruction; the branch jumps to the else/end target when it is false.
-        let else_label = self.new_label();
+        // The gen_cond path always emits ≥1 instruction (a non-constant operand is
+        // present), so the condition's line entry never lands on a phantom pc.
         let cond_pc = self.code.len() as u16;
         self.add_line(cond_pc, line);
-        self.gen_branch(cond, else_label, false);
 
-        for s in then_b {
-            self.gen_stmt(s);
-        }
+        let c = self.gen_cond(cond);
+        let is_false = c.is_false();
+        let true_chain = c.true_chain;
+        let else_chain = self.jump_false(c); // emit the false branch(es); may be None
 
-        match else_b {
-            None => {
-                self.place_label(else_label);
-                self.add_frame(Vec::new());
+        if !is_false {
+            self.resolve_chain(true_chain); // then-entry (frame iff a branch lands)
+            for s in then_b {
+                self.gen_stmt(s);
             }
-            Some(else_stmts) => {
-                let end_label = self.new_label();
-                self.emit_branch_op(GOTO, end_label);
-                self.place_label(else_label);
-                self.add_frame(Vec::new());
-                for s in else_stmts {
+        }
+        // Emit the else body only when there is a reachable else target (or the
+        // condition is statically false, so the then was dropped and the else is
+        // the live arm). A statically-true condition with a dead else falls through
+        // to the `_` arm: no goto, no else code.
+        match else_b {
+            Some(els) if else_chain.is_some() || is_false => {
+                // Skip the else after a live then-body with a trailing goto.
+                let end = if !is_false { Some(self.branch_to_new(GOTO)) } else { None };
+                self.resolve_chain(else_chain);
+                for s in els {
                     self.gen_stmt(s);
                 }
-                self.place_label(end_label);
-                self.add_frame(Vec::new());
+                if let Some(end) = end {
+                    self.resolve_chain(Some(end));
+                }
             }
+            _ => self.resolve_chain(else_chain),
         }
     }
 
-    /// Emit `cond` as a conditional jump to `target`, taken when `cond` evaluates
-    /// to `jump_when`. Comparisons lower to the (possibly negated) branch opcode
-    /// for their operand type; `!` flips the sense; any other boolean value is
-    /// materialized and tested with `ifne`/`ifeq`.
-    fn gen_branch(&mut self, cond: &Expr, target: usize, jump_when: bool) {
-        match cond {
-            Expr::Not(inner) => self.gen_branch(inner, target, !jump_when),
-            Expr::Compare { op, left, right } => {
-                self.gen_compare_branch(*op, left, right, target, jump_when)
+    /// Lower a boolean expression to a `CondItem` (javac's `genCond`): emit its
+    /// operand loads eagerly, leaving only the deciding branch pending. A
+    /// whole-constant subtree collapses to a static verdict with no code (this is
+    /// how `false && q` / `true || q` drop their dead operand). `&&`/`||` short-
+    /// circuit from the *left*: the left's deciding branch is emitted, its non-
+    /// deciding outcome falls through into the right operand, and the two chains
+    /// are merged (`Code.mergeChains`).
+    fn gen_cond(&mut self, e: &Expr) -> CondItem {
+        // `fold`'s Logical arm is short-circuit-aware, so this fires only when the
+        // left operand decides or the whole tree is constant — never for a live
+        // left with a constant right (`q && false`), which must still emit `q`.
+        if let Some(c) = fold(e) {
+            return if to_i32(c) != 0 { cond_true() } else { cond_false() };
+        }
+        match e {
+            Expr::Not(inner) => self.gen_cond(inner).negate(),
+            Expr::Compare { op, left, right } => self.gen_compare_cond(*op, left, right),
+            Expr::Logical { op: LogOp::And, left, right } => {
+                let lc = self.gen_cond(left);
+                if lc.is_false() {
+                    return lc; // false && _ : right is dead
+                }
+                let lt = lc.true_chain;
+                let fj = self.jump_false(lc); // emit the left's false branch
+                self.resolve_chain(lt); // left-true falls through to the right
+                let rc = self.gen_cond(right);
+                CondItem {
+                    opcode: rc.opcode,
+                    value_on_stack: rc.value_on_stack,
+                    true_chain: rc.true_chain,
+                    false_chain: self.merge_chains(fj, rc.false_chain),
+                }
             }
+            Expr::Logical { op: LogOp::Or, left, right } => {
+                let lc = self.gen_cond(left);
+                if lc.is_true() {
+                    return lc; // true || _ : right is dead
+                }
+                let lf = lc.false_chain;
+                let tj = self.jump_true(lc);
+                self.resolve_chain(lf);
+                let rc = self.gen_cond(right);
+                CondItem {
+                    opcode: rc.opcode,
+                    value_on_stack: rc.value_on_stack,
+                    true_chain: self.merge_chains(tj, rc.true_chain),
+                    false_chain: rc.false_chain,
+                }
+            }
+            // A bare boolean value (a local, or `&`/`|`/`^` on booleans): load its
+            // 0/1 onto the stack, pending an `ifne`(true)/`ifeq`(false) test.
             other => {
-                self.gen_value(other); // a boolean value: 0/1 on the stack
-                self.emit_branch_op(if jump_when { IFNE } else { IFEQ }, target);
-                self.pop(1);
+                self.gen_value(other); // pushes 0/1 (cur += 1)
+                CondItem {
+                    opcode: CondOp::Test(IFNE),
+                    true_chain: None,
+                    false_chain: None,
+                    value_on_stack: true,
+                }
             }
         }
     }
 
-    /// Emit a relational/equality comparison as a branch to `target`. Integer
-    /// comparisons against a literal `0` on the right use the single-operand
-    /// `if<cond>` forms; wide types push both operands, emit the `lcmp`/`fcmp*`/
-    /// `dcmp*`, then branch on the result against 0.
-    fn gen_compare_branch(&mut self, op: CmpOp, left: &Expr, right: &Expr, target: usize, jump_when: bool) {
+    /// Lower a comparison to a `CondItem`: emit its operands (and the wide
+    /// `lcmp`/`fcmp*`/`dcmp*`), but *not* the branch — the deciding test opcode
+    /// (true polarity) is returned pending. Its operands are popped when the
+    /// branch is finally emitted, in `emit_test_branch`.
+    fn gen_compare_cond(&mut self, op: CmpOp, left: &Expr, right: &Expr) -> CondItem {
         let p = sema::binary_promote(sema::type_of(left, self.info), sema::type_of(right, self.info));
-        match p.stack() {
+        let opcode = match p.stack() {
             StackTy::Int => {
                 // javac folds `x <op> 0` to the compare-with-zero opcodes, but only
                 // when the literal `0` is the *right* operand.
                 if matches!(fold(right), Some(Const::Int(0))) {
                     self.gen_promoted_operand(left, ValType::Int);
-                    self.emit_branch_op(int_zero_branch(op, jump_when), target);
-                    self.pop(1);
+                    int_zero_branch(op, true)
                 } else {
                     self.gen_promoted_operand(left, ValType::Int);
                     self.gen_promoted_operand(right, ValType::Int);
-                    self.emit_branch_op(int_icmp_branch(op, jump_when), target);
-                    self.pop(2);
+                    int_icmp_branch(op, true)
                 }
             }
             StackTy::Long => {
@@ -439,51 +559,173 @@ impl<'a> Gen<'a> {
                 self.gen_promoted_operand(right, ValType::Long);
                 self.code.push(LCMP);
                 self.cur -= 3; // two longs (4w) -> one int
-                self.emit_branch_op(int_zero_branch(op, jump_when), target);
-                self.pop(1);
+                int_zero_branch(op, true)
             }
             StackTy::Float => {
                 self.gen_promoted_operand(left, ValType::Float);
                 self.gen_promoted_operand(right, ValType::Float);
                 self.code.push(if matches!(op, CmpOp::Lt | CmpOp::Le) { FCMPG } else { FCMPL });
                 self.cur -= 1; // two floats -> one int
-                self.emit_branch_op(int_zero_branch(op, jump_when), target);
-                self.pop(1);
+                int_zero_branch(op, true)
             }
             StackTy::Double => {
                 self.gen_promoted_operand(left, ValType::Double);
                 self.gen_promoted_operand(right, ValType::Double);
                 self.code.push(if matches!(op, CmpOp::Lt | CmpOp::Le) { DCMPG } else { DCMPL });
                 self.cur -= 3; // two doubles (4w) -> one int
-                self.emit_branch_op(int_zero_branch(op, jump_when), target);
-                self.pop(1);
+                int_zero_branch(op, true)
+            }
+        };
+        CondItem { opcode: CondOp::Test(opcode), true_chain: None, false_chain: None, value_on_stack: false }
+    }
+
+    /// Emit the branch that routes the FALSE outcome of `c` to a chain, returning
+    /// it (javac's `CondItem.jumpFalse`). Total: a static verdict emits nothing.
+    fn jump_false(&mut self, c: CondItem) -> Option<usize> {
+        if c.is_true() {
+            return None; // never false
+        }
+        if c.is_false() {
+            return c.false_chain; // already all-false: residual chain, no new branch
+        }
+        match c.opcode {
+            CondOp::Test(op) => {
+                let f = self.emit_test_branch(negate_op(op));
+                self.merge_chains(c.false_chain, Some(f))
+            }
+            // dontgoto with a live true_chain (`q || false`): the false path is an
+            // unconditional jump.
+            CondOp::DontGoto => {
+                debug_assert_eq!(self.cur, 0, "jump_false goto with non-empty stack");
+                let g = self.branch_to_new(GOTO);
+                self.merge_chains(c.false_chain, Some(g))
+            }
+            // goto with a live false_chain (`q && true`, `a && (b||true)`): the
+            // false path is exactly that chain; emit nothing.
+            CondOp::Goto => c.false_chain,
+        }
+    }
+
+    /// Emit the branch that routes the TRUE outcome of `c` to a chain, returning
+    /// it (javac's `CondItem.jumpTrue`). Total: a static verdict emits nothing.
+    fn jump_true(&mut self, c: CondItem) -> Option<usize> {
+        if c.is_false() {
+            return None; // never true
+        }
+        if c.is_true() {
+            return c.true_chain;
+        }
+        match c.opcode {
+            CondOp::Test(op) => {
+                let t = self.emit_test_branch(op);
+                self.merge_chains(c.true_chain, Some(t))
+            }
+            CondOp::Goto => {
+                debug_assert_eq!(self.cur, 0, "jump_true goto with non-empty stack");
+                let g = self.branch_to_new(GOTO);
+                self.merge_chains(c.true_chain, Some(g))
+            }
+            CondOp::DontGoto => c.true_chain,
+        }
+    }
+
+    /// Materialize a boolean expression as a 0/1 on the stack. The general case is
+    /// the true-first diamond `iconst_1; goto Lm; Lf: iconst_0; Lm:` over
+    /// `gen_cond`'s pending branch; a bare value is already on the stack (no
+    /// diamond); a statically-decided item with a residual branch resolves that
+    /// branch then loads the constant `iconst_0`/`iconst_1`. Only supported with an
+    /// empty base operand stack (the non-empty case needs full_frames — a later
+    /// rung; `println(a < b)`/`println(a && b)` stay refused by this assert).
+    fn gen_bool_value(&mut self, cond: &Expr) -> ValType {
+        assert!(self.cur == 0, "materialized boolean with non-empty operand stack is unsupported");
+        let c = self.gen_cond(cond);
+
+        // A bare boolean value already sits on the stack as 0/1, un-branched. All
+        // four conjuncts matter: `a && b && c` carries value_on_stack up from its
+        // last leaf but has a live false_chain, so it must NOT take this shortcut.
+        if c.value_on_stack
+            && c.true_chain.is_none()
+            && c.false_chain.is_none()
+            && matches!(c.opcode, CondOp::Test(_))
+        {
+            return ValType::Boolean;
+        }
+
+        let is_false = c.is_false();
+        let is_true = c.is_true();
+        let true_chain = c.true_chain;
+        let fj = self.jump_false(c);
+
+        if is_false {
+            // `q && false`: the residual false branch is already emitted; resolve
+            // it here, the value is always 0.
+            self.resolve_chain(fj);
+            self.code.push(ICONST_0);
+            self.push(1);
+        } else if is_true {
+            // `q || true`: statically true with a residual true branch; resolve it,
+            // the value is always 1.
+            self.resolve_chain(true_chain);
+            self.code.push(ICONST_1);
+            self.push(1);
+        } else {
+            // General true-first diamond.
+            self.resolve_chain(true_chain); // true-entry (frame iff a branch lands)
+            self.code.push(ICONST_1);
+            self.push(1);
+            let lmerge = self.branch_to_new(GOTO);
+            self.resolve_chain(fj);
+            self.cur = 0; // the iconst_1 lives only on the fall-through path
+            self.code.push(ICONST_0);
+            self.push(1);
+            self.place_label(lmerge);
+            self.add_frame(vec![VerificationType::Integer]);
+        }
+        ValType::Boolean
+    }
+
+    /// Emit branch opcode `op` to a fresh label and return it as a one-site chain.
+    fn branch_to_new(&mut self, op: u8) -> usize {
+        let l = self.new_label();
+        self.emit_branch_op(op, l);
+        l
+    }
+
+    /// Emit a conditional *test* branch to a fresh chain and pop its operands (2
+    /// for `if_icmp<cond>`, 1 for `if<cond>`/`ifne`/`ifeq`). `GOTO` must NOT route
+    /// through here (it pops nothing).
+    fn emit_test_branch(&mut self, op: u8) -> usize {
+        let l = self.branch_to_new(op);
+        self.pop(if (IF_ICMPEQ..=IF_ICMPLE).contains(&op) { 2 } else { 1 });
+        l
+    }
+
+    /// Merge chain `b` into chain `a` (javac's `Code.mergeChains`): retarget every
+    /// pending fixup of `b` to `a`. Fixup order never affects output — all sites of
+    /// a merged chain resolve to one pc, frames key by pc, threading keys by target.
+    fn merge_chains(&mut self, a: Option<usize>, b: Option<usize>) -> Option<usize> {
+        match (a, b) {
+            (None, x) | (x, None) => x,
+            (Some(a), Some(b)) => {
+                for fx in &mut self.fixups {
+                    if fx.label == b {
+                        fx.label = a;
+                    }
+                }
+                Some(a)
             }
         }
     }
 
-    /// Materialize a boolean expression as a 0/1 on the stack: the true-first
-    /// diamond `<branch-if-false> Lf; iconst_1; goto Lm; Lf: iconst_0; Lm:`, with
-    /// a frame at each target. Only supported with an empty base operand stack
-    /// (the non-empty case needs full_frames — a later rung).
-    fn gen_bool_value(&mut self, cond: &Expr) -> ValType {
-        assert!(self.cur == 0, "materialized boolean with non-empty operand stack is unsupported");
-        let lfalse = self.new_label();
-        let lmerge = self.new_label();
-
-        self.gen_branch(cond, lfalse, false); // jump to Lf when the condition is false
-        self.code.push(ICONST_1);
-        self.push(1);
-        self.emit_branch_op(GOTO, lmerge);
-
-        self.place_label(lfalse);
-        self.add_frame(Vec::new());
-        self.cur = 0; // the iconst_1 lives only on the other path
-        self.code.push(ICONST_0);
-        self.push(1);
-
-        self.place_label(lmerge);
-        self.add_frame(vec![VerificationType::Integer]);
-        ValType::Boolean
+    /// Resolve a chain at the current pc: place its label and request a stack-map
+    /// frame — but only when a branch actually targets it (a `Some` chain always
+    /// has ≥1 live fixup; `None` resolves to nothing, no frame).
+    fn resolve_chain(&mut self, chain: Option<usize>) {
+        debug_assert_eq!(self.cur, 0, "chain resolved with non-empty operand stack");
+        if let Some(l) = chain {
+            self.place_label(l);
+            self.add_frame(Vec::new());
+        }
     }
 
     /// Append a LineNumberTable entry, unless it would repeat the previous entry's
@@ -773,7 +1015,7 @@ impl<'a> Gen<'a> {
                 target
             }
             Expr::Binary { op, left, right } => self.gen_binary(*op, left, right),
-            Expr::Compare { .. } | Expr::Not(_) => self.gen_bool_value(expr),
+            Expr::Compare { .. } | Expr::Not(_) | Expr::Logical { .. } => self.gen_bool_value(expr),
             other => panic!("not a value expression: {:?}", DebugExpr(other)),
         }
     }
@@ -1101,6 +1343,37 @@ fn int_zero_branch(op: CmpOp, jump_when: bool) -> u8 {
     }
 }
 
+/// Involution over the twelve conditional-branch opcodes: the branch taken when
+/// the *negated* condition holds. Kept consistent with `int_icmp_branch`/
+/// `int_zero_branch` by `assert_negate_op_consistent` — this is the highest-blast-
+/// radius helper (a drift here silently breaks every comparison fixture), so it is
+/// derived and debug-checked rather than trusted.
+fn negate_op(op: u8) -> u8 {
+    match op {
+        IFEQ => IFNE, IFNE => IFEQ,
+        IFLT => IFGE, IFGE => IFLT,
+        IFGT => IFLE, IFLE => IFGT,
+        IF_ICMPEQ => IF_ICMPNE, IF_ICMPNE => IF_ICMPEQ,
+        IF_ICMPLT => IF_ICMPGE, IF_ICMPGE => IF_ICMPLT,
+        IF_ICMPGT => IF_ICMPLE, IF_ICMPLE => IF_ICMPGT,
+        other => panic!("negate_op: not a conditional branch opcode {other:#x}"),
+    }
+}
+
+/// Debug guard: `negate_op` must invert both branch-opcode tables and be an
+/// involution, so replacing a `(op, false)` call with `negate_op((op, true))` is
+/// byte-neutral. Run once per `generate()` under `debug_assertions`.
+#[cfg(debug_assertions)]
+fn assert_negate_op_consistent() {
+    use CmpOp::*;
+    for op in [Lt, Le, Gt, Ge, Eq, Ne] {
+        debug_assert_eq!(negate_op(int_icmp_branch(op, true)), int_icmp_branch(op, false));
+        debug_assert_eq!(negate_op(int_zero_branch(op, true)), int_zero_branch(op, false));
+        debug_assert_eq!(negate_op(negate_op(int_icmp_branch(op, true))), int_icmp_branch(op, true));
+        debug_assert_eq!(negate_op(negate_op(int_zero_branch(op, true))), int_zero_branch(op, true));
+    }
+}
+
 /// The verifier type of a method parameter.
 fn param_vti(ty: Type) -> VerificationType {
     match ty {
@@ -1156,6 +1429,19 @@ fn fold(expr: &Expr) -> Option<Const> {
         Expr::Binary { op, left, right } => eval_binary(*op, fold(left)?, fold(right)?),
         Expr::Compare { op, left, right } => {
             Const::Int(eval_compare(*op, fold(left)?, fold(right)?) as i32)
+        }
+        // `&&`/`||` are constant only via short-circuit from the LEFT. A non-constant
+        // left means the whole is NOT a compile-time constant even when the tree is
+        // statically decided (`q && false`) — the left must still be evaluated, so we
+        // return `None` and let `gen_cond` emit it. When the left decides, return its
+        // verdict WITHOUT folding the right; otherwise the tree reduces to the right.
+        Expr::Logical { op, left, right } => {
+            let lb = to_i32(fold(left)?) != 0;
+            match op {
+                LogOp::And if !lb => Const::Int(0),                  // false && _ -> false
+                LogOp::Or if lb => Const::Int(1),                    // true  || _ -> true
+                _ => Const::Int((to_i32(fold(right)?) != 0) as i32), // reduces to the right
+            }
         }
     })
 }
@@ -1377,6 +1663,7 @@ impl std::fmt::Debug for DebugExpr<'_> {
             Expr::Cast { .. } => "Cast",
             Expr::Binary { .. } => "Binary",
             Expr::Compare { .. } => "Compare",
+            Expr::Logical { .. } => "Logical",
             Expr::Println(_) => "Println",
         };
         f.write_str(kind)

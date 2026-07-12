@@ -82,6 +82,8 @@ pub enum TokenKind {
     Caret,     // ^
     Tilde,     // ~
     Bang,      // !
+    AmpAmp,    // &&
+    PipePipe,  // ||
     Shl,       // <<
     Shr,       // >>
     UShr,      // >>>
@@ -471,8 +473,8 @@ impl<'a> Lexer<'a> {
             b'*' => self.if_eq(TokenKind::StarEq, TokenKind::Star),
             b'/' => self.if_eq(TokenKind::SlashEq, TokenKind::Slash),
             b'%' => self.if_eq(TokenKind::PercentEq, TokenKind::Percent),
-            b'&' => self.if_eq2(b'&', None, TokenKind::AmpEq, TokenKind::Amp),
-            b'|' => self.if_eq2(b'|', None, TokenKind::PipeEq, TokenKind::Pipe),
+            b'&' => self.if_eq2(b'&', TokenKind::AmpAmp, TokenKind::AmpEq, TokenKind::Amp),
+            b'|' => self.if_eq2(b'|', TokenKind::PipePipe, TokenKind::PipeEq, TokenKind::Pipe),
             b'^' => self.if_eq(TokenKind::CaretEq, TokenKind::Caret),
             b'<' => self.less(),
             b'>' => self.greater(),
@@ -505,11 +507,14 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    /// For `&`/`|`: reject the logical doubled form (out of subset), handle `op=`,
-    /// else single. `_doubled` is unused but documents intent.
-    fn if_eq2(&mut self, ch: u8, _doubled: Option<TokenKind>, eq: TokenKind, single: TokenKind) -> TokenKind {
+    /// For `&`/`|`: the doubled logical form (`&&`/`||`), the `op=` compound form,
+    /// else the single operator. Longest-match: the doubled form is checked first.
+    fn if_eq2(&mut self, ch: u8, doubled: TokenKind, eq: TokenKind, single: TokenKind) -> TokenKind {
         match self.peek() {
-            Some(c) if c == ch => panic!("logical `{}{}` is not in the subset", ch as char, ch as char),
+            Some(c) if c == ch => {
+                self.bump();
+                doubled
+            }
             Some(b'=') => {
                 self.bump();
                 eq

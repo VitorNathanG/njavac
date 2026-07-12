@@ -15,7 +15,7 @@ were wrong, the row says so.
 
 ---
 
-## Implemented today (numeric subset + the first branch)
+## Implemented today (numeric subset + branches + short-circuit `&&`/`||`)
 
 The entire supported language is:
 
@@ -33,10 +33,11 @@ The entire supported language is:
   `float`/`double` suffixes, `char` literals with escapes incl. octal and
   `\uXXXX`, `true`/`false`), string literals, local reads, unary `-` and `~`,
   primitive casts `(T) e`, binary `+ - * / %`, bitwise/shift `& | ^ << >> >>>`
-  (and `& | ^` on `boolean`), parentheses. **Binary numeric promotion** and
-  explicit conversions emit the exact widening/narrowing opcodes; literal-only
-  subtrees are constant-folded (wrapping integer / exact IEEE-754 arithmetic,
-  with JLS shift masking) to a single typed load.
+  (and `& | ^` on `boolean`), comparisons `< <= > >= == !=`, `!`, short-circuit
+  `&&`/`||`, parentheses. **Binary numeric promotion** and explicit conversions
+  emit the exact widening/narrowing opcodes; literal-only subtrees are
+  constant-folded (wrapping integer / exact IEEE-754 arithmetic, with JLS shift
+  masking) to a single typed load.
 - `System.out.println` of any primitive (the right `(I)V`/`(J)V`/`(F)V`/`(D)V`/
   `(C)V`/`(Z)V` overload) or a `String` literal.
 - Line (`//`) and block (`/* */`) comments; `LineNumberTable` + `SourceFile`;
@@ -49,8 +50,17 @@ The entire supported language is:
   jump-to-`goto` threading. A comparison materialized into a `boolean` local emits
   the `iconst_1`/`goto`/`iconst_0` diamond.
 
+- **Short-circuit `&&` / `||`** — as `if`/loop conditions and materialized into a
+  `boolean` local, a faithful port of javac's `Gen.genCond`/`Items.CondItem`/
+  `Code.mergeChains` jump-chain model. This is the full model, not the easy 90%:
+  every constant-operand case matches javac byte-for-byte too — `true && q`
+  collapses to `q`, `q && false` keeps the residual `iload q` then forces
+  `iconst_0`, `true || q` runs the branch unconditionally, and the whole thing
+  short-circuits away dead operands. (`&`/`|`/`^` on booleans stay the
+  non-short-circuit `iand`/`ior`/`ixor` — a distinct feature.)
+
 Everything below still forces a class-file subsystem this emitter does not yet
-have: `&&`/`||`/`?:` short-circuit and full-frame boolean materialization (e.g.
+have: the `?:` conditional and full-frame boolean materialization (e.g.
 `println(a < b)`), loops and `switch` (more `StackMapTable`), `String`
 concatenation (`invokedynamic`), objects/arrays/methods.
 
@@ -135,9 +145,15 @@ not the parsing — is where byte-identity is won or lost.
       `iconst_0` diamond). Used directly as an `if` condition they emit just the
       negated branch (`if (a < 5)` → `if_icmpge`) with no diamond; wide types use
       `lcmp`/`fcmp{g,l}`/`dcmp{g,l}` then a zero-compare branch, `x <op> 0` folds to
-      the single-operand `if<cond>` forms. **Still open:** `&& || ?:` (short-circuit)
-      and materializing a comparison onto a non-empty stack (e.g. `println(a < b)`,
-      which needs a `full_frame`)
+      the single-operand `if<cond>` forms. **Still open:** materializing a comparison
+      onto a non-empty stack (e.g. `println(a < b)`, which needs a `full_frame`)
+- [x] Short-circuit `&&` / `||` — done, as `if`/loop conditions and materialized
+      into a `boolean` local, via a faithful port of javac's `genCond`/`CondItem`/
+      `mergeChains` jump-chain model (`src/codegen.rs::gen_cond`). Reproduces every
+      constant-operand case byte-for-byte (short-circuit collapse `true||q`,
+      residual left-operand code `q&&false`, whole-static-true/false elimination).
+      **Still open:** `?:` (the conditional operator) and non-empty-stack
+      materialization (`println(a && b)`, which needs a `full_frame`)
 - [x] Bitwise / shift `& | ^ ~ << >> >>>` — done, on `int` and `long`. `~x` is
       `iconst_m1; ixor` (int) / `ldc2_w -1L; lxor` (long); a long shift by a long
       amount narrows the amount with `l2i`
@@ -470,17 +486,21 @@ scope. Three qualifications shape njavac's design:
 
 The whole **numeric surface** (§A primitives + two-slot model + conversions, §B
 literals, §C bitwise/shift/compound/inc-dec) plus the **first branch** (§C
-comparisons + `!`, §D `if`/`else`, and the `StackMapTable` it forces) is now
+comparisons + `!`, §D `if`/`else`, and the `StackMapTable` it forces) and the
+**short-circuit `&&`/`||`** (§C, the full `genCond`/`CondItem` model) are now
 done — verified by the fixtures under `fixtures/` (`MixedPromotion`,
-`ExplicitCasts`, `Long*`, `Fold*`, … and `branches/` for the control flow).
-Cheapest-first from here, given the byte-identity constraint:
+`ExplicitCasts`, `Long*`, `Fold*`, … and `branches/` for the control flow and
+`Logical*`/`AndOrIf` for short-circuit). Cheapest-first from here, given the
+byte-identity constraint:
 
-1. **`&& || ?:` + full-frame boolean materialization** — finish the boolean
-   surface: short-circuit chains (jumps to a shared target) and materializing a
-   comparison onto a non-empty stack (`println(a < b)`), which needs a
-   `full_frame`. Small next step on top of the frame machinery just built.
-2. **`while` / `for`** — backward branches; reuse the `StackMapTable` machinery.
-   Block-scoped loop locals bring in the `chop_frame` this rung deferred.
+1. **`?:` + full-frame boolean materialization** — finish the boolean surface:
+   the conditional operator (typed arms + cross-arm numeric promotion) and
+   materializing a comparison/logical onto a non-empty stack (`println(a < b)`,
+   `println(a && b)`), which needs a `full_frame`. Small next step on top of the
+   `CondItem` machinery just built (`?:` reuses `gen_cond` for its condition).
+2. **`while` / `for`** — backward branches; reuse the `StackMapTable` and
+   `gen_cond` machinery. Block-scoped loop locals bring in the `chop_frame` this
+   rung deferred.
 3. **String concatenation** — the first **`invokedynamic`** + `BootstrapMethods`
    (+ the `InnerClasses`/`MethodHandles$Lookup` row), unlocking realistic
    `println`. Remember the runtime-operand condition and the raw recipe bytes.

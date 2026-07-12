@@ -311,19 +311,52 @@ rule: javac **constant-folds literal subtrees** (`100 % 7` → `iconst_2`,
 shift masking, but emits real bytecode once a local is involved — so a folded
 constant is bit-identical to the unfolded computation.
 
-Comparisons and `if`/`else` add a second lowering mode. A boolean expression is
-emitted either as a **branch** (`gen_branch`/`gen_compare_branch`: the negated
-comparison opcode as a conditional jump — `if_icmp*`, or the single-operand
-`if<cond>` when the right operand is literal `0`, or `lcmp`/`fcmp{g,l}`/`dcmp{g,l}`
-+ a zero-compare for wide types) or as a **value** (`gen_bool_value`: the true-first
-`iconst_1`/`goto`/`iconst_0` diamond). Forward branches use a label/fixup table
-backpatched in `resolve_branches`, which also **threads jumps through
-unconditional `goto`s**; `build_frames` then emits a frame only at pcs that remain
-real jump targets. Constant boolean conditions are folded (`fold_bool`) and the
-dead arm dropped — a fully-folded method emits no `StackMapTable` at all, matching
-its straight-line bytes. The running-locals snapshot (`Gen::locals`) grows as
-method-body locals are declared and is what each frame captures; branch bodies
-declare no locals in this subset, so the snapshot only ever grows (no `chop`).
+Comparisons, `if`/`else`, and short-circuit `&&`/`||` share a second lowering
+mode built around **`gen_cond(&Expr) -> CondItem`** — a faithful port of javac's
+`Gen.genCond` + `Items.CondItem` + `Code.mergeChains`, restricted to this
+side-effect-free boolean subset. A `CondItem` is `{ opcode: CondOp, true_chain,
+false_chain, value_on_stack }`: `gen_cond` emits every operand load eagerly but
+leaves only the **deciding branch** pending (`CondOp::Test(op)` = the true-polarity
+branch; `Goto`/`DontGoto` = a static verdict), collecting the not-yet-resolved
+jump sites in the two chains. A **chain is an `Option<usize>` label id**; `None` is
+the empty chain (javac's null — nothing targets it, so it places no frame), and
+`merge_chains` = `Code.mergeChains` (retarget every fixup of one label to another —
+fixup order never affects output). `jump_false`/`jump_true` materialize a
+`CondItem`'s branch to a chain and are **total**: they check `is_true()`/`is_false()`
+first (a static verdict emits nothing) then emit per `CondOp`. `!e` is
+`gen_cond(e).negate()` (swap chains, `negate_op` the opcode). `&&`/`||` short-circuit
+**from the left**: the left's deciding branch is emitted, its non-deciding outcome
+resolves (falls through) into the right, and the chains merge — this is the *only*
+representation that reproduces javac's constant-operand cases (`true || q` drops
+the dead right operand, `q && false` keeps the residual `iload q` then forces
+`iconst_0`). The linchpin for that is **`fold`'s short-circuit-aware `Logical`
+arm**: it folds only when the *left* decides or the whole tree is constant, so a
+live left with a constant right returns `None` (must still be emitted), never a
+whole-constant collapse.
+
+The three consumers: **`gen_if`** is a faithful `visitIf` port — a whole-constant
+condition (`fold_bool`) drops to the taken arm; otherwise `is_false` skips only the
+*then* (the else still runs), and the trailing `goto`+else is emitted only when the
+else target is reachable (no spurious `goto`, no dead else). **`gen_bool_value`**
+materializes to 0/1 in one of three shapes: a bare value already on the stack
+(`value_on_stack`, no diamond), a statically-decided item with a residual branch
+(resolve it, then `iconst_0`/`iconst_1`), or the general true-first
+`iconst_1`/`goto`/`iconst_0` diamond — still asserting an **empty base stack**, so
+`println(a && b)`/`println(a < b)` (non-empty stack → `full_frame`) stay a refused
+later rung. Loops/`?:` will reuse `gen_cond` verbatim.
+
+The physical machinery is unchanged and reused: forward branches use the
+label/fixup table backpatched in `resolve_branches` (which **threads jumps through
+unconditional `goto`s**), and `build_frames` emits a frame only at pcs that survive
+as real jump targets — `gen_cond` only decides *at which pcs* `resolve_chain` calls
+`add_frame`. The running-locals snapshot (`Gen::locals`) grows as method-body
+locals are declared and is what each frame captures — the push stays *after*
+`gen_stmt` so a frame inside a declaration's own initializer (`boolean r = a && b`)
+snapshots locals *without* the new local, matching javac. Branch bodies declare no
+locals in this subset, so the snapshot only ever grows (no `chop`). `negate_op` (the
+12-opcode branch involution) is debug-asserted against `int_icmp_branch`/
+`int_zero_branch` in `assert_negate_op_consistent` since a drift there would
+silently break every comparison.
 
 ## Determinism / Docker
 

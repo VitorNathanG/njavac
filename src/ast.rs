@@ -143,13 +143,32 @@ pub enum Expr {
         left: Box<Expr>,
         right: Box<Expr>,
     },
+    /// Short-circuit `&&` / `||`. Distinct from the bitwise `Binary { And | Or }`
+    /// on booleans (those push both operands and emit `iand`/`ior`); these lower
+    /// to a jump chain (javac's `genCond`) and never evaluate the right operand
+    /// when the left already decides the result.
+    Logical {
+        op: LogOp,
+        left: Box<Expr>,
+        right: Box<Expr>,
+    },
     /// `System.out.println(arg)`.
     Println(Box<Expr>),
 }
 
+/// The two short-circuit logical operators. Their operands are `boolean`; the
+/// result is `boolean`, lowered as a conditional jump chain rather than stack ops.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum LogOp {
+    And, // &&
+    Or,  // ||
+}
+
 /// The binary operators of the subset: arithmetic, bitwise, and shift. All are
-/// left-associative. Comparisons live in their own `CmpOp`/`Expr::Compare` (they
-/// lower to branches, not stack ops); `&&`/`||`/`?:` are not yet supported.
+/// left-associative. Comparisons live in their own `CmpOp`/`Expr::Compare` and the
+/// short-circuit `&&`/`||` in `LogOp`/`Expr::Logical` (all lower to branches, not
+/// stack ops). The bitwise `And`/`Or` here are the non-short-circuit `&`/`|`. `?:`
+/// is not yet supported.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum BinOp {
     Add,
