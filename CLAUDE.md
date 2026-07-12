@@ -78,7 +78,11 @@ a silent change. Cover three things:
 
 The point is continuous improvement — always look for a better way to do the job
 well, and capture the lesson (usually right here in CLAUDE.md, or as a skill/
-script) so the next cycle starts ahead of this one. Keep this close to heart.
+script) so the next cycle starts ahead of this one. File the concrete
+"what would help" items in ROADMAP.md §"Deferred / opportunistic improvements" so
+they surface proactively instead of evaporating into the chat log — the correctness
+slowness sat there noticed-but-unwritten until it had to be tripped over. Keep this
+close to heart.
 
 **Always ask with the question tool; never make the user hand-write an answer.**
 When you need a decision, preference, or clarification, present it through the

@@ -315,6 +315,22 @@ Phase 0's net (fuzzer + differ + single-fixture verify + CI) proves it.
 
 ---
 
+## Deferred / opportunistic improvements
+
+Smaller wins noticed mid-work that aren't big enough for a phase and don't block
+anything — captured here so they surface proactively instead of waiting until
+someone trips on them. End-of-cycle reflection (CLAUDE.md §Working conventions)
+files its "what would help" items here.
+
+- **classdiff: disassemble the `code[]` array.** Today the bytecode is one raw-hex
+  field, so a `Code` divergence localizes to a byte offset but not an opcode.
+  Decoding the instruction stream would name the diverging op (and its operands).
+- **`make verify` staleness guard.** `verify` only auto-records when the volume is
+  *empty*; if fixtures change and you forget `make record`, it silently compares
+  against stale goldens. A freshness check (re-record when any fixture is newer than
+  the volume) would remove the footgun. `make correctness` already sidesteps it by
+  always using live javac.
+
 ## Status
 
 - **Phase 0** — landed 0.2 (single-fixture verify), 0.3 (structured class-file
