@@ -62,6 +62,40 @@ and run `bench` inside it — are the only sanctioned ways to validate byte-iden
 see §Testing. The raw `./target/release/*` binaries are for compiler-internal
 debugging only, never for acceptance.
 
+**Reflect at the end of each development cycle.** When a cycle wraps up — a rung
+landed, a feature shipped, an infra change finished — stop and reflect, then bring
+it to the user as a **proposal** (a message they can accept, defer, or drop), not
+a silent change. Cover three things:
+
+- **What went well** — the moves worth repeating.
+- **What went badly** — where time was lost, where I fumbled, where the code or
+  docs fought back, or a wrong/unchecked assumption forced a rework.
+- **What would help us do better** — concrete and actionable: a utility script or
+  task-runner target that removes a repeated manual step; documentation that was
+  missing, wrong, or could be written better; a refactoring worth doing now (or
+  that, in hindsight, should have been done *before* touching the code); a new,
+  **properly-scoped** Claude Code skill to guide a recurring task; a
+  test/fixture/tooling gap to close.
+
+The point is continuous improvement — always look for a better way to do the job
+well, and capture the lesson (usually right here in CLAUDE.md, or as a skill/
+script) so the next cycle starts ahead of this one. Keep this close to heart.
+
+**Always ask with the question tool; never make the user hand-write an answer.**
+When you need a decision, preference, or clarification, present it through the
+AskUserQuestion tool with concrete, mutually-exclusive options (your recommended
+option first, labelled). Do not pose an open-ended prose question the user has to
+type a reply to — they can always pick "Other" to write free-form, but the default
+must be a click, not a paragraph. This covers end-of-cycle reflection proposals and
+every other fork where their input decides the next step.
+
+**Confirm the environment before you build for it.** Before writing tooling or
+infrastructure, check the ground rules that shape its design — where tests run
+(here: Docker only), the deployment target, any reproducibility or policy
+constraints. Surfacing these up front avoids building the right thing for the wrong
+environment (the local test loop that had to be reworked for the Docker-only policy
+is the cautionary tale) and the rework that follows.
+
 ## Commands
 
 ```bash
