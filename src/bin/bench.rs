@@ -165,27 +165,39 @@ fn want_path(cfg: &Config, javac_dir: &Path, base: &str) -> PathBuf {
 fn correctness(cfg: &Config, fixtures: &[PathBuf], javac_dir: &Path, njavac_dir: &Path) {
     let source = if cfg.offline { "golden cache" } else { "live javac" };
     println!("correctness ({} fixtures, vs {source}):", fixtures.len());
-    let mut failures: Vec<String> = Vec::new();
 
+    // Clear the outputs we're about to regenerate, so a compiler that emits
+    // nothing for a fixture yields a *missing* file (a FAIL) rather than a false
+    // pass off a stale artifact left by an earlier run.
     for fix in fixtures {
         let base = base_name(fix);
-        let fix_s = fix.to_string_lossy().into_owned();
-        let njavac_out = njavac_dir.join(format!("{base}.class"));
-
-        // Delete njavac's output first, so a compiler that panics/errors and
-        // writes nothing yields a *missing* file (a FAIL) rather than a false
-        // pass off a stale artifact left by an earlier run. In online mode do the
-        // same for javac and recompile; offline reads the pre-recorded cache.
-        let _ = std::fs::remove_file(&njavac_out);
+        let _ = std::fs::remove_file(njavac_dir.join(format!("{base}.class")));
         if !cfg.offline {
-            let javac_out = javac_dir.join(format!("{base}.class"));
-            let _ = std::fs::remove_file(&javac_out);
-            run_quiet(&[cfg.javac.clone(), "-d".into(), javac_dir.display().to_string(), fix_s.clone()]);
+            let _ = std::fs::remove_file(javac_dir.join(format!("{base}.class")));
         }
-        run_quiet(&[cfg.njavac.clone(), "-d".into(), njavac_dir.display().to_string(), fix_s]);
+    }
 
+    // Compile the whole suite in a *single* invocation of each compiler — one JVM
+    // startup for javac instead of one per fixture, which is the whole cost of the
+    // online run (javac's ~0.8s is almost all JVM startup). The fixtures are
+    // independent single-class files, so batch output is byte-identical to
+    // per-file. Offline skips javac entirely and compares against the golden cache.
+    let fix_paths: Vec<String> = fixtures.iter().map(|p| p.to_string_lossy().into_owned()).collect();
+    if !cfg.offline {
+        let mut argv = vec![cfg.javac.clone(), "-d".into(), javac_dir.display().to_string()];
+        argv.extend(fix_paths.iter().cloned());
+        run_quiet(&argv);
+    }
+    let mut argv = vec![cfg.njavac.clone(), "-d".into(), njavac_dir.display().to_string()];
+    argv.extend(fix_paths);
+    run_quiet(&argv);
+
+    // Byte-compare each fixture's output against the reference.
+    let mut failures: Vec<String> = Vec::new();
+    for fix in fixtures {
+        let base = base_name(fix);
         let want = std::fs::read(want_path(cfg, javac_dir, &base));
-        let got = std::fs::read(&njavac_out);
+        let got = std::fs::read(njavac_dir.join(format!("{base}.class")));
         match (want, got) {
             (Ok(a), Ok(b)) if a == b => println!("  PASS  {base}  ({} bytes)", a.len()),
             _ => {
