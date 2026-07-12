@@ -3,13 +3,14 @@
 # golden bytes (see CLAUDE.md §Testing). `check` is a LOCAL build for
 # compiler-internal debugging only, never acceptance.
 #
-#   make verify [FILE=fixtures/x/F.java]  # fast Docker correctness gate
-#   make record [FILE=..]                 # re-record goldens (after fixtures/JDK change), then verify
-#   make bench  [FILE=..]                 # authoritative: full online correctness + deterministic timing
-#   make probe  FILE=Probe.java           # disassemble a probe with the pinned javac (javap -v -p)
-#   make diff   A=a.class B=b.class       # structural class-file diff, in-container
-#   make image                            # build the pinned image
-#   make check                            # LOCAL release build (debugging only; NOT a test)
+#   make verify      [FILE=fixtures/x/F.java]  # fast gate: njavac vs cached goldens (may be stale)
+#   make correctness [FILE=..]                 # fresh authoritative online check, no timing
+#   make record      [FILE=..]                 # re-record goldens (after fixtures/JDK change), then verify
+#   make bench       [FILE=..]                 # authoritative: full online correctness + deterministic timing
+#   make probe       FILE=Probe.java           # disassemble a probe with the pinned javac (javap -v -p)
+#   make diff        A=a.class B=b.class       # structural class-file diff, in-container
+#   make image                                 # build the pinned image
+#   make check                                 # LOCAL release build (debugging only; NOT a test)
 
 IMAGE     := njavac-bench
 VOLUME    := njavac-goldens
@@ -21,7 +22,7 @@ FILE      ?=
 A         ?=
 B         ?=
 
-.PHONY: help image probe verify record bench diff check
+.PHONY: help image probe verify correctness record bench diff check
 
 help:  ## show this help
 	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | sed -E 's/:.*## /\t/' | sort
@@ -34,12 +35,15 @@ probe: image  ## disassemble a .java with the pinned javac: make probe FILE=Prob
 	docker run --rm -v "$(CURDIR):/w" -w /w --entrypoint sh $(IMAGE) -c \
 	  'd=$$(mktemp -d); "$$JAVA_HOME/bin/javac" -d "$$d" "$(FILE)" && "$$JAVA_HOME/bin/javap" -v -p "$$d"/*.class'
 
-verify: image  ## fast Docker correctness gate (whole suite, or one FILE=path)
+verify: image  ## fast gate: njavac vs cached goldens (whole suite, or one FILE=path)
 	@docker run --rm -v $(VOLUME):$(GOLDENS) --entrypoint sh $(IMAGE) \
 	    -c 'ls $(GOLDENS)/*.class >/dev/null 2>&1' \
 	  || { echo ">> golden cache empty — recording from the pinned javac"; \
 	       docker run --rm -v $(VOLUME):$(GOLDENS) $(IMAGE) --record --golden-dir $(GOLDENS); }
 	docker run --rm -v $(VOLUME):$(GOLDENS) $(IMAGE) --offline --golden-dir $(GOLDENS) $(FILE)
+
+correctness: image  ## fresh authoritative online byte-identity check (no timing)
+	docker run --rm $(IMAGE) --no-timing $(FILE)
 
 record: image  ## re-record goldens from the pinned javac into the volume, then verify
 	docker run --rm -v $(VOLUME):$(GOLDENS) $(IMAGE) --record --golden-dir $(GOLDENS)

@@ -38,6 +38,9 @@ struct Config {
     /// The git-ignored golden cache dir (`--record` writes it, `--offline` reads
     /// it). Under `target/`, so it is never committed and `cargo clean` drops it.
     golden_dir: String,
+    /// Skip the timing pass — run the correctness check only. A fresh, authoritative
+    /// online byte-identity gate without the ~12s timing measurement.
+    no_timing: bool,
 }
 
 impl Config {
@@ -60,6 +63,7 @@ impl Config {
             record: false,
             offline: false,
             golden_dir: "target/bench-golden".into(),
+            no_timing: false,
         };
         if let Ok(v) = std::env::var("JAVAC") {
             c.javac = v;
@@ -85,14 +89,16 @@ impl Config {
                 "--golden-dir" => c.golden_dir = val(),
                 "--record" => c.record = true,
                 "--offline" => c.offline = true,
+                "--no-timing" => c.no_timing = true,
                 "--help" | "-h" => {
                     println!(
                         "usage: bench [<File.java> | --fixtures DIR] [--record] [--offline] \
-                         [--golden-dir DIR] [--javac-runs N] [--njavac-runs N] [--warmup N] \
-                         [--javac PATH] [--javap PATH] [--njavac PATH] [--out-dir DIR]\n\
+                         [--no-timing] [--golden-dir DIR] [--javac-runs N] [--njavac-runs N] \
+                         [--warmup N] [--javac PATH] [--javap PATH] [--njavac PATH] [--out-dir DIR]\n\
                          \n  <File.java>   verify just this one fixture (no timing)\
                          \n  --record      compile all fixtures with javac into the golden cache, then exit\
-                         \n  --offline     byte-compare njavac against the golden cache (no javac needed)"
+                         \n  --offline     byte-compare njavac against the golden cache (no javac needed)\
+                         \n  --no-timing   run the correctness check only, skip the timing pass"
                     );
                     std::process::exit(0);
                 }
@@ -434,8 +440,9 @@ fn main() {
     correctness(&cfg, &fixtures, &javac_dir, &njavac_dir);
 
     // Timing is a whole-suite, live-javac measurement: skip it for a single
-    // fixture (meaningless) and in --offline mode (no javac to time against).
-    if cfg.single.is_none() && !cfg.offline {
+    // fixture (meaningless), in --offline mode (no javac to time against), and
+    // when --no-timing asks for a correctness-only run.
+    if cfg.single.is_none() && !cfg.offline && !cfg.no_timing {
         timing(&cfg, &fixtures, &javac_dir, &njavac_dir);
     }
 }
