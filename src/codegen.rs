@@ -13,9 +13,19 @@
 //! We mirror that: `fold` evaluates a maximal constant subtree; anything else is
 //! emitted structurally with a running operand-stack model that tracks category-2
 //! (`long`/`double`) values as two words.
+//!
+//! `if`/`else` and comparisons add the first control flow. A boolean expression
+//! lowers in one of two modes: as a *branch* (the condition of an `if`, emitting
+//! the negated comparison opcode as a jump) or as a *value* (the true-first
+//! `iconst_1`/`goto`/`iconst_0` diamond). Both force a `StackMapTable`: codegen
+//! records the verifier state (locals + stack) at each branch target and hands
+//! them to the backend, which picks the minimal frame encoding. Constant
+//! conditions are folded away (dead branches dropped, no frame), and jumps to an
+//! unconditional `goto` are threaded through — both exactly as javac does, so a
+//! method whose branches all fold stays byte-identical to its straight-line form.
 
-use crate::ast::{BinOp, Class, Expr, Method, StmtKind, Type};
-use crate::classfile::{ClassFile, ConstantPool, Method as CfMethod};
+use crate::ast::{BinOp, Class, CmpOp, Expr, Method, Stmt, StmtKind, Type};
+use crate::classfile::{ClassFile, ConstantPool, Method as CfMethod, StackFrame, VerificationType};
 use crate::sema::{self, Analysis, MethodInfo, StackTy, ValType};
 
 // ---- opcodes ----
@@ -116,6 +126,28 @@ const I2B: u8 = 0x91;
 const I2C: u8 = 0x92;
 const I2S: u8 = 0x93;
 
+// Comparisons and branches.
+const LCMP: u8 = 0x94;
+const FCMPL: u8 = 0x95;
+const FCMPG: u8 = 0x96;
+const DCMPL: u8 = 0x97;
+const DCMPG: u8 = 0x98;
+const IFEQ: u8 = 0x99;
+const IFNE: u8 = 0x9a;
+const IFLT: u8 = 0x9b;
+const IFGE: u8 = 0x9c;
+const IFGT: u8 = 0x9d;
+const IFLE: u8 = 0x9e;
+const IF_ICMPEQ: u8 = 0x9f;
+const IF_ICMPNE: u8 = 0xa0;
+const IF_ICMPLT: u8 = 0xa1;
+const IF_ICMPGE: u8 = 0xa2;
+const IF_ICMPGT: u8 = 0xa3;
+const IF_ICMPLE: u8 = 0xa4;
+const GOTO: u8 = 0xa7;
+
+const ICONST_1: u8 = 0x04;
+
 const GETSTATIC: u8 = 0xb2;
 const INVOKEVIRTUAL: u8 = 0xb6;
 const INVOKESPECIAL: u8 = 0xb7;
@@ -169,43 +201,48 @@ fn gen_init(cp: &mut ConstantPool, class_line: u16) -> CfMethod {
         max_locals: 1,
         code,
         line_numbers: vec![(0, class_line)],
+        entry_locals: Vec::new(),
+        stack_frames: Vec::new(),
     }
 }
 
 /// Emit one method body.
 fn gen_method(cp: &mut ConstantPool, method: &Method, info: &MethodInfo) -> CfMethod {
-    let mut g = Gen { cp, info, code: Vec::new(), line_numbers: Vec::new(), max_stack: 0, cur: 0 };
+    // The verifier's method-entry locals: one entry per parameter (the seed for
+    // stack-map frame deltas). `main`'s single `String[] args` is one `Object`.
+    let entry_locals: Vec<VerificationType> = method.params.iter().map(|p| param_vti(p.ty)).collect();
+
+    let mut g = Gen {
+        cp,
+        info,
+        code: Vec::new(),
+        line_numbers: Vec::new(),
+        max_stack: 0,
+        cur: 0,
+        locals: entry_locals.clone(),
+        labels: Vec::new(),
+        fixups: Vec::new(),
+        frames: Vec::new(),
+    };
 
     for stmt in &method.body {
-        // Record the pc; attach a LineNumberTable entry only if the statement
-        // actually emits code (a bare `int x;` emits nothing and gets no entry).
-        let pc = g.code.len() as u16;
-        g.cur = 0;
-        match &stmt.kind {
-            StmtKind::LocalDecl { name, init, .. } => {
-                if let Some(init) = init {
-                    g.store_to(name, init);
-                }
-            }
-            StmtKind::Assign { name, value } => {
-                g.store_to(name, value);
-            }
-            StmtKind::CompoundAssign { name, op, value } => {
-                g.gen_compound(name, *op, value);
-            }
-            StmtKind::Expr(expr) => {
-                g.gen_expr_stmt(expr);
-            }
-        }
-        if g.code.len() as u16 > pc {
-            g.line_numbers.push((pc, stmt.line));
+        g.gen_stmt(stmt);
+        // Maintain the running assigned-locals snapshot: a top-level declaration
+        // brings its local into scope for every subsequent branch's frames. (In
+        // this subset such locals are declared with an initializer, so they are
+        // definitely assigned from here on.)
+        if let StmtKind::LocalDecl { ty, .. } = &stmt.kind {
+            g.locals.push(local_vti(sema::valtype(*ty)));
         }
     }
 
     // Every void method ends with an appended `return`, mapped to the closing brace.
     let ret_pc = g.code.len() as u16;
     g.code.push(RETURN);
-    g.line_numbers.push((ret_pc, method.close_line));
+    g.add_line(ret_pc, method.close_line);
+
+    let live_targets = g.resolve_branches();
+    let stack_frames = g.build_frames(&live_targets);
 
     CfMethod {
         access_flags: 0x0009, // ACC_PUBLIC | ACC_STATIC
@@ -215,6 +252,8 @@ fn gen_method(cp: &mut ConstantPool, method: &Method, info: &MethodInfo) -> CfMe
         max_locals: info.local_count.max(1),
         code: g.code,
         line_numbers: g.line_numbers,
+        entry_locals,
+        stack_frames,
     }
 }
 
@@ -238,6 +277,24 @@ fn descriptor_of(method: &Method) -> String {
     d
 }
 
+/// A pending branch: its operand's byte position in `code` (a 2-byte s16 offset,
+/// relative to the branch opcode) and the label it targets. Resolved once every
+/// label's pc is known.
+struct Fixup {
+    branch_pc: u32,
+    operand_pos: usize,
+    label: usize,
+}
+
+/// A requested stack-map frame: the verifier state (locals + operand stack) at a
+/// branch target, keyed by absolute bytecode offset. The serializer turns these
+/// into the minimal frame encodings.
+struct FrameReq {
+    offset: u16,
+    locals: Vec<VerificationType>,
+    stack: Vec<VerificationType>,
+}
+
 /// Per-method emission state, with a running operand-stack depth (`cur`) tracked
 /// in words so category-2 values count as two.
 struct Gen<'a> {
@@ -247,6 +304,13 @@ struct Gen<'a> {
     line_numbers: Vec<(u16, u16)>,
     max_stack: u16,
     cur: u16,
+    /// The assigned, in-scope locals in slot order (params first), as verifier
+    /// types — the snapshot each branch target's frame captures.
+    locals: Vec<VerificationType>,
+    /// pc where each label is placed (`u32::MAX` until placed).
+    labels: Vec<u32>,
+    fixups: Vec<Fixup>,
+    frames: Vec<FrameReq>,
 }
 
 impl<'a> Gen<'a> {
@@ -258,6 +322,270 @@ impl<'a> Gen<'a> {
     }
     fn pop(&mut self, w: u16) {
         self.cur -= w;
+    }
+
+    // -------- control flow / labels / frames --------
+
+    /// Emit one statement. Each statement starts with an empty operand stack; a
+    /// leaf statement gets a LineNumberTable entry at its first instruction, while
+    /// an `if` places its own entries (condition, then each nested statement).
+    fn gen_stmt(&mut self, stmt: &Stmt) {
+        self.cur = 0;
+        if let StmtKind::If { cond, then_branch, else_branch } = &stmt.kind {
+            self.gen_if(stmt.line, cond, then_branch, else_branch.as_deref());
+            return;
+        }
+        let pc = self.code.len() as u16;
+        match &stmt.kind {
+            StmtKind::LocalDecl { name, init, .. } => {
+                if let Some(init) = init {
+                    self.store_to(name, init);
+                }
+            }
+            StmtKind::Assign { name, value } => self.store_to(name, value),
+            StmtKind::CompoundAssign { name, op, value } => self.gen_compound(name, *op, value),
+            StmtKind::Expr(expr) => self.gen_expr_stmt(expr),
+            StmtKind::If { .. } => unreachable!("handled above"),
+        }
+        if self.code.len() as u16 > pc {
+            self.add_line(pc, stmt.line);
+        }
+    }
+
+    /// `if (cond) then [else els]`. A constant condition is folded away (only the
+    /// taken arm is emitted, no branch, no frame — javac's dead-branch rule);
+    /// otherwise the condition is a negated branch over the then-body, an `else`
+    /// adds a `goto` past it, and a stack-map frame is placed at each target.
+    fn gen_if(&mut self, line: u16, cond: &Expr, then_b: &[Stmt], else_b: Option<&[Stmt]>) {
+        if let Some(taken) = fold_bool(cond) {
+            let arm = if taken { Some(then_b) } else { else_b };
+            for s in arm.unwrap_or(&[]) {
+                self.gen_stmt(s);
+            }
+            return;
+        }
+
+        // Condition: its LineNumberTable entry sits at the first condition
+        // instruction; the branch jumps to the else/end target when it is false.
+        let else_label = self.new_label();
+        let cond_pc = self.code.len() as u16;
+        self.add_line(cond_pc, line);
+        self.gen_branch(cond, else_label, false);
+
+        for s in then_b {
+            self.gen_stmt(s);
+        }
+
+        match else_b {
+            None => {
+                self.place_label(else_label);
+                self.add_frame(Vec::new());
+            }
+            Some(else_stmts) => {
+                let end_label = self.new_label();
+                self.emit_branch_op(GOTO, end_label);
+                self.place_label(else_label);
+                self.add_frame(Vec::new());
+                for s in else_stmts {
+                    self.gen_stmt(s);
+                }
+                self.place_label(end_label);
+                self.add_frame(Vec::new());
+            }
+        }
+    }
+
+    /// Emit `cond` as a conditional jump to `target`, taken when `cond` evaluates
+    /// to `jump_when`. Comparisons lower to the (possibly negated) branch opcode
+    /// for their operand type; `!` flips the sense; any other boolean value is
+    /// materialized and tested with `ifne`/`ifeq`.
+    fn gen_branch(&mut self, cond: &Expr, target: usize, jump_when: bool) {
+        match cond {
+            Expr::Not(inner) => self.gen_branch(inner, target, !jump_when),
+            Expr::Compare { op, left, right } => {
+                self.gen_compare_branch(*op, left, right, target, jump_when)
+            }
+            other => {
+                self.gen_value(other); // a boolean value: 0/1 on the stack
+                self.emit_branch_op(if jump_when { IFNE } else { IFEQ }, target);
+                self.pop(1);
+            }
+        }
+    }
+
+    /// Emit a relational/equality comparison as a branch to `target`. Integer
+    /// comparisons against a literal `0` on the right use the single-operand
+    /// `if<cond>` forms; wide types push both operands, emit the `lcmp`/`fcmp*`/
+    /// `dcmp*`, then branch on the result against 0.
+    fn gen_compare_branch(&mut self, op: CmpOp, left: &Expr, right: &Expr, target: usize, jump_when: bool) {
+        let p = sema::binary_promote(sema::type_of(left, self.info), sema::type_of(right, self.info));
+        match p.stack() {
+            StackTy::Int => {
+                // javac folds `x <op> 0` to the compare-with-zero opcodes, but only
+                // when the literal `0` is the *right* operand.
+                if matches!(fold(right), Some(Const::Int(0))) {
+                    self.gen_promoted_operand(left, ValType::Int);
+                    self.emit_branch_op(int_zero_branch(op, jump_when), target);
+                    self.pop(1);
+                } else {
+                    self.gen_promoted_operand(left, ValType::Int);
+                    self.gen_promoted_operand(right, ValType::Int);
+                    self.emit_branch_op(int_icmp_branch(op, jump_when), target);
+                    self.pop(2);
+                }
+            }
+            StackTy::Long => {
+                self.gen_promoted_operand(left, ValType::Long);
+                self.gen_promoted_operand(right, ValType::Long);
+                self.code.push(LCMP);
+                self.cur -= 3; // two longs (4w) -> one int
+                self.emit_branch_op(int_zero_branch(op, jump_when), target);
+                self.pop(1);
+            }
+            StackTy::Float => {
+                self.gen_promoted_operand(left, ValType::Float);
+                self.gen_promoted_operand(right, ValType::Float);
+                self.code.push(if matches!(op, CmpOp::Lt | CmpOp::Le) { FCMPG } else { FCMPL });
+                self.cur -= 1; // two floats -> one int
+                self.emit_branch_op(int_zero_branch(op, jump_when), target);
+                self.pop(1);
+            }
+            StackTy::Double => {
+                self.gen_promoted_operand(left, ValType::Double);
+                self.gen_promoted_operand(right, ValType::Double);
+                self.code.push(if matches!(op, CmpOp::Lt | CmpOp::Le) { DCMPG } else { DCMPL });
+                self.cur -= 3; // two doubles (4w) -> one int
+                self.emit_branch_op(int_zero_branch(op, jump_when), target);
+                self.pop(1);
+            }
+        }
+    }
+
+    /// Materialize a boolean expression as a 0/1 on the stack: the true-first
+    /// diamond `<branch-if-false> Lf; iconst_1; goto Lm; Lf: iconst_0; Lm:`, with
+    /// a frame at each target. Only supported with an empty base operand stack
+    /// (the non-empty case needs full_frames — a later rung).
+    fn gen_bool_value(&mut self, cond: &Expr) -> ValType {
+        assert!(self.cur == 0, "materialized boolean with non-empty operand stack is unsupported");
+        let lfalse = self.new_label();
+        let lmerge = self.new_label();
+
+        self.gen_branch(cond, lfalse, false); // jump to Lf when the condition is false
+        self.code.push(ICONST_1);
+        self.push(1);
+        self.emit_branch_op(GOTO, lmerge);
+
+        self.place_label(lfalse);
+        self.add_frame(Vec::new());
+        self.cur = 0; // the iconst_1 lives only on the other path
+        self.code.push(ICONST_0);
+        self.push(1);
+
+        self.place_label(lmerge);
+        self.add_frame(vec![VerificationType::Integer]);
+        ValType::Boolean
+    }
+
+    /// Append a LineNumberTable entry, unless it would repeat the previous entry's
+    /// line — javac emits an entry only when the source line changes, so several
+    /// statements (or a condition and its same-line body) share one entry.
+    fn add_line(&mut self, pc: u16, line: u16) {
+        if self.line_numbers.last().map(|&(_, l)| l) != Some(line) {
+            self.line_numbers.push((pc, line));
+        }
+    }
+
+    /// Reserve a fresh, not-yet-placed label.
+    fn new_label(&mut self) -> usize {
+        self.labels.push(u32::MAX);
+        self.labels.len() - 1
+    }
+
+    /// Bind a label to the current pc.
+    fn place_label(&mut self, label: usize) {
+        self.labels[label] = self.code.len() as u32;
+    }
+
+    /// Emit a branch opcode with a placeholder 2-byte offset, recording a fixup.
+    fn emit_branch_op(&mut self, opcode: u8, label: usize) {
+        let branch_pc = self.code.len() as u32;
+        self.code.push(opcode);
+        let operand_pos = self.code.len();
+        self.code.push(0);
+        self.code.push(0);
+        self.fixups.push(Fixup { branch_pc, operand_pos, label });
+    }
+
+    /// Request a stack-map frame at the current pc, capturing the live-locals
+    /// snapshot and the given operand-stack state.
+    fn add_frame(&mut self, stack: Vec<VerificationType>) {
+        self.frames.push(FrameReq {
+            offset: self.code.len() as u16,
+            locals: self.locals.clone(),
+            stack,
+        });
+    }
+
+    /// Backpatch every branch's 2-byte offset now that all labels are placed, and
+    /// return the set of pcs that remain live jump targets. javac threads a jump
+    /// whose target is an unconditional `goto` straight to that goto's ultimate
+    /// destination — so `goto L; L: goto M` becomes a jump to `M`, and `L` (now
+    /// reached only by fall-through) no longer carries a stack-map frame.
+    fn resolve_branches(&mut self) -> Vec<u16> {
+        let targets: Vec<u16> =
+            self.fixups.iter().map(|fx| self.thread_target(fx.label) as u16).collect();
+        for (fx_i, &target) in targets.iter().enumerate() {
+            let (operand_pos, branch_pc) = {
+                let fx = &self.fixups[fx_i];
+                (fx.operand_pos, fx.branch_pc)
+            };
+            let offset = (target as i32 - branch_pc as i32) as i16;
+            let [hi, lo] = offset.to_be_bytes();
+            self.code[operand_pos] = hi;
+            self.code[operand_pos + 1] = lo;
+        }
+        targets
+    }
+
+    /// Follow a chain of unconditional `goto`s from `label` to the final pc.
+    fn thread_target(&self, label: usize) -> u32 {
+        let mut pc = self.labels[label];
+        debug_assert!(pc != u32::MAX, "unplaced branch label");
+        for _ in 0..=self.fixups.len() {
+            if self.code.get(pc as usize) != Some(&GOTO) {
+                break;
+            }
+            // The goto at `pc` is itself a fixup; follow the label it targets.
+            match self.fixups.iter().find(|fx| fx.branch_pc == pc) {
+                Some(fx) => {
+                    let next = self.labels[fx.label];
+                    if next == pc {
+                        break; // self-loop guard
+                    }
+                    pc = next;
+                }
+                None => break,
+            }
+        }
+        pc
+    }
+
+    /// Collect the requested frames into serializer-ready form: one per distinct
+    /// pc that survives as a real jump target (post-threading), in offset order.
+    fn build_frames(&mut self, live_targets: &[u16]) -> Vec<StackFrame> {
+        let live: std::collections::HashSet<u16> = live_targets.iter().copied().collect();
+        self.frames.sort_by_key(|f| f.offset);
+        let mut out: Vec<StackFrame> = Vec::new();
+        for f in &self.frames {
+            if !live.contains(&f.offset) {
+                continue; // a merge that threading turned into pure fall-through
+            }
+            if out.last().is_some_and(|p| p.offset == f.offset) {
+                continue; // multiple branches merge at one pc
+            }
+            out.push(StackFrame { offset: f.offset, locals: f.locals.clone(), stack: f.stack.clone() });
+        }
+        out
     }
 
     // -------- statements --------
@@ -445,6 +773,7 @@ impl<'a> Gen<'a> {
                 target
             }
             Expr::Binary { op, left, right } => self.gen_binary(*op, left, right),
+            Expr::Compare { .. } | Expr::Not(_) => self.gen_bool_value(expr),
             other => panic!("not a value expression: {:?}", DebugExpr(other)),
         }
     }
@@ -742,6 +1071,58 @@ fn cross_conv_op(from: StackTy, to: StackTy) -> u8 {
     }
 }
 
+/// Two-operand int comparison branch (`if_icmp*`). With `jump_when == false` the
+/// opcode is the *negation* of `op` (branch away when the comparison is false, as
+/// javac emits an `if` condition); with `true` it is `op` itself.
+fn int_icmp_branch(op: CmpOp, jump_when: bool) -> u8 {
+    use CmpOp::*;
+    match (op, jump_when) {
+        (Lt, false) => IF_ICMPGE, (Lt, true) => IF_ICMPLT,
+        (Le, false) => IF_ICMPGT, (Le, true) => IF_ICMPLE,
+        (Gt, false) => IF_ICMPLE, (Gt, true) => IF_ICMPGT,
+        (Ge, false) => IF_ICMPLT, (Ge, true) => IF_ICMPGE,
+        (Eq, false) => IF_ICMPNE, (Eq, true) => IF_ICMPEQ,
+        (Ne, false) => IF_ICMPEQ, (Ne, true) => IF_ICMPNE,
+    }
+}
+
+/// Single-operand compare-with-zero branch (`if*`), used for `x <op> 0` and, on
+/// the result of `lcmp`/`fcmp*`/`dcmp*`, for every wide-type comparison. Same
+/// negation convention as [`int_icmp_branch`].
+fn int_zero_branch(op: CmpOp, jump_when: bool) -> u8 {
+    use CmpOp::*;
+    match (op, jump_when) {
+        (Lt, false) => IFGE, (Lt, true) => IFLT,
+        (Le, false) => IFGT, (Le, true) => IFLE,
+        (Gt, false) => IFLE, (Gt, true) => IFGT,
+        (Ge, false) => IFLT, (Ge, true) => IFGE,
+        (Eq, false) => IFNE, (Eq, true) => IFEQ,
+        (Ne, false) => IFEQ, (Ne, true) => IFNE,
+    }
+}
+
+/// The verifier type of a method parameter.
+fn param_vti(ty: Type) -> VerificationType {
+    match ty {
+        Type::Long => VerificationType::Long,
+        Type::Float => VerificationType::Float,
+        Type::Double => VerificationType::Double,
+        Type::StringArray => VerificationType::Object("[Ljava/lang/String;".to_string()),
+        // int/boolean/char/byte/short all verify as int.
+        _ => VerificationType::Integer,
+    }
+}
+
+/// The verifier type of a local of value type `t` (the sub-int types are `int`).
+fn local_vti(t: ValType) -> VerificationType {
+    match t {
+        ValType::Long => VerificationType::Long,
+        ValType::Float => VerificationType::Float,
+        ValType::Double => VerificationType::Double,
+        _ => VerificationType::Integer,
+    }
+}
+
 /// The `i2b`/`i2s`/`i2c` needed to narrow an int-computational value of type
 /// `cur` to sub-int `to`, or `None` when `cur` already fits `to`.
 fn subint_narrow_op(cur: ValType, to: ValType) -> Option<u8> {
@@ -770,9 +1151,43 @@ fn fold(expr: &Expr) -> Option<Const> {
         Expr::StringLit(_) | Expr::Name(_) | Expr::Println(_) => return None,
         Expr::Neg(e) => neg_const(fold(e)?),
         Expr::BitNot(e) => bitnot_const(fold(e)?),
+        Expr::Not(e) => Const::Int((to_i32(fold(e)?) == 0) as i32),
         Expr::Cast { ty, expr } => const_convert(fold(expr)?, sema::valtype(*ty)),
         Expr::Binary { op, left, right } => eval_binary(*op, fold(left)?, fold(right)?),
+        Expr::Compare { op, left, right } => {
+            Const::Int(eval_compare(*op, fold(left)?, fold(right)?) as i32)
+        }
     })
+}
+
+/// Whether `cond` is a compile-time constant boolean, and its value — javac's
+/// dead-branch predicate. A boolean literal or a comparison/logical expression
+/// over constants folds; anything reading a (non-`final`) local does not.
+fn fold_bool(cond: &Expr) -> Option<bool> {
+    fold(cond).map(|c| to_i32(c) != 0)
+}
+
+/// Evaluate a constant comparison, with binary numeric promotion. Float/double
+/// use IEEE ordering (a `NaN` operand makes every ordering and `==` false),
+/// matching the `fcmp`/`dcmp` a non-folded comparison would run.
+fn eval_compare(op: CmpOp, l: Const, r: Const) -> bool {
+    match promote_const(l, r) {
+        StackTy::Int => compare_vals(op, to_i32(l), to_i32(r)),
+        StackTy::Long => compare_vals(op, to_i64(l), to_i64(r)),
+        StackTy::Float => compare_vals(op, to_f32(l), to_f32(r)),
+        StackTy::Double => compare_vals(op, to_f64(l), to_f64(r)),
+    }
+}
+
+fn compare_vals<T: PartialOrd>(op: CmpOp, a: T, b: T) -> bool {
+    match op {
+        CmpOp::Lt => a < b,
+        CmpOp::Le => a <= b,
+        CmpOp::Gt => a > b,
+        CmpOp::Ge => a >= b,
+        CmpOp::Eq => a == b,
+        CmpOp::Ne => a != b,
+    }
 }
 
 fn neg_const(c: Const) -> Const {
@@ -958,8 +1373,10 @@ impl std::fmt::Debug for DebugExpr<'_> {
             Expr::Name(_) => "Name",
             Expr::Neg(_) => "Neg",
             Expr::BitNot(_) => "BitNot",
+            Expr::Not(_) => "Not",
             Expr::Cast { .. } => "Cast",
             Expr::Binary { .. } => "Binary",
+            Expr::Compare { .. } => "Compare",
             Expr::Println(_) => "Println",
         };
         f.write_str(kind)

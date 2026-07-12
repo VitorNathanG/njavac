@@ -1,23 +1,24 @@
 //! Recursive-descent parser: tokens -> AST.
 //!
-//! Parses the Tier-2 straight-line numeric subset: one `public class` holding a
+//! Parses the numeric subset plus the first branch: one `public class` holding a
 //! single `public static void main(String[] args)` method whose body is a
 //! sequence of primitive local declarations, plain and compound assignments,
-//! `++`/`--` statements, and `System.out.println(...)` calls.
+//! `++`/`--` statements, `if`/`else` statements, and `System.out.println(...)`
+//! calls.
 //!
 //! Expression precedence (loosest to tightest), all binary levels
 //! left-associative:
 //!
-//!   `|`  <  `^`  <  `&`  <  `<< >> >>>`  <  `+ -`  <  `* / %`  <  unary
+//!   `|` < `^` < `&` < `== !=` < `< <= > >=` < `<< >> >>>` < `+ -` < `* / %` < unary
 //!
-//! Unary covers `-`, `~`, and primitive casts `(T) e`. Parentheses group. Each
-//! statement is tagged with the 1-based source line it begins on so codegen can
-//! rebuild the `LineNumberTable` byte-identically to javac.
+//! Unary covers `-`, `~`, `!`, and primitive casts `(T) e`. Parentheses group.
+//! Each statement is tagged with the 1-based source line it begins on so codegen
+//! can rebuild the `LineNumberTable` byte-identically to javac.
 //!
 //! The parser panics on malformed input; the fixtures are well-formed.
 
 use crate::ast::{
-    BinOp, Class, CompilationUnit, Expr, Method, Param, Stmt, StmtKind, Type,
+    BinOp, Class, CmpOp, CompilationUnit, Expr, Method, Param, Stmt, StmtKind, Type,
 };
 use crate::lexer::{Token, TokenKind};
 
@@ -174,7 +175,9 @@ impl Parser {
     // A single statement.
     fn statement(&mut self) -> Stmt {
         let line = self.line();
-        let kind = if is_primitive_type(self.peek()) {
+        let kind = if matches!(self.peek(), TokenKind::If) {
+            self.if_statement()
+        } else if is_primitive_type(self.peek()) {
             self.local_decl()
         } else if matches!(self.peek(), TokenKind::PlusPlus | TokenKind::MinusMinus) {
             // Prefix `++x;` / `--x;` — in statement position the produced value is
@@ -190,6 +193,39 @@ impl Parser {
             panic!("unexpected statement start: {:?}", self.peek());
         };
         Stmt { line, kind }
+    }
+
+    // `if (cond) <then> [else <else>]`. Each arm is a brace-block or a single
+    // statement; `else if` falls out naturally as an `If` in the else arm.
+    fn if_statement(&mut self) -> StmtKind {
+        self.expect(&TokenKind::If);
+        self.expect(&TokenKind::LParen);
+        let cond = self.expression();
+        self.expect(&TokenKind::RParen);
+        let then_branch = self.block_or_statement();
+        let else_branch = if matches!(self.peek(), TokenKind::Else) {
+            self.bump();
+            Some(self.block_or_statement())
+        } else {
+            None
+        };
+        StmtKind::If { cond, then_branch, else_branch }
+    }
+
+    // A brace-delimited block, or a single statement (Java allows both after
+    // `if (...)`/`else`). Returned as a statement list either way.
+    fn block_or_statement(&mut self) -> Vec<Stmt> {
+        if matches!(self.peek(), TokenKind::LBrace) {
+            self.bump();
+            let mut stmts = Vec::new();
+            while !matches!(self.peek(), TokenKind::RBrace) {
+                stmts.push(self.statement());
+            }
+            self.expect(&TokenKind::RBrace);
+            stmts
+        } else {
+            vec![self.statement()]
+        }
     }
 
     // `<ty> name = init;` (initializer optional).
@@ -274,11 +310,43 @@ impl Parser {
     }
 
     fn bit_and(&mut self) -> Expr {
-        let mut left = self.shift();
+        let mut left = self.equality();
         while matches!(self.peek(), TokenKind::Amp) {
             self.bump();
-            let right = self.shift();
+            let right = self.equality();
             left = binary(BinOp::And, left, right);
+        }
+        left
+    }
+
+    fn equality(&mut self) -> Expr {
+        let mut left = self.relational();
+        loop {
+            let op = match self.peek() {
+                TokenKind::EqEq => CmpOp::Eq,
+                TokenKind::NotEq => CmpOp::Ne,
+                _ => break,
+            };
+            self.bump();
+            let right = self.relational();
+            left = compare(op, left, right);
+        }
+        left
+    }
+
+    fn relational(&mut self) -> Expr {
+        let mut left = self.shift();
+        loop {
+            let op = match self.peek() {
+                TokenKind::Lt => CmpOp::Lt,
+                TokenKind::Le => CmpOp::Le,
+                TokenKind::Gt => CmpOp::Gt,
+                TokenKind::Ge => CmpOp::Ge,
+                _ => break,
+            };
+            self.bump();
+            let right = self.shift();
+            left = compare(op, left, right);
         }
         left
     }
@@ -340,6 +408,10 @@ impl Parser {
             TokenKind::Tilde => {
                 self.bump();
                 Expr::BitNot(Box::new(self.unary()))
+            }
+            TokenKind::Bang => {
+                self.bump();
+                Expr::Not(Box::new(self.unary()))
             }
             TokenKind::LParen if self.is_cast() => {
                 self.bump(); // (
@@ -428,6 +500,10 @@ impl Parser {
 
 fn binary(op: BinOp, left: Expr, right: Expr) -> Expr {
     Expr::Binary { op, left: Box::new(left), right: Box::new(right) }
+}
+
+fn compare(op: CmpOp, left: Expr, right: Expr) -> Expr {
+    Expr::Compare { op, left: Box::new(left), right: Box::new(right) }
 }
 
 /// The compound-assignment operator a token denotes, if any.

@@ -42,6 +42,8 @@ pub enum TokenKind {
     Short,
     True,
     False,
+    If,
+    Else,
 
     // Literals and names.
     /// An identifier (not a keyword).
@@ -79,11 +81,16 @@ pub enum TokenKind {
     Pipe,      // |
     Caret,     // ^
     Tilde,     // ~
+    Bang,      // !
     Shl,       // <<
     Shr,       // >>
     UShr,      // >>>
-    Lt,        // <  (out of subset; lexable so the parser can reject cleanly)
+    Lt,        // <
     Gt,        // >
+    Le,        // <=
+    Ge,        // >=
+    EqEq,      // ==
+    NotEq,     // !=
     PlusPlus,  // ++
     MinusMinus, // --
     PlusEq,    // +=
@@ -437,6 +444,8 @@ impl<'a> Lexer<'a> {
             "short" => TokenKind::Short,
             "true" => TokenKind::True,
             "false" => TokenKind::False,
+            "if" => TokenKind::If,
+            "else" => TokenKind::Else,
             _ => TokenKind::Ident(text.to_string()),
         }
     }
@@ -455,7 +464,8 @@ impl<'a> Lexer<'a> {
             b',' => TokenKind::Comma,
             b'.' => TokenKind::Dot,
             b'~' => TokenKind::Tilde,
-            b'=' => TokenKind::Assign,
+            b'!' => self.if_eq(TokenKind::NotEq, TokenKind::Bang),
+            b'=' => self.if_eq(TokenKind::EqEq, TokenKind::Assign),
             b'+' => self.after('+', TokenKind::PlusPlus, TokenKind::PlusEq, TokenKind::Plus),
             b'-' => self.after('-', TokenKind::MinusMinus, TokenKind::MinusEq, TokenKind::Minus),
             b'*' => self.if_eq(TokenKind::StarEq, TokenKind::Star),
@@ -508,7 +518,7 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    /// `<`, `<<`, `<<=`.
+    /// `<`, `<=`, `<<`, `<<=`.
     fn less(&mut self) -> TokenKind {
         if self.peek() == Some(b'<') {
             self.bump();
@@ -518,15 +528,23 @@ impl<'a> Lexer<'a> {
             } else {
                 TokenKind::Shl
             }
+        } else if self.peek() == Some(b'=') {
+            self.bump();
+            TokenKind::Le
         } else {
             TokenKind::Lt
         }
     }
 
-    /// `>`, `>>`, `>>=`, `>>>`, `>>>=`.
+    /// `>`, `>=`, `>>`, `>>=`, `>>>`, `>>>=`.
     fn greater(&mut self) -> TokenKind {
         if self.peek() != Some(b'>') {
-            return TokenKind::Gt;
+            return if self.peek() == Some(b'=') {
+                self.bump();
+                TokenKind::Ge
+            } else {
+                TokenKind::Gt
+            };
         }
         self.bump(); // second >
         if self.peek() == Some(b'>') {

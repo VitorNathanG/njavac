@@ -10,14 +10,17 @@ constraint is **byte-identical output to the reference `javac`** (GraalVM CE
 `.class` must equal javac's `.class` byte-for-byte. Everything about the design
 follows from that one invariant.
 
-Current scope is the **"straight-line numeric" subset**: one `public class` with
-a `static void main`, locals of any of the eight primitives (`int`/`long`/`float`/
-`double`/`boolean`/`char`/`byte`/`short`, with the two-slot `long`/`double`
+Current scope is the **numeric subset plus the first branch**: one `public class`
+with a `static void main`, locals of any of the eight primitives (`int`/`long`/
+`float`/`double`/`boolean`/`char`/`byte`/`short`, with the two-slot `long`/`double`
 model), the full arithmetic/bitwise/shift/unary operator set (`+ - * / % & | ^ ~
 << >> >>>`), compound assignment and `++`/`--`, primitive casts with binary
-numeric promotion, every literal form, and `System.out.println` of any primitive
-or a string literal. Deliberately out of scope (each is a future rung): any
-control flow — which forces a `StackMapTable` — string concatenation
+numeric promotion, every literal form, `System.out.println` of any primitive or a
+string literal, and — the newest rung — **comparisons (`< <= > >= == !=`, `!`) and
+`if`/`else if`/`else`**, which brings in the **`StackMapTable`** (frame selection,
+the −1 offset-delta bias, dead-branch folding, jump-to-`goto` threading). Still
+out of scope (each a future rung): `&& || ?:` and full-frame boolean
+materialization (`println(a < b)`), loops and `switch`, string concatenation
 (`invokedynamic`), objects/arrays/methods, multiple methods. See `README.md` for
 the checked-off feature map and the ordered next rungs.
 
@@ -70,7 +73,7 @@ Key points, several of which are non-obvious:
   njavac's old spawn-per-file model.
 - **Adding a test = drop a `.java` under `fixtures/`.** Fixtures are grouped into
   **topical subfolders** (`basics/`, `literals/`, `operators/`, `conversions/`,
-  `compound-assign/`, `folding/`, `types/`, `println/`); the bench and profiler
+  `compound-assign/`, `folding/`, `types/`, `println/`, `branches/`); the bench and profiler
   discover `*.java` **recursively**, so any depth works. A file's directory does
   **not** affect its bytes — the `SourceFile` attribute is the bare basename
   (`main.rs` uses `file_name()`), so moving a fixture between folders is
@@ -153,6 +156,18 @@ affects output, and serialization is deliberately allocation-free (child indices
 resolved through borrowed lookup tables, not cloned `Entry` keys). Always re-run
 the bench's correctness pass after changes.
 
+The **`StackMapTable`** also lives here. Each method carries its frames as full
+verifier-state snapshots (`entry_locals` + `StackFrame { offset, locals, stack }`);
+`stack_map_body` derives each frame's `offset_delta` (first = its offset, then
+`offset − prev − 1` — the −1 inter-frame bias) and picks the **smallest** frame
+form (`same`/`same_locals_1_stack_item`(+`_extended`)/`append`/`chop`/`full_frame`)
+via `classify_frame`. The pool ordering rules extend to it: the `"StackMapTable"`
+Utf8 is interned per-method right after `LineNumberTable`, **only when the method
+has frames** (a method whose branches all fold stays byte-identical to its
+straight-line form); a `full_frame`'s `Object` locals (here just `args`'s
+`[Ljava/lang/String;`) are interned right after that Utf8. Within `Code`, the
+sub-attributes are written **`LineNumberTable` then `StackMapTable`**.
+
 **`src/codegen.rs`** mirrors javac's exact choices with a fully typed emitter:
 the per-type constant-load ladders (`iconst`/`bipush`/`sipush`/`ldc` by
 magnitude; `lconst`/`ldc2_w`; `fconst`/`ldc`; `dconst`/`ldc2_w`, floats compared
@@ -167,6 +182,20 @@ rule: javac **constant-folds literal subtrees** (`100 % 7` → `iconst_2`,
 `1 + 2L` → `ldc2_w 3L`) with wrapping integer / exact IEEE-754 arithmetic and JLS
 shift masking, but emits real bytecode once a local is involved — so a folded
 constant is bit-identical to the unfolded computation.
+
+Comparisons and `if`/`else` add a second lowering mode. A boolean expression is
+emitted either as a **branch** (`gen_branch`/`gen_compare_branch`: the negated
+comparison opcode as a conditional jump — `if_icmp*`, or the single-operand
+`if<cond>` when the right operand is literal `0`, or `lcmp`/`fcmp{g,l}`/`dcmp{g,l}`
++ a zero-compare for wide types) or as a **value** (`gen_bool_value`: the true-first
+`iconst_1`/`goto`/`iconst_0` diamond). Forward branches use a label/fixup table
+backpatched in `resolve_branches`, which also **threads jumps through
+unconditional `goto`s**; `build_frames` then emits a frame only at pcs that remain
+real jump targets. Constant boolean conditions are folded (`fold_bool`) and the
+dead arm dropped — a fully-folded method emits no `StackMapTable` at all, matching
+its straight-line bytes. The running-locals snapshot (`Gen::locals`) grows as
+method-body locals are declared and is what each frame captures; branch bodies
+declare no locals in this subset, so the snapshot only ever grows (no `chop`).
 
 ## Determinism / Docker
 

@@ -6,10 +6,11 @@
 //! this is the allocator change the whole numeric subset rests on.
 //!
 //! `type_of` computes the static type of any expression, implementing Java's
-//! unary and binary numeric promotion. Codegen consults it to pick load/store
-//! opcodes, conversion opcodes, `println` descriptors, and constant-load ladders.
-//! There is still no control flow and no user-defined types, so this is a single
-//! linear pass.
+//! unary and binary numeric promotion (comparisons and `!` type to `boolean`).
+//! Codegen consults it to pick load/store opcodes, conversion opcodes, `println`
+//! descriptors, constant-load ladders, and comparison branch opcodes. Slot
+//! allocation still walks only method-body declarations (branch bodies introduce
+//! no new locals in this subset), so this stays a single linear pass.
 
 use std::collections::HashMap;
 
@@ -190,6 +191,8 @@ pub fn type_of(expr: &Expr, info: &MethodInfo) -> ValType {
         Expr::Name(n) => info.ty(n),
         Expr::Neg(e) => unary_promote(type_of(e, info)),
         Expr::BitNot(e) => unary_promote(type_of(e, info)),
+        Expr::Not(_) => ValType::Boolean,
+        Expr::Compare { .. } => ValType::Boolean,
         Expr::Cast { ty, .. } => valtype(*ty),
         Expr::Binary { op, left, right } => {
             let lt = type_of(left, info);

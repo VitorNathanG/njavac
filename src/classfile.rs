@@ -222,6 +222,16 @@ impl ConstantPool {
         self.intern(Entry::Methodref(owner.to_string(), name.to_string(), desc.to_string()))
     }
 
+    /// The slot of an already-interned `Class`, for resolving a StackMapTable
+    /// `Object` verification type. Panics if the class was never interned — a
+    /// frame must not reference a class codegen did not put in the pool.
+    pub fn class_index(&self, internal_name: &str) -> u16 {
+        *self
+            .index
+            .get(&Entry::Class(internal_name.to_string()))
+            .unwrap_or_else(|| panic!("class not interned: {internal_name}"))
+    }
+
     fn serialize(&self, buf: &mut ByteBuf) {
         // Resolve child indices through borrowed lookup tables built once from
         // the ordered entries, so writing never reconstructs or clones an `Entry`
@@ -302,6 +312,47 @@ impl ConstantPool {
     }
 }
 
+/// A `verification_type_info` in a StackMapTable frame — the verifier's view of
+/// one local or stack slot. Only the variants the numeric+branch subset produces;
+/// the four small integral types (`boolean`/`byte`/`char`/`short`/`int`) all map
+/// to `Integer`. `Object` carries the referenced class's internal name, resolved
+/// to its constant-pool `Class` index when the frame is serialized. A `Long`/
+/// `Double` is a **single** entry even though it occupies two JVM slots.
+#[derive(Clone, PartialEq, Eq)]
+pub enum VerificationType {
+    Integer,      // tag 1
+    Float,        // tag 2
+    Double,       // tag 3
+    Long,         // tag 4
+    Object(String), // tag 7 + u2 Class index
+}
+
+impl VerificationType {
+    fn write(&self, buf: &mut ByteBuf, cp: &ConstantPool) {
+        match self {
+            VerificationType::Integer => buf.u8(1),
+            VerificationType::Float => buf.u8(2),
+            VerificationType::Double => buf.u8(3),
+            VerificationType::Long => buf.u8(4),
+            VerificationType::Object(name) => {
+                buf.u8(7);
+                buf.u16(cp.class_index(name));
+            }
+        }
+    }
+}
+
+/// One stack-map point: the full verifier state (locals + operand stack) at a
+/// branch target, keyed by its absolute bytecode offset. Codegen produces these
+/// as complete snapshots in increasing-offset order; the serializer derives each
+/// frame's `offset_delta` (with javac's −1 inter-frame bias) and picks the
+/// smallest frame form relative to the previous frame's state.
+pub struct StackFrame {
+    pub offset: u16,
+    pub locals: Vec<VerificationType>,
+    pub stack: Vec<VerificationType>,
+}
+
 /// One method: fully lowered bytecode plus the metadata needed to write it.
 pub struct Method {
     pub access_flags: u16,
@@ -312,6 +363,12 @@ pub struct Method {
     pub code: Vec<u8>,
     /// (start_pc, line_number) pairs for the LineNumberTable attribute.
     pub line_numbers: Vec<(u16, u16)>,
+    /// Verifier state at method entry (the parameter locals). Only the seed for
+    /// the first frame's delta/append computation; never serialized on its own.
+    pub entry_locals: Vec<VerificationType>,
+    /// StackMapTable frames in increasing-offset order. Empty ⇒ the method is
+    /// straight-line and no StackMapTable attribute (nor its Utf8) is emitted.
+    pub stack_frames: Vec<StackFrame>,
 }
 
 pub struct ClassFile {
@@ -332,12 +389,17 @@ impl ClassFile {
         let this_idx = cp.class(&self.this_class);
         let super_idx = cp.class(&self.super_class);
 
-        // Per-method structural Utf8s, in declaration order.
+        // Per-method structural Utf8s, in declaration order. `StackMapTable` is
+        // interned right after the method's name/descriptor and the standing
+        // `Code`/`LineNumberTable` names, and only when the method has frames —
+        // exactly javac's pool order and its "omit the Utf8 for straight-line
+        // methods" rule.
         struct MethodIdx {
             name: u16,
             descriptor: u16,
             code_attr: u16,
             line_attr: u16,
+            stack_map_attr: Option<u16>,
         }
         let mut method_idx = Vec::new();
         for m in &self.methods {
@@ -345,7 +407,16 @@ impl ClassFile {
             let descriptor = cp.utf8(&m.descriptor);
             let code_attr = cp.utf8("Code");
             let line_attr = cp.utf8("LineNumberTable");
-            method_idx.push(MethodIdx { name, descriptor, code_attr, line_attr });
+            let stack_map_attr = (!m.stack_frames.is_empty()).then(|| cp.utf8("StackMapTable"));
+            // Any `Class` a frame names (only `args`'s array type here, and only
+            // when a full_frame lists it) is interned right after the attribute
+            // name — javac's pool order.
+            if stack_map_attr.is_some() {
+                for name in frame_object_classes(&m.stack_frames, &m.entry_locals) {
+                    cp.class(&name);
+                }
+            }
+            method_idx.push(MethodIdx { name, descriptor, code_attr, line_attr, stack_map_attr });
         }
 
         // Class attribute names.
@@ -371,11 +442,19 @@ impl ClassFile {
             buf.u16(mi.descriptor);
             buf.u16(1); // attributes_count: just Code
 
+            // The StackMapTable body (number_of_entries + frames), if any. Built
+            // first so it can be both measured and written.
+            let smt_body = mi
+                .stack_map_attr
+                .map(|_| stack_map_body(&m.stack_frames, &m.entry_locals, &cp));
+
             // Code attribute.
             // body: max_stack(2) max_locals(2) code_len(4) code exc_len(2)
-            //       attrs_count(2) + LineNumberTable attribute
+            //       attrs_count(2) + LineNumberTable attribute [+ StackMapTable]
             let line_attr_len = 2 + 4 * m.line_numbers.len();
-            let code_attr_len = 2 + 2 + 4 + m.code.len() + 2 + 2 + (6 + line_attr_len);
+            let smt_attr_len = smt_body.as_ref().map_or(0, |b| 6 + b.len());
+            let code_attrs = 1 + smt_body.is_some() as u16; // LineNumberTable [+ StackMapTable]
+            let code_attr_len = 2 + 2 + 4 + m.code.len() + 2 + 2 + (6 + line_attr_len) + smt_attr_len;
             buf.u16(mi.code_attr);
             buf.u32(code_attr_len as u32);
             buf.u16(m.max_stack);
@@ -383,13 +462,20 @@ impl ClassFile {
             buf.u32(m.code.len() as u32);
             buf.bytes(&m.code);
             buf.u16(0); // exception_table_length
-            buf.u16(1); // attributes_count: LineNumberTable
+            buf.u16(code_attrs);
+
+            // LineNumberTable first, then StackMapTable — javac's sub-attribute order.
             buf.u16(mi.line_attr);
             buf.u32(line_attr_len as u32);
             buf.u16(m.line_numbers.len() as u16);
             for &(pc, line) in &m.line_numbers {
                 buf.u16(pc);
                 buf.u16(line);
+            }
+            if let (Some(attr), Some(body)) = (mi.stack_map_attr, &smt_body) {
+                buf.u16(attr);
+                buf.u32(body.len() as u32);
+                buf.bytes(body);
             }
         }
 
@@ -400,6 +486,137 @@ impl ClassFile {
 
         buf.into_vec()
     }
+}
+
+/// Serialize a method's StackMapTable attribute *body* (`number_of_entries`
+/// followed by the frames) into a fresh buffer. Returns the bytes so the caller
+/// can both measure (`attribute_length`) and emit them.
+///
+/// For each frame the `offset_delta` uses javac's rule — the first frame's delta
+/// is its absolute offset; every later frame's is `offset − prevOffset − 1` (the
+/// −1 inter-frame bias) — and the smallest frame form that expresses the change
+/// from the previous frame's state is chosen (`same` / `same_locals_1_stack_item`
+/// / `append` / `chop`, falling back to `full_frame`), exactly as javac does.
+fn stack_map_body(frames: &[StackFrame], entry_locals: &[VerificationType], cp: &ConstantPool) -> Vec<u8> {
+    let mut buf = ByteBuf::new();
+    buf.u16(frames.len() as u16);
+
+    let mut prev_offset: Option<u16> = None;
+    let mut prev_locals: &[VerificationType] = entry_locals;
+    for f in frames {
+        let delta = match prev_offset {
+            None => f.offset,
+            Some(p) => f.offset - p - 1,
+        };
+        match classify_frame(&f.locals, &f.stack, prev_locals) {
+            FrameShape::Same if delta <= 63 => buf.u8(delta as u8),
+            FrameShape::Same => {
+                buf.u8(251); // same_frame_extended
+                buf.u16(delta);
+            }
+            FrameShape::SameLocals1(vt) if delta <= 63 => {
+                buf.u8(64 + delta as u8); // same_locals_1_stack_item_frame
+                vt.write(&mut buf, cp);
+            }
+            FrameShape::SameLocals1(vt) => {
+                buf.u8(247); // same_locals_1_stack_item_frame_extended
+                buf.u16(delta);
+                vt.write(&mut buf, cp);
+            }
+            FrameShape::Append(new) => {
+                buf.u8(251 + new.len() as u8); // append_frame (k = 1..=3)
+                buf.u16(delta);
+                for vt in new {
+                    vt.write(&mut buf, cp);
+                }
+            }
+            FrameShape::Chop(k) => {
+                buf.u8(251 - k); // chop_frame
+                buf.u16(delta);
+            }
+            FrameShape::Full => {
+                buf.u8(255);
+                buf.u16(delta);
+                buf.u16(f.locals.len() as u16);
+                for vt in &f.locals {
+                    vt.write(&mut buf, cp);
+                }
+                buf.u16(f.stack.len() as u16);
+                for vt in &f.stack {
+                    vt.write(&mut buf, cp);
+                }
+            }
+        }
+
+        prev_offset = Some(f.offset);
+        prev_locals = &f.locals;
+    }
+    buf.into_vec()
+}
+
+/// The frame form javac would pick for the transition from `prev` locals to the
+/// current `locals`/`stack`, ignoring the `offset_delta` (which only selects
+/// between a form and its `_extended` variant). The serializer and the pool-
+/// interning pass share this so they always agree on which frames are full.
+enum FrameShape<'a> {
+    Same,
+    SameLocals1(&'a VerificationType),
+    Append(&'a [VerificationType]),
+    Chop(u8),
+    Full,
+}
+
+fn classify_frame<'a>(
+    locals: &'a [VerificationType],
+    stack: &'a [VerificationType],
+    prev: &[VerificationType],
+) -> FrameShape<'a> {
+    if locals == prev {
+        match stack {
+            [] => FrameShape::Same,
+            [one] => FrameShape::SameLocals1(one),
+            _ => FrameShape::Full,
+        }
+    } else if stack.is_empty() && is_prefix(prev, locals) && locals.len() - prev.len() <= 3 {
+        FrameShape::Append(&locals[prev.len()..])
+    } else if stack.is_empty() && is_prefix(locals, prev) && prev.len() - locals.len() <= 3 {
+        FrameShape::Chop((prev.len() - locals.len()) as u8)
+    } else {
+        FrameShape::Full
+    }
+}
+
+/// The internal names of every `Class` a method's frames will reference, in
+/// serialization order — the `Object` verification types that survive into the
+/// chosen frame encodings. Codegen leaves these classes for `to_bytes` to intern
+/// at javac's pool position (right after `StackMapTable`), so an `Object` local
+/// (e.g. `args`) only enters the pool when a `full_frame` actually names it.
+fn frame_object_classes(frames: &[StackFrame], entry_locals: &[VerificationType]) -> Vec<String> {
+    let mut names = Vec::new();
+    let mut collect = |vt: &VerificationType| {
+        if let VerificationType::Object(name) = vt {
+            names.push(name.clone());
+        }
+    };
+    let mut prev: &[VerificationType] = entry_locals;
+    for f in frames {
+        match classify_frame(&f.locals, &f.stack, prev) {
+            FrameShape::Same | FrameShape::Chop(_) => {}
+            FrameShape::SameLocals1(vt) => collect(vt),
+            FrameShape::Append(new) => new.iter().for_each(&mut collect),
+            FrameShape::Full => {
+                f.locals.iter().for_each(&mut collect);
+                f.stack.iter().for_each(&mut collect);
+            }
+        }
+        prev = &f.locals;
+    }
+    names
+}
+
+/// Whether `short` is a (not-necessarily-proper) prefix of `long`.
+fn is_prefix(short: &[VerificationType], long: &[VerificationType]) -> bool {
+    short.len() <= long.len() && long[..short.len()] == *short
 }
 
 /// Big-endian byte buffer.

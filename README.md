@@ -15,7 +15,7 @@ were wrong, the row says so.
 
 ---
 
-## Implemented today (Tier-2: "straight-line numeric")
+## Implemented today (numeric subset + the first branch)
 
 The entire supported language is:
 
@@ -26,8 +26,9 @@ The entire supported language is:
   for `long`/`double`; `String[]` only as `main`'s parameter (never read).
 - Statements: primitive local declaration (initializer optional), plain
   assignment, **compound assignment** (`+= -= *= /= %= &= |= ^= <<= >>= >>>=`),
-  **`++`/`--`** (prefix or postfix, statement position), and
-  `System.out.println(…)` as an expression statement.
+  **`++`/`--`** (prefix or postfix, statement position), **`if`/`else if`/`else`**
+  (braced or single-statement, nested), and `System.out.println(…)` as an
+  expression statement.
 - Expressions: literals in every form (all int radices + underscores, `long`/
   `float`/`double` suffixes, `char` literals with escapes incl. octal and
   `\uXXXX`, `true`/`false`), string literals, local reads, unary `-` and `~`,
@@ -41,10 +42,17 @@ The entire supported language is:
 - Line (`//`) and block (`/* */`) comments; `LineNumberTable` + `SourceFile`;
   the implicit no-arg `<init>`.
 
+- **Comparisons and `if`/`else`** — `< > <= >= == !=` and `!`, and `if`/`else if`/
+  `else` (braced or single-statement, nested). This is the first control flow, so
+  it carries the whole **`StackMapTable`** subsystem: minimal frame selection, the
+  −1 offset-delta bias, dead-branch elimination on constant conditions, and
+  jump-to-`goto` threading. A comparison materialized into a `boolean` local emits
+  the `iconst_1`/`goto`/`iconst_0` diamond.
+
 Everything below still forces a class-file subsystem this emitter does not yet
-have: real control flow (`StackMapTable`), `String` concatenation
-(`invokedynamic`), objects/arrays/methods. The numeric surface deliberately
-stops just short of the first branch.
+have: `&&`/`||`/`?:` short-circuit and full-frame boolean materialization (e.g.
+`println(a < b)`), loops and `switch` (more `StackMapTable`), `String`
+concatenation (`invokedynamic`), objects/arrays/methods.
 
 ---
 
@@ -122,11 +130,14 @@ not the parsing — is where byte-identity is won or lost.
 
 ### C. Operators & expressions
 
-- [ ] Comparison `< > <= >= == !=`, logical `&& || !`, ternary `?:` — **[SMT]**,
-      but only when the result is **materialized as a value** (the
-      `if_icmp*`/`iconst_1`/`goto`/`iconst_0` diamond). Used directly as a branch
-      condition (`if (a < 5)`) they emit just `if_icmpge` with no diamond —
-      codegen must know the usage context
+- [x] Comparison `< > <= >= == !=` and unary `!` — done, **[SMT]** when the
+      result is **materialized as a value** (the `if_icmp*`/`iconst_1`/`goto`/
+      `iconst_0` diamond). Used directly as an `if` condition they emit just the
+      negated branch (`if (a < 5)` → `if_icmpge`) with no diamond; wide types use
+      `lcmp`/`fcmp{g,l}`/`dcmp{g,l}` then a zero-compare branch, `x <op> 0` folds to
+      the single-operand `if<cond>` forms. **Still open:** `&& || ?:` (short-circuit)
+      and materializing a comparison onto a non-empty stack (e.g. `println(a < b)`,
+      which needs a `full_frame`)
 - [x] Bitwise / shift `& | ^ ~ << >> >>>` — done, on `int` and `long`. `~x` is
       `iconst_m1; ixor` (int) / `ldc2_w -1L; lxor` (long); a long shift by a long
       amount narrows the amount with `l2i`
@@ -181,8 +192,12 @@ not the parsing — is where byte-identity is won or lost.
 
 ### D. Statements & control flow — all **[SMT]**
 
-- [ ] `if` / `else if` / `else` — even a **one-armed `if`** needs a StackMapTable
-      (one `append`/`same` frame at the fall-through merge)
+- [x] `if` / `else if` / `else` — done. The first branch, and the whole
+      `StackMapTable` subsystem it forces: minimal frame selection (`same`/
+      `same_locals_1_stack_item`/`append`/`full_frame`) with the −1 offset-delta
+      bias, dead-branch folding on constant conditions (no frame; the `if`
+      vanishes), and jump-to-`goto` threading — all byte-identical. Locals are
+      still method-body scope (no block-scoped decls → no `chop_frame` yet)
 - [ ] `while`, `do … while` (backward `goto`), C-style `for` (`iinc`), enhanced
       `for` — **two distinct lowerings**: over an array = hidden
       index/`arraylength`/`iaload`; over an `Iterable` =
@@ -453,17 +468,19 @@ scope. Three qualifications shape njavac's design:
 
 ## Suggested next rungs
 
-The whole **Tier-2 numeric surface** (§A primitives + two-slot model +
-conversions, §B literals, §C bitwise/shift/compound/inc-dec) is now done —
-verified by the fixtures under `fixtures/` (`MixedPromotion`, `ExplicitCasts`,
-`Long*`, `Double*`, `Float*`, `Iinc*`, `Compound*`, `Narrow*`, `Fold*`, …).
+The whole **numeric surface** (§A primitives + two-slot model + conversions, §B
+literals, §C bitwise/shift/compound/inc-dec) plus the **first branch** (§C
+comparisons + `!`, §D `if`/`else`, and the `StackMapTable` it forces) is now
+done — verified by the fixtures under `fixtures/` (`MixedPromotion`,
+`ExplicitCasts`, `Long*`, `Fold*`, … and `branches/` for the control flow).
 Cheapest-first from here, given the byte-identity constraint:
 
-1. **comparisons + `if`/`else`** — the first branch, which forces the
-   **`StackMapTable`** (and its frame-selection optimizer). The single hardest
-   class-file subsystem and the gate to all of §D; do it once and most control
-   flow follows. (Booleans, the value type it needs, already exist.)
+1. **`&& || ?:` + full-frame boolean materialization** — finish the boolean
+   surface: short-circuit chains (jumps to a shared target) and materializing a
+   comparison onto a non-empty stack (`println(a < b)`), which needs a
+   `full_frame`. Small next step on top of the frame machinery just built.
 2. **`while` / `for`** — backward branches; reuse the `StackMapTable` machinery.
+   Block-scoped loop locals bring in the `chop_frame` this rung deferred.
 3. **String concatenation** — the first **`invokedynamic`** + `BootstrapMethods`
    (+ the `InnerClasses`/`MethodHandles$Lookup` row), unlocking realistic
    `println`. Remember the runtime-operand condition and the raw recipe bytes.
