@@ -2,10 +2,11 @@
 
 A toy **Java 25 → JVM bytecode** compiler written in Rust whose one hard
 constraint is **byte-identical output to the reference `javac`** (GraalVM CE
-`25.0.2-graalce`, class-file major version 69). See [`CLAUDE.md`](CLAUDE.md) for
-the architecture and the benchmark that is also the test suite.
+`25.0.2-graalce`, class-file major version 69). See [`CLAUDE.md`](CLAUDE.md) for the
+architecture and the benchmark that is also the test suite; its §"Documentation: one
+fact, one home" defines which of README / CLAUDE.md / ROADMAP owns what.
 
-This document tracks **language coverage**: what the compiler accepts today and,
+This document is the **language-coverage** home: what the compiler accepts today and,
 below, an enumeration of the Java 25 syntax that is **not yet implemented**.
 
 Every requirement tag below was **empirically verified** against
@@ -511,6 +512,5 @@ Byte-invisible freebies you can add any time once the surrounding machinery
 exists, at zero class-file cost: **`var`**, **unnamed `_`**, **text blocks**
 (just a `String` constant), and **flexible constructor bodies**.
 
-Add a fixture in `fixtures/` for every new rung (filename must match the
-`public class` name) and keep the benchmark's correctness pass green — it
-byte-compares against the live `javac` on every run.
+Every new rung needs a fixture under `fixtures/`; the fixture rules and the
+correctness gate live in CLAUDE.md §Testing.

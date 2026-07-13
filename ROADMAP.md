@@ -1,20 +1,16 @@
 # ROADMAP.md — infrastructure & architecture evolution
 
 This is the **make-the-compiler-extensible** plan: the infrastructure and
-structural refactors that let njavac grow toward a fuller Java compiler while
-never losing byte-identity to `javac`. It is deliberately *orthogonal* to the two
-existing docs:
+structural refactors that let njavac grow toward a fuller Java compiler while never
+losing byte-identity to `javac`. It owns *ordered infra work not yet done*, the
+record of what landed, and the open bug backlog; the full charter and its boundary
+against README.md (language coverage) and CLAUDE.md (mechanics + conventions) are
+defined once in **CLAUDE.md §"Documentation: one fact, one home"**. When an item here
+lands, check it off with a one-line "as built" and record the mechanics in CLAUDE.md
+— don't restate them here.
 
-- **README.md** tracks **language coverage** — which constructs compile today and
-  the ordered next *language* rungs (`&& || ?:`, loops, switch, methods, …).
-- **CLAUDE.md** tracks **how the compiler works and how we work on it** — the
-  byte-identity mechanics and the standing conventions.
-- **ROADMAP.md** (this file) tracks **how we make the codebase ready** to take
-  those rungs cheaply and safely. When an item here lands, check it off and record
-  the mechanics in CLAUDE.md.
-
-It came out of a three-way audit (front-end, back-end, dev/test infra) in
-2026-07. Nothing here has been built yet; this is the agreed sequencing.
+It came out of a three-way audit (front-end, back-end, dev/test infra) in 2026-07;
+this is the agreed sequencing.
 
 ---
 
@@ -89,25 +85,12 @@ making `Unsupported` (skip) genuinely distinct from an njavac invariant violatio
   already *cleanly refuses* out-of-scope input. The generator emits valid in-scope
   Java and the only hard-fail signal is *both compilers accept, bytes differ* — by
   definition an njavac bug. It grows one rung at a time and is a permanent net.
-- **As built (designed via a 4-lens agent panel; see CLAUDE.md §Testing).**
-  - **Oracle contract (no false positives).** Both-accept-bytes-differ = FINDING;
-    javac-reject = `generator-invalid` telemetry; njavac-panic = `njavac-reject`
-    telemetry (not a hard finding pre-Phase-1). The generator's in-subset discipline
-    is a *yield* lever, not a soundness lever.
-  - **Three soundness invariants.** A single `ident()` naming chokepoint (class ==
-    filename == `source_file` arg, used by gen/writer/compile/minimizer — the
-    `.class` couples to all three); `reset_dir` + an exact-file-set assertion (no
-    stale/aux `.class`); generate-all-IR-before-any-IO determinism.
-  - **Performance.** njavac in-process; ONE `javac -d <dir> @argfile` per batch
-    (default 1000) — `@argfile` dodges `ARG_MAX`, scratch on the normal FS (not the
-    64 MB `/dev/shm`). ~15 s for 5000 cases. `--jobs` deferred (asserts `==1`).
-  - **Structure.** File sectioned by axis-of-change so a rung is a 5-touch list
-    (`FExpr`/`FStmt` variant, gen arm, render arm, minimize pass, `ScopeCaps` flag).
-    Two-mode boolean builder (branch vs value) encodes the in-scope boundary.
-  - **Commands.** `make fuzz [SEED= COUNT= BATCH=]` / `make fuzz-selftest`;
-    flags `--keep-going` (enumerate distinct signatures), `--no-min`, `--dump-sources`.
-- **Found on first run** (the tool paid for itself immediately) — see the
-  fuzzer-found bug backlog below.
+- **As built.** Shipped 2026-07, designed via a 4-lens agent panel. Its living
+  mechanics — the oracle contract, the three soundness invariants, the generator
+  scope boundary, the performance model, and the commands/flags — are documented
+  once in **CLAUDE.md §Testing** (a new rung grows the fuzzer by the 5-touch list
+  there); they are not restated here. It found a real constant-folding bug family on
+  its first run (backlog below).
 - **Deferred to v1.1.** Expression-level minimization (v1 is statement-level, so a
   minimized fixture keeps its decls' full initializers); `--jobs` parallelism.
 

@@ -10,43 +10,58 @@ constraint is **byte-identical output to the reference `javac`** (GraalVM CE
 `.class` must equal javac's `.class` byte-for-byte. Everything about the design
 follows from that one invariant.
 
-Current scope is the **numeric subset plus the first branch**: one `public class`
-with a `static void main`, locals of any of the eight primitives (`int`/`long`/
-`float`/`double`/`boolean`/`char`/`byte`/`short`, with the two-slot `long`/`double`
-model), the full arithmetic/bitwise/shift/unary operator set (`+ - * / % & | ^ ~
-<< >> >>>`), compound assignment and `++`/`--`, primitive casts with binary
-numeric promotion, every literal form, `System.out.println` of any primitive or a
-string literal, and — the newest rung — **comparisons (`< <= > >= == !=`, `!`) and
-`if`/`else if`/`else`**, which brings in the **`StackMapTable`** (frame selection,
-the −1 offset-delta bias, dead-branch folding, jump-to-`goto` threading). Still
-out of scope (each a future rung): `&& || ?:` and full-frame boolean
-materialization (`println(a < b)`), loops and `switch`, string concatenation
-(`invokedynamic`), objects/arrays/methods, multiple methods. See `README.md` for
-the checked-off feature map and the ordered next rungs.
+Current scope is a **numeric subset with early control flow** — one `public class`
+with a `static void main`, the eight primitives (two-slot `long`/`double`), the full
+arithmetic/bitwise/shift/unary operator set with binary numeric promotion and
+constant folding, compound assignment and `++`/`--`, every literal form,
+`System.out.println` of a primitive or string literal, comparisons + `if`/`else`
+(which carries the **`StackMapTable`**), and short-circuit `&&`/`||`. **README.md owns
+the authoritative per-rung coverage map (§A–§I) and the ordered next rungs — track
+feature-level scope there, not here.** This headline stays deliberately coarse so it
+can't drift the way a hand-maintained feature list does (it once still listed
+`&&`/`||` as out of scope a whole rung after it landed).
 
 ## Working conventions
 
-**Keep the docs in lockstep with the code, in the *same* commit as the change.**
-Where a change is documented depends on what kind it is:
+**Documentation: one fact, one home — link, don't copy.** Keep the docs in lockstep
+with the code, in the *same* commit as the change. There are four homes, each with a
+charter and a boundary; when a doc needs a fact that lives in another, it **points to
+it by section name** instead of restating it. The failure this rule exists to kill is
+a fact written into two files' prose, where one copy later rots (the `&&`/`||` scope
+line sat "out of scope" in one doc a whole rung after it shipped, described in full,
+in another) — if a change makes you write the same prose twice, collapse one copy to
+a pointer.
 
-- **README.md** is the **language-coverage** record: update the checked-off
-  feature map (§A–§I, `[ ]`→`[x]`) and any conceptual/scope prose whenever a rung
-  lands or the supported surface moves. It is the source of truth for "what
-  compiles today" and the ordered next rungs.
-- **CLAUDE.md** (this file) is **how the compiler works and how we work on it**:
-  record architectural specifics and byte-identity gotchas here, and *also* any
-  standing instruction the user gives or way of working we agree on — so it
-  survives across sessions. If the user tells you to do something a certain way,
-  write it down here.
-- **ROADMAP.md** is the **infrastructure & architecture evolution** plan: the
-  ordered work that makes the codebase ready to take new language rungs cheaply
-  and safely (fuzzer/verify/CI tooling, diagnostics, the sema-scoping and
-  attribute-abstraction keystones). It is orthogonal to README's *language*-rung
-  list. When one of its items lands, check it off there and record the resulting
-  mechanics here. Read it when planning infrastructure or a large refactor.
-- Apply the same discipline to whatever else a change touches (a new fixture
-  subfolder, a CLI flag, an env var, a doc comment that is now wrong): document
-  it where a future reader would look for it.
+- **README.md — the language-coverage map.** *What compiles today* and *the ordered
+  next language rungs*: the §A–§I checkbox map, the requirement tags, the scope
+  prose, and the forward-looking byte-identity gotchas for features not built yet.
+  The source of truth for "is X supported?". **Update when** a rung lands or the
+  supported surface moves. **Not here:** how a feature is implemented (→ CLAUDE.md
+  §Architecture), tooling/infra plans (→ ROADMAP), how-we-work rules (→ CLAUDE.md).
+- **CLAUDE.md (this file) — how the compiler works and how we work.** Two charters:
+  (a) **mechanics** — the byte-identity implementation *as it exists now* (the
+  constant pool, `StackMapTable`, codegen lowering, the pipeline); (b) **conventions**
+  — standing instructions and agreed ways of working, this taxonomy included.
+  **Update when** the implementation of a built feature changes, or the user gives a
+  standing instruction (if the user tells you to do something a certain way, write it
+  down here). **Not here:** the coverage checklist (→ README — do not re-enumerate
+  the supported surface; it drifts), infra work not yet built (→ ROADMAP), a lone
+  decision's fine detail that belongs in a code doc-comment at its function.
+- **ROADMAP.md — the infrastructure & architecture evolution plan.** *Ordered infra/
+  refactor work not yet done*, the *record of what landed* (checked off, with a
+  one-line "as built" + a pointer to the mechanics in CLAUDE.md), and the *open
+  fuzzer-found bug backlog*. **Update when** an infra item is planned or lands, or a
+  bug is triaged. **Not here:** language-rung order (→ README), the living mechanics
+  of a landed item (→ CLAUDE.md — ROADMAP keeps only the completion record),
+  how-we-work rules (→ CLAUDE.md).
+- **Code doc-comments & `make help` — the finest grain.** A specific javac-matching
+  decision's rationale lives in the doc-comment on its function; the prose docs
+  *reference the function*, they don't re-derive it. The command/flag list's source
+  of truth is `make help`; docs describe a command's *purpose*, not a flag catalog.
+
+Apply the same "one home + a pointer" discipline to anything else a change touches (a
+new fixture subfolder, a CLI flag, an env var, a doc comment now wrong): write it
+once, where a future reader looks first.
 
 **Commit and push directly to `main`; never branch.** This repo does not use
 feature branches — commit straight onto `main` and `git push` to
@@ -221,9 +236,9 @@ debugging only and is **not** a sanctioned way to validate byte-identity.
     census; `--dump-sources` prints generated sources (no compile) for a determinism
     check. **A new rung grows the fuzzer by a 5-touch list** (add an `FExpr`/`FStmt`
     variant, a gen arm, a render arm, a minimize pass, a `ScopeCaps` flag) — run
-    `make fuzz` as part of landing it. The current fuzzer-found bug backlog (a
-    constant-folding NaN-canonicalization bug and a mixed-type folding gap) lives in
-    ROADMAP.md §"Fuzzer-found bug backlog".
+    `make fuzz` as part of landing it. The open fuzzer-found bug backlog lives in
+    ROADMAP.md §"Fuzzer-found bug backlog" (kept there and not re-characterized here,
+    so this pointer can't go stale).
 
 - **Single-fixture verify (0.2).** `make verify FILE=<File.java>` (fast, cached
   goldens) or `make bench FILE=<File.java>` (online) compiles just that fixture
