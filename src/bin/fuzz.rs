@@ -869,6 +869,10 @@ fn char_str(c: u16) -> String {
 
 struct Config {
     seed: u64,
+    /// Whether the seed was pinned on the command line (positional or `--seed`).
+    /// When false, a bare `make fuzz` picks a fresh random seed each run so every
+    /// invocation explores new programs; the chosen seed is printed to reproduce it.
+    seed_set: bool,
     count: u64,
     batch: u64,
     javac: String,
@@ -885,6 +889,7 @@ impl Config {
         let default_javac = format!("{home}/.sdkman/candidates/java/25.0.2-graalce/bin/javac");
         let mut cfg = Config {
             seed: 0,
+            seed_set: false,
             count: 5000,
             batch: 1000,
             javac: std::env::var("JAVAC").unwrap_or(default_javac),
@@ -898,6 +903,11 @@ impl Config {
         let mut args = std::env::args().skip(1);
         while let Some(a) = args.next() {
             match a.as_str() {
+                "--seed" => {
+                    cfg.seed = args.next().and_then(|v| v.parse().ok()).expect("--seed needs a u64");
+                    cfg.seed_set = true;
+                }
+                "--count" => cfg.count = args.next().and_then(|v| v.parse().ok()).unwrap_or(cfg.count),
                 "--batch" => cfg.batch = args.next().and_then(|v| v.parse().ok()).unwrap_or(cfg.batch),
                 "--out-dir" => cfg.out_dir = PathBuf::from(args.next().expect("--out-dir needs a path")),
                 "--javac" => cfg.javac = args.next().expect("--javac needs a path"),
@@ -911,10 +921,13 @@ impl Config {
                 "--selftest" => cfg.selftest = true,
                 "-h" | "--help" => {
                     println!(
-                        "usage: fuzz [<seed>] [<count>] [--batch N] [--keep-going] [--no-min] \
-                         [--out-dir DIR] [--jobs 1] [--dump-sources] [--selftest] [--javac PATH]\n\
-                         \n  --keep-going  don't stop at the first finding; enumerate distinct ones\
-                         \n  --no-min      skip minimization (fast enumeration; emits raw repros)"
+                        "usage: fuzz [<seed>] [<count>] [--seed N] [--count N] [--batch N] \
+                         [--keep-going] [--no-min] [--out-dir DIR] [--jobs 1] [--dump-sources] \
+                         [--selftest] [--javac PATH]\n\
+                         \n  <seed> / --seed  pin the seed; OMIT for a fresh random seed each run\
+                         \n                   (printed so a finding reproduces with `make fuzz SEED=<n>`)\
+                         \n  --keep-going     don't stop at the first finding; enumerate distinct ones\
+                         \n  --no-min         skip minimization (fast enumeration; emits raw repros)"
                     );
                     std::process::exit(0);
                 }
@@ -929,6 +942,7 @@ impl Config {
                     });
                     if positional == 0 {
                         cfg.seed = v;
+                        cfg.seed_set = true;
                     } else if positional == 1 {
                         cfg.count = v;
                     }
@@ -986,11 +1000,25 @@ struct Tally {
     findings: u64,
 }
 
+/// A fresh seed for a bare `make fuzz` (no external RNG crate): mix the wall-clock
+/// nanoseconds with the pid through the SplitMix64 finalizer for good bit spread.
+/// Only entropy source needed — the run itself is fully deterministic in `cfg.seed`.
+fn random_seed() -> u64 {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0);
+    let mut x = nanos ^ (std::process::id() as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    x = (x ^ (x >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    x = (x ^ (x >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    x ^ (x >> 31)
+}
+
 fn main() {
     // Speak in one voice: swallow the default panic dump (out-of-scope inputs
     // panic by design and are caught).
     std::panic::set_hook(Box::new(|_| {}));
-    let cfg = Config::from_args();
+    let mut cfg = Config::from_args();
 
     if cfg.dump_sources {
         dump_sources(&cfg);
@@ -998,6 +1026,13 @@ fn main() {
     }
     if cfg.selftest {
         std::process::exit(selftest(&cfg));
+    }
+
+    // A bare `make fuzz` explores a fresh random seed every run; pin it (positional
+    // or SEED=/--seed) to reproduce. Randomize only here, after the deterministic
+    // self-check / dump-sources paths have taken their fixed default.
+    if !cfg.seed_set {
+        cfg.seed = random_seed();
     }
 
     let scratch = std::env::temp_dir().join(format!("njavac-fuzz-{}", cfg.seed));
@@ -1012,8 +1047,8 @@ fn main() {
     let mut reject_dumped = 0u32;
 
     println!(
-        "fuzz: seed={} count={} batch={} javac={}",
-        cfg.seed, cfg.count, cfg.batch, cfg.javac
+        "fuzz: seed={} count={} batch={} javac={}\n  reproduce this exact run with: make fuzz SEED={}",
+        cfg.seed, cfg.count, cfg.batch, cfg.javac, cfg.seed
     );
 
     let mut n: u64 = 0;

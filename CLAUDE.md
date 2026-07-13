@@ -216,9 +216,12 @@ debugging only and is **not** a sanctioned way to validate byte-identity.
 
 - **Differential fuzzer (0.1).** `make fuzz [SEED=n COUNT=n BATCH=n]` generates
   random *in-scope* Java (`src/bin/fuzz.rs`), compiles each with the pinned javac and
-  njavac (in-process), and byte-compares. `make fuzz-selftest` exercises the
-  finding→minimize→report machinery. Findings land in `fuzz-out/` (git-ignored) as a
-  minimized `.java` + a `.diff`. Key facts a future rung's generator MUST preserve:
+  njavac (in-process), and byte-compares. **A bare `make fuzz` uses a fresh random
+  seed each run** (explores new programs every time) and prints it, so any finding
+  reproduces with `make fuzz SEED=<n>`; pass `SEED=n` to pin it. `make fuzz-selftest`
+  exercises the finding→minimize→report machinery (fixed seed, deterministic).
+  Findings land in `fuzz-out/` (git-ignored) as a minimized `.java` + a `.diff`. Key
+  facts a future rung's generator MUST preserve:
   - **The oracle contract — one sentence.** *Both compilers accept and the bytes
     differ* is the ONLY hard-fail signal (it is, by definition, an njavac bug);
     a javac reject is `generator-invalid` telemetry, an njavac panic is

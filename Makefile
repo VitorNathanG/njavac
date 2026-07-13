@@ -10,7 +10,7 @@
 #   make probe       FILE=Probe.java           # disassemble a probe with the pinned javac (javap -v -p)
 #   make src-diff    FILE=Probe.java           # diff BOTH compilers on one source (byte + classdiff + javap)
 #   make diff        A=a.class B=b.class       # structural class-file diff, in-container
-#   make fuzz        [SEED=n] [COUNT=n]        # differential fuzz: random in-scope Java vs pinned javac
+#   make fuzz        [SEED=n] [COUNT=n]        # differential fuzz vs pinned javac (random seed unless SEED=n)
 #   make fuzz-selftest                         # prove the finding->minimize->report machinery
 #   make image                                 # build the pinned image
 #   make check                                 # LOCAL release build (debugging only; NOT a test)
@@ -25,7 +25,9 @@ FILE      ?=
 A         ?=
 B         ?=
 # fuzz knobs (the fuzzer is NOT a timing benchmark, so it is not CPU-pinned).
-SEED      ?= 0
+# SEED is unset by default -> a fresh RANDOM seed each run (printed so a finding
+# reproduces with `make fuzz SEED=<n>`); set SEED=n to pin it.
+SEED      ?=
 COUNT     ?= 5000
 BATCH     ?=
 FUZZFLAGS ?=
@@ -80,9 +82,9 @@ diff: image  ## structural class-file diff in-container: make diff A=x.class B=y
 	@test -n "$(A)" && test -n "$(B)" || { echo "usage: make diff A=a.class B=b.class"; exit 2; }
 	docker run --rm -v "$(CURDIR):/w" -w /w --entrypoint classdiff $(IMAGE) $(A) $(B)
 
-fuzz: image  ## differential fuzz random in-scope Java: make fuzz [SEED=n] [COUNT=n] [BATCH=n]
+fuzz: image  ## differential fuzz random in-scope Java (random seed unless SEED=n): make fuzz [SEED=n] [COUNT=n] [BATCH=n]
 	docker run --rm -v "$(CURDIR):/w" -w /w --entrypoint fuzz $(IMAGE) \
-	  $(SEED) $(COUNT) $(if $(BATCH),--batch $(BATCH),) $(FUZZFLAGS)
+	  $(if $(SEED),--seed $(SEED),) --count $(COUNT) $(if $(BATCH),--batch $(BATCH),) $(FUZZFLAGS)
 
 fuzz-selftest: image  ## prove the finding->minimize->report machinery (no real bug needed)
 	docker run --rm -v "$(CURDIR):/w" -w /w --entrypoint fuzz $(IMAGE) --selftest
