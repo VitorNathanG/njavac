@@ -115,6 +115,18 @@ refuse the constant-operand cases as "too big"; the right move was to model java
 `genCond` exactly — build the ground-truth corpus and reverse-engineer it, per the
 `byte-identity-rung` skill §1/§6.)
 
+**Every bug fix lands with a documented regression fixture.** A fix — especially a
+fuzzer-found one — is not done until a **committed** `fixtures/` case pins the exact
+scenario it repairs, so the fuzzer's finding can never silently come back. The
+fixture must be **minimal** (the smallest program that still exercised the bug — do
+not paste the raw fuzzer minimization, which keeps whole initializers; hand-reduce
+it), **clearly documents** at the top what byte-identity edge it stresses and how it
+used to diverge, and lives in the topical subfolder that fits (`folding/`,
+`compound-assign/`, …). Work one bug per cycle: reproduce → fix → verify the fix
+(`make correctness` green **and** `make fuzz` shows the signature gone) → add the
+fixture → commit+push → only then start the next bug. `NanCanon.java` is the pattern
+to copy.
+
 ## Commands
 
 The `Makefile` is the command surface — run `make help` to list it (`verify`,
@@ -333,8 +345,13 @@ If you touch the constant pool, **preserve entry insertion order** — it is the
 only thing the class file depends on. `Long`/`Double` entries each **consume two
 pool indices** (the pool tracks an explicit `next_index`, so the second slot is a
 phantom and `constant_pool_count` includes it); `Float`/`Double` are keyed by
-their raw **bit pattern** so `-0.0`/`NaN` dedup as distinct entries, matching
-javac. The dedup map uses a custom FxHash purely for speed; the hash never
+their **bit pattern** *after NaN canonicalization* — `ConstantPool::float`/`double`
+collapse **every** NaN to javac's canonical `0x7fc00000` / `0x7ff8000000000000`
+(what `Float.floatToIntBits` / `Double.doubleToLongBits` write) before interning,
+so all NaN dedup to one entry while `-0.0` (not a NaN) stays distinct from `+0.0`.
+This is load-bearing: a folded `-(0.0f/0.0f)` carries a sign-flipped NaN
+(`0xffc00000`) that only matches javac once canonicalized. The dedup map uses a
+custom FxHash purely for speed; the hash never
 affects output, and serialization is deliberately allocation-free (child indices
 resolved through borrowed lookup tables, not cloned `Entry` keys). Always re-run
 the bench's correctness pass after changes.

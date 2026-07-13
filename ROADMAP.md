@@ -111,24 +111,47 @@ making `Unsupported` (skip) genuinely distinct from an njavac invariant violatio
 - **Deferred to v1.1.** Expression-level minimization (v1 is statement-level, so a
   minimized fixture keeps its decls' full initializers); `--jobs` parallelism.
 
-### Fuzzer-found bug backlog (2026-07 census: 5000 cases, ~18% diverge)
-The first sweep found that njavac's **constant folding** — nominally "done" for the
-numeric subset — is broken in two ways no hand-fixture caught. `generator-invalid=0`
-/ `njavac-reject=0`, so both are confirmed real byte-identity bugs, not out-of-scope.
-Nine structural signatures collapse to **two root causes**:
-- **A. NaN not canonicalized** (~6% of findings; `cp[N].float_bits`/`double_hi`).
-  `float v = -(0.0f/0.0f)` folds to a single constant on both sides, but njavac keeps
-  the sign-flipped NaN (`0xFFC00000`) where javac canonicalizes to `0x7FC00000`. Fix:
-  collapse NaN to canonical bits when emitting/pooling a `float`/`double` constant.
-  Small. Repro: `fuzz-out/Fuzz0000264.java` (regenerate with `make fuzz`).
-- **B. Incomplete folding of mixed-type constant expressions** (~94%;
-  `constant_pool_count`, `methods[N].attr[N].length`, `Code.code`, `cp[N].tag/int/long_*`).
-  `float v = -2L + 1.0f` should fold to one `Float -1.0f`; njavac stops at the type
-  boundary and emits a `Long -2L` (2 pool slots) + `l2f` + `fadd`. The bigger fix, in
-  codegen's folder (mixed-promotion constant paths). Repro: `Fuzz0000003.java`.
+### Fuzzer-found bug backlog (2026-07 census: 5000 cases)
+The first sweep found njavac diverging on ~18% of random in-scope programs
+(`generator-invalid=0` / `njavac-reject=0`, so all are confirmed real byte-identity
+bugs). A second sweep (2026-07-12) re-diagnosed each signature against a javac
+ground-truth probe corpus; the original two-root-cause summary was **partly wrong**
+(the `-2L + 1.0f` "mixed-type fold" it named already folds byte-identically today),
+and a third, unrelated root cause surfaced. The real breakdown is **three** causes:
 
-Fix each as its own cycle with the fuzzer as the regression gate (fix → `make fuzz`
-→ the signature disappears → drop the minimized case into `fixtures/`).
+- **A. NaN not canonicalized** — ✅ **FIXED (2026-07-12).** `float v = -(0.0f/0.0f)`
+  folded to a sign-flipped NaN (`0xFFC00000`) where javac canonicalizes to
+  `0x7FC00000`. Fix: `ConstantPool::float`/`double` collapse every NaN to the
+  canonical bits before interning (matching `Float.floatToIntBits`), leaving `-0.0`
+  distinct. Removed the `cp[N].float_bits` (52) + `double_hi` (53) signatures; census
+  894 → 790 findings. Regression fixture: `fixtures/folding/NanCanon.java`.
+- **B. `long >>> long` shift** (~most of the remaining findings; `constant_pool_count`,
+  `methods[N].attr[N].length`, `Code.code`, `cp[N].long_hi/long_lo/tag`). Reverse-
+  engineered rule: javac constant-folds **every** shift *except* `long >>> long`
+  (unsigned shift, left `long`, right static type `long`) — a genuine javac ConstFold
+  quirk. And a constant shift *distance* is always narrowed to an `int` constant
+  (`bipush 40`), never `ldc2_w long; l2i`. njavac over-folds `long>>>long` and emits
+  the long distance + `l2i`. **Two coupled changes:** (B2) `fold`'s `Expr::Binary` arm
+  returns `None` for `UShr` when both operands fold to `Const::Long`; (B1) a
+  `gen_shift_distance` helper (used in `gen_binary` and the `gen_compound` shift arm)
+  narrows a constant distance via `emit_int_const(to_i32(c))`. B1 alone also fixes the
+  independent `int y = x << 40L` divergence (max_stack 2 vs 3). Repros: `Fuzz0000551`
+  (`long a = 127L >>> 62L`), and `int y = x << 40L`.
+- **C. Compound-assign with a negative constant on a narrowing target** (`cp[N].int`;
+  small). `char v -= -100` → javac normalizes `x -= c` to `x + (-c)` = `bipush 100;
+  iadd; i2c`; njavac emits the raw negative constant `bipush -100; isub; i2c`. The
+  `int` iinc-overflow path (`codegen.rs:900-916`) already normalizes (positive
+  magnitude, operator by sign) but is gated on `target == ValType::Int`; the general
+  narrowing path skips it. Scope confirmed by probe: normalization is **int-family
+  only** (int/byte/short/char) — `long`/`float`/`double` emit `lsub`/`dsub`/`fsub`
+  raw. Fix: apply the same `(mag, add)` normalization in the general path when the
+  promoted type is `StackTy::Int`, op is additive, and the value is constant. Repro:
+  `Fuzz0000598` (`char v0`; `v0 -= <negative const>`).
+
+Fix each as its own cycle with the fuzzer as the regression gate (fix → `make
+correctness` green + `make fuzz` shows the signature gone → commit a minimal,
+documented regression fixture in the fitting `fixtures/` subfolder, per CLAUDE.md
+§"Every bug fix lands with a documented regression fixture").
 
 ### 0.2 Single-fixture verify command — ✅ DONE (2026-07)
 - **What.** Teach `bench` to accept a single `.java` *file* (not just a

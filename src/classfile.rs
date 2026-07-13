@@ -86,11 +86,12 @@ pub enum Entry {
     Integer(i32),
     /// A CONSTANT_Long: an 8-byte `long`. A leaf; **occupies two pool indices**.
     Long(i64),
-    /// A CONSTANT_Float, stored as its raw 32-bit pattern so that `-0.0f`/`NaN`
-    /// dedup by bits (a distinct entry from `+0.0f`), matching javac. A leaf.
+    /// A CONSTANT_Float, stored as its 32-bit pattern *after NaN canonicalization*
+    /// (see `ConstantPool::float`): every NaN collapses to `0x7fc00000`, but `-0.0f`
+    /// stays a distinct entry from `+0.0f`, matching `Float.floatToIntBits`. A leaf.
     Float(u32),
-    /// A CONSTANT_Double, stored as its raw 64-bit pattern (same bit-dedup rule).
-    /// A leaf; **occupies two pool indices**.
+    /// A CONSTANT_Double, same NaN-canonicalized bit rule (`0x7ff8000000000000`),
+    /// per `Double.doubleToLongBits`. A leaf; **occupies two pool indices**.
     Double(u64),
     /// Class by internal name, e.g. "java/lang/Object". Child: Utf8(name).
     Class(String),
@@ -204,10 +205,16 @@ impl ConstantPool {
         self.intern(Entry::Long(v))
     }
     pub fn float(&mut self, v: f32) -> u16 {
-        self.intern(Entry::Float(v.to_bits()))
+        // javac writes float constants through `Float.floatToIntBits`, which
+        // canonicalizes *every* NaN to `0x7fc00000` (a folded `-(0.0f/0.0f)` keeps a
+        // sign-flipped NaN otherwise). `-0.0f` is not a NaN, so it stays distinct.
+        let bits = if v.is_nan() { 0x7fc0_0000 } else { v.to_bits() };
+        self.intern(Entry::Float(bits))
     }
     pub fn double(&mut self, v: f64) -> u16 {
-        self.intern(Entry::Double(v.to_bits()))
+        // Same canonicalization via `Double.doubleToLongBits` (`0x7ff8000000000000`).
+        let bits = if v.is_nan() { 0x7ff8_0000_0000_0000 } else { v.to_bits() };
+        self.intern(Entry::Double(bits))
     }
     pub fn class(&mut self, internal_name: &str) -> u16 {
         self.intern(Entry::Class(internal_name.to_string()))
