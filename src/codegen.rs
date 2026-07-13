@@ -349,7 +349,13 @@ impl CondItem {
             },
             true_chain: self.false_chain,
             false_chain: self.true_chain,
-            value_on_stack: self.value_on_stack,
+            // `value_on_stack` asserts the stacked 0/1 equals the boolean result; a
+            // negation inverts the result, so the un-touched stack value is now the
+            // *opposite* and must NOT be used as-is. Clearing this forces `!p` (and
+            // `!!p`, which restores the `IFNE` opcode but stays cleared) through the
+            // materialization diamond in `gen_bool_value`, matching javac, which
+            // diamonds every negation rather than reusing the loaded value.
+            value_on_stack: false,
         }
     }
 }
@@ -640,9 +646,14 @@ impl<'a> Gen<'a> {
         assert!(self.cur == 0, "materialized boolean with non-empty operand stack is unsupported");
         let c = self.gen_cond(cond);
 
-        // A bare boolean value already sits on the stack as 0/1, un-branched. All
-        // four conjuncts matter: `a && b && c` carries value_on_stack up from its
+        // A bare boolean value already sits on the stack as 0/1, un-branched, so it
+        // needs no materialization diamond (javac leaves `true && p` a bare `iload`).
+        // All four conjuncts matter: `a && b && c` carries value_on_stack up from its
         // last leaf but has a live false_chain, so it must NOT take this shortcut.
+        // `value_on_stack` holds the invariant "the stacked 0/1 IS the result"; a `!`
+        // inverts that, so `negate()` clears the flag (see there) and `!p`/`!!p` both
+        // fall through to the diamond — matching javac, which diamonds every negation
+        // (taking the shortcut for `!p` would miscompile `boolean r = !p` to `r = p`).
         if c.value_on_stack
             && c.true_chain.is_none()
             && c.false_chain.is_none()
