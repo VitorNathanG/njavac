@@ -118,11 +118,11 @@ refuse the constant-operand cases as "too big"; the right move was to model java
 ## Commands
 
 The `Makefile` is the command surface — run `make help` to list it (`verify`,
-`record`, `bench`, `probe`, `diff`, `image`, `check`). Building and running the
-compiler itself:
+`record`, `bench`, `fuzz`, `fuzz-selftest`, `probe`, `diff`, `image`, `check`).
+Building and running the compiler itself:
 
 ```bash
-make check                                  # local release build (lib + njavac/bench/classdiff/profile bins)
+make check                                  # local release build (lib + njavac/bench/classdiff/profile/fuzz bins)
 ./target/release/njavac [-d <dir>] <file.java> [<file.java> ...]   # the njavac CLI, javac-like
 ```
 
@@ -140,8 +140,11 @@ a different `javac` version can legitimately produce different golden bytes.
 
 ## Testing = the benchmark (there is no `cargo test`)
 
-The `bench` bin is the entire test suite **and** the benchmark. It has two
-passes over `fixtures/*.java`:
+The `bench` bin is the fixture-based test suite **and** the benchmark — the
+acceptance gate. The differential **fuzzer** (`make fuzz`; §Dev-loop tooling 0.1
+below) complements it by generating random in-scope programs to surface
+divergences no hand-written fixture covers. `bench` has two passes over
+`fixtures/*.java`:
 
 1. **Correctness (always).** Compiles every fixture with both `javac` and njavac
    and byte-compares: **exits non-zero on any mismatch**, printing a structural
