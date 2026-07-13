@@ -1,2 +1,5 @@
 /target
 /fuzz-out
+# Ad-hoc probe programs live under the repo root so the Docker mount ($(pwd):/w)
+# can see them, but they are throwaway — never commit them.
+/scratch-fuzz
