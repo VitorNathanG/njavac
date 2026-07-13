@@ -108,18 +108,17 @@ and a third, unrelated root cause surfaced. The real breakdown is **three** caus
   canonical bits before interning (matching `Float.floatToIntBits`), leaving `-0.0`
   distinct. Removed the `cp[N].float_bits` (52) + `double_hi` (53) signatures; census
   894 → 790 findings. Regression fixture: `fixtures/folding/NanCanon.java`.
-- **B. `long >>> long` shift** (~most of the remaining findings; `constant_pool_count`,
-  `methods[N].attr[N].length`, `Code.code`, `cp[N].long_hi/long_lo/tag`). Reverse-
-  engineered rule: javac constant-folds **every** shift *except* `long >>> long`
-  (unsigned shift, left `long`, right static type `long`) — a genuine javac ConstFold
-  quirk. And a constant shift *distance* is always narrowed to an `int` constant
-  (`bipush 40`), never `ldc2_w long; l2i`. njavac over-folds `long>>>long` and emits
-  the long distance + `l2i`. **Two coupled changes:** (B2) `fold`'s `Expr::Binary` arm
-  returns `None` for `UShr` when both operands fold to `Const::Long`; (B1) a
-  `gen_shift_distance` helper (used in `gen_binary` and the `gen_compound` shift arm)
-  narrows a constant distance via `emit_int_const(to_i32(c))`. B1 alone also fixes the
-  independent `int y = x << 40L` divergence (max_stack 2 vs 3). Repros: `Fuzz0000551`
-  (`long a = 127L >>> 62L`), and `int y = x << 40L`.
+- **B. `long >>> long` shift** — ✅ **FIXED (2026-07-12).** Reverse-engineered rule:
+  javac constant-folds **every** shift *except* `long >>> long` (unsigned shift, left
+  `long`, right static type `long`) — a genuine ConstFold quirk — and always narrows a
+  *constant* shift distance to an `int` constant (`bipush 40`), never `ldc2_w long;
+  l2i`. njavac over-folded `long>>>long` and pushed the long distance + `l2i`. Fix:
+  (B2) `fold`'s `Expr::Binary` arm returns `None` for `UShr` with two `Const::Long`
+  operands; (B1) a `gen_shift_distance` helper narrows a constant distance in both the
+  `gen_binary` and `gen_compound` shift paths (also fixes the independent `int y = x <<
+  40L`, max_stack 2 vs 3). Removed `cp[N].long_hi/long_lo/tag` and most
+  `constant_pool_count`/`attr.length` findings (census 737 → 290). Regression fixture:
+  `fixtures/operators/ShiftLongConst.java`.
 - **C. Compound-assign with a negative constant on a narrowing target** — ✅ **FIXED
   (2026-07-12).** `char v -= -100` emitted the raw `bipush -100; isub; i2c` where javac
   normalizes to `bipush 100; iadd; i2c` (non-negative magnitude, operator chosen by the
@@ -133,8 +132,22 @@ and a third, unrelated root cause surfaced. The real breakdown is **three** caus
 Fix each as its own cycle with the fuzzer as the regression gate (fix → `make
 correctness` green + `make fuzz` shows the signature gone → commit a minimal,
 documented regression fixture in the fitting `fixtures/` subfolder, per CLAUDE.md
-§"Every bug fix lands with a documented regression fixture"). **Remaining: B** (`long
->>> long` shift) — the whole 737-finding tail.
+§"Every bug fix lands with a documented regression fixture").
+
+**Post-A/B/C re-census (2026-07-12): 290 residual findings, 3 signatures.** Clearing
+A/B/C unmasked further, independent bugs. Not the same "constant folding" family —
+these need their own triage:
+- **D. `i32::MIN` compound-assign delta** (1 `Code.code` case, e.g. `byte v -=
+  -2147483648`; repro `Fuzz0001145`). When the increment delta is exactly `i32::MIN`
+  its magnitude is unrepresentable, so javac keeps the *raw* `push c; <original op>`
+  (`ldc -2147483648; isub`) instead of normalizing. The C fix — and the pre-existing
+  `int` iinc-overflow path — normalize to `iadd i32::MIN`, wrong for `-=`. Fix: skip
+  normalization when `delta == i32::MIN` (fall through to plain `push c;
+  emit_binop(op)`); also closes a latent int-target bug. Small.
+- **E. the `attr.length` tail** (269 `attr.length` + 20 `constant_pool_count` — the
+  dominant remainder). Untriaged; the minimized cases look like more than one cause
+  (`Fuzz0000004` long arithmetic with a byte operand; `Fuzz0000356` boolean
+  comparison). Next census target.
 
 ### 0.2 Single-fixture verify command — ✅ DONE (2026-07)
 - **What.** Teach `bench` to accept a single `.java` *file* (not just a

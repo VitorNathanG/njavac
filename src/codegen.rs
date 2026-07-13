@@ -924,11 +924,7 @@ impl<'a> Gen<'a> {
         self.emit_load(slot, target);
         self.emit_convert(target, p);
         if op.is_shift() {
-            let at = self.gen_value(value);
-            if at.stack() == StackTy::Long {
-                self.code.push(L2I);
-                self.pop(1);
-            }
+            self.gen_shift_distance(value);
             self.emit_shift(p, op);
         } else if let Some(delta) = int_additive_const_delta(op, p, value) {
             // javac normalizes an additive *constant* on an int-family target to a
@@ -1026,6 +1022,23 @@ impl<'a> Gen<'a> {
         }
     }
 
+    /// Emit a shift *distance* (a shift's right operand), which the JVM always
+    /// consumes as an `int`. javac narrows a *constant* distance to an int constant at
+    /// compile time (`x << 40L` → `bipush 40`, not `ldc2_w 40l; l2i`); only a
+    /// non-constant `long` distance keeps the runtime `l2i`.
+    fn gen_shift_distance(&mut self, right: &Expr) {
+        if let Some(c) = fold(right) {
+            self.emit_int_const(to_i32(c)); // (int) narrowing of the constant
+            self.push(1);
+        } else {
+            let at = self.gen_value(right);
+            if at.stack() == StackTy::Long {
+                self.code.push(L2I);
+                self.pop(1); // long amount narrowed to int
+            }
+        }
+    }
+
     fn gen_binary(&mut self, op: BinOp, left: &Expr, right: &Expr) -> ValType {
         let lt = sema::type_of(left, self.info);
         let rt = sema::type_of(right, self.info);
@@ -1044,11 +1057,7 @@ impl<'a> Gen<'a> {
         if op.is_shift() {
             let result = sema::unary_promote(lt);
             self.gen_promoted_operand(left, result);
-            let at = self.gen_value(right);
-            if at.stack() == StackTy::Long {
-                self.code.push(L2I);
-                self.pop(1); // long amount narrowed to int
-            }
+            self.gen_shift_distance(right);
             self.emit_shift(result, op);
             result
         } else {
@@ -1432,7 +1441,18 @@ fn fold(expr: &Expr) -> Option<Const> {
         Expr::BitNot(e) => bitnot_const(fold(e)?),
         Expr::Not(e) => Const::Int((to_i32(fold(e)?) == 0) as i32),
         Expr::Cast { ty, expr } => const_convert(fold(expr)?, sema::valtype(*ty)),
-        Expr::Binary { op, left, right } => eval_binary(*op, fold(left)?, fold(right)?),
+        Expr::Binary { op, left, right } => {
+            let (l, r) = (fold(left)?, fold(right)?);
+            // javac's ConstFold folds *every* shift except `long >>> long` (unsigned
+            // shift, both operands `long`) — a genuine javac quirk. Returning None
+            // there forces the runtime `lushr` (with the distance narrowed by
+            // `gen_shift_distance`), matching javac byte-for-byte.
+            if *op == BinOp::UShr && matches!(l, Const::Long(_)) && matches!(r, Const::Long(_))
+            {
+                return None;
+            }
+            eval_binary(*op, l, r)
+        }
         Expr::Compare { op, left, right } => {
             Const::Int(eval_compare(*op, fold(left)?, fold(right)?) as i32)
         }
