@@ -9,6 +9,8 @@
 #   make bench       [FILE=..]                 # authoritative: full online correctness + deterministic timing
 #   make probe       FILE=Probe.java           # disassemble a probe with the pinned javac (javap -v -p)
 #   make diff        A=a.class B=b.class       # structural class-file diff, in-container
+#   make fuzz        [SEED=n] [COUNT=n]        # differential fuzz: random in-scope Java vs pinned javac
+#   make fuzz-selftest                         # prove the finding->minimize->report machinery
 #   make image                                 # build the pinned image
 #   make check                                 # LOCAL release build (debugging only; NOT a test)
 
@@ -21,8 +23,13 @@ BENCH_MEM ?= 2g
 FILE      ?=
 A         ?=
 B         ?=
+# fuzz knobs (the fuzzer is NOT a timing benchmark, so it is not CPU-pinned).
+SEED      ?= 0
+COUNT     ?= 5000
+BATCH     ?=
+FUZZFLAGS ?=
 
-.PHONY: help image probe verify correctness record bench diff check
+.PHONY: help image probe verify correctness record bench diff fuzz fuzz-selftest check
 
 help:  ## show this help
 	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | sed -E 's/:.*## /\t/' | sort
@@ -58,6 +65,13 @@ bench: image  ## authoritative Docker run: full online correctness + determinist
 diff: image  ## structural class-file diff in-container: make diff A=x.class B=y.class
 	@test -n "$(A)" && test -n "$(B)" || { echo "usage: make diff A=a.class B=b.class"; exit 2; }
 	docker run --rm -v "$(CURDIR):/w" -w /w --entrypoint classdiff $(IMAGE) $(A) $(B)
+
+fuzz: image  ## differential fuzz random in-scope Java: make fuzz [SEED=n] [COUNT=n] [BATCH=n]
+	docker run --rm -v "$(CURDIR):/w" -w /w --entrypoint fuzz $(IMAGE) \
+	  $(SEED) $(COUNT) $(if $(BATCH),--batch $(BATCH),) $(FUZZFLAGS)
+
+fuzz-selftest: image  ## prove the finding->minimize->report machinery (no real bug needed)
+	docker run --rm -v "$(CURDIR):/w" -w /w --entrypoint fuzz $(IMAGE) --selftest
 
 check:  ## LOCAL release build only — compiler-internal debugging, NOT acceptance
 	cargo build --release

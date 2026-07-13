@@ -45,7 +45,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/target \
     cargo build --release --locked \
     && mkdir -p /out \
-    && cp target/release/njavac target/release/bench target/release/classdiff /out/
+    && cp target/release/njavac target/release/bench target/release/classdiff target/release/fuzz /out/
 
 # ---- Stage 3: runtime — JDK base + the small, frequently-changing layers ----
 FROM jdk AS bench
@@ -59,5 +59,8 @@ COPY --from=build /out/bench     /usr/local/bin/bench
 # The structural class-file differ, reachable for debugging via `make diff`; it
 # also backs the diff `bench` prints on a mismatch.
 COPY --from=build /out/classdiff /usr/local/bin/classdiff
+# The differential fuzzer (ROADMAP §0.1), reached via `make fuzz` (entrypoint
+# override). It shells out to the pinned $JAVAC set in the jdk base layer.
+COPY --from=build /out/fuzz     /usr/local/bin/fuzz
 ENTRYPOINT ["bench", "--njavac", "/usr/local/bin/njavac"]
 CMD ["--njavac-runs", "1000", "--javac-runs", "5", "--warmup", "5"]

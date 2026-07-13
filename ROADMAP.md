@@ -76,33 +76,59 @@ making `Unsupported` (skip) genuinely distinct from an njavac invariant violatio
 
 ## Phase 0 — Enablers
 
-### 0.1 Differential fuzzer  *(the single highest-leverage item)* — NEXT UP (un-deferred 2026-07)
-- **What.** A new dependency-free `src/bin/fuzz.rs` that generates random *in-scope*
-  Java (`main` bodies: N primitive locals, literals across the constant-load
-  boundaries, random operator/cast/compound-assign trees, nested `if/else`, and now
-  **boolean expression trees over `&& || ! < > == …` incl. constant operands**),
-  compiles each with both compilers, and byte-compares. On mismatch it
-  **auto-minimizes** (delete statements / shrink literals while the mismatch
-  persists) and dumps the reduced `.java` ready to drop into `fixtures/`.
-  Seed-based (`fuzz <seed>`) for reproducibility.
+### 0.1 Differential fuzzer  *(the single highest-leverage item)* — ✅ DONE (2026-07)
+- **What.** A dependency-free `src/bin/fuzz.rs` that generates random *in-scope*
+  Java (`main` bodies: N primitive locals, literals biased toward the constant-load
+  boundaries + IEEE landmines, random operator/cast/compound-assign trees, nested
+  `if/else`, and boolean expression trees over `&& || ! < > == …` incl. constant
+  operands), compiles each with both compilers, and byte-compares. On mismatch it
+  auto-minimizes (statement-level ddmin) and dumps the reduced `.java` ready to drop
+  into `fixtures/`. Seed-based (`fuzz <seed>`) for reproducibility.
 - **Why.** The byte-identity property is unusually fuzzer-friendly: the oracle is
   free and total (real `javac`), the predicate is a trivial `cmp`, and njavac
-  already *cleanly refuses* out-of-scope input — so the generator can emit anything
-  and simply skip what njavac rejects, comparing the accepted subset. It will find
-  slot-allocation, constant-load-boundary, promotion-placement, and StackMapTable
-  bugs no human will hand-enumerate. It grows one rung at a time alongside the
-  compiler and becomes a permanent regression net.
-- **Un-deferred because** the `&&`/`||` rung proved the point: its hazards lived in
-  a *constant-operand matrix* (`true && q`, `q && false`, nested collapses) that had
-  to be hand-enumerated by probing, and the rung nearly shipped with those cases
-  *refused* rather than matched. A differential fuzzer over boolean trees is exactly
-  the tool that would have surfaced them automatically — and every rung from here
-  (`?:`, loops, switch) has the same combinatorial-corner risk. Build v1 next.
-- **Effort.** Medium (~half a day for v1).
-- **Note.** `Math.random()`/`Date::now` are irrelevant here (this is a separate
-  bin, not a workflow); use a seeded PRNG so failures reproduce.
-- **Done when.** `fuzz <seed>` runs thousands of cases, skips rejected input, and
-  emits a minimized `.java` on any mismatch.
+  already *cleanly refuses* out-of-scope input. The generator emits valid in-scope
+  Java and the only hard-fail signal is *both compilers accept, bytes differ* — by
+  definition an njavac bug. It grows one rung at a time and is a permanent net.
+- **As built (designed via a 4-lens agent panel; see CLAUDE.md §Testing).**
+  - **Oracle contract (no false positives).** Both-accept-bytes-differ = FINDING;
+    javac-reject = `generator-invalid` telemetry; njavac-panic = `njavac-reject`
+    telemetry (not a hard finding pre-Phase-1). The generator's in-subset discipline
+    is a *yield* lever, not a soundness lever.
+  - **Three soundness invariants.** A single `ident()` naming chokepoint (class ==
+    filename == `source_file` arg, used by gen/writer/compile/minimizer — the
+    `.class` couples to all three); `reset_dir` + an exact-file-set assertion (no
+    stale/aux `.class`); generate-all-IR-before-any-IO determinism.
+  - **Performance.** njavac in-process; ONE `javac -d <dir> @argfile` per batch
+    (default 1000) — `@argfile` dodges `ARG_MAX`, scratch on the normal FS (not the
+    64 MB `/dev/shm`). ~15 s for 5000 cases. `--jobs` deferred (asserts `==1`).
+  - **Structure.** File sectioned by axis-of-change so a rung is a 5-touch list
+    (`FExpr`/`FStmt` variant, gen arm, render arm, minimize pass, `ScopeCaps` flag).
+    Two-mode boolean builder (branch vs value) encodes the in-scope boundary.
+  - **Commands.** `make fuzz [SEED= COUNT= BATCH=]` / `make fuzz-selftest`;
+    flags `--keep-going` (enumerate distinct signatures), `--no-min`, `--dump-sources`.
+- **Found on first run** (the tool paid for itself immediately) — see the
+  fuzzer-found bug backlog below.
+- **Deferred to v1.1.** Expression-level minimization (v1 is statement-level, so a
+  minimized fixture keeps its decls' full initializers); `--jobs` parallelism.
+
+### Fuzzer-found bug backlog (2026-07 census: 5000 cases, ~18% diverge)
+The first sweep found that njavac's **constant folding** — nominally "done" for the
+numeric subset — is broken in two ways no hand-fixture caught. `generator-invalid=0`
+/ `njavac-reject=0`, so both are confirmed real byte-identity bugs, not out-of-scope.
+Nine structural signatures collapse to **two root causes**:
+- **A. NaN not canonicalized** (~6% of findings; `cp[N].float_bits`/`double_hi`).
+  `float v = -(0.0f/0.0f)` folds to a single constant on both sides, but njavac keeps
+  the sign-flipped NaN (`0xFFC00000`) where javac canonicalizes to `0x7FC00000`. Fix:
+  collapse NaN to canonical bits when emitting/pooling a `float`/`double` constant.
+  Small. Repro: `fuzz-out/Fuzz0000264.java` (regenerate with `make fuzz`).
+- **B. Incomplete folding of mixed-type constant expressions** (~94%;
+  `constant_pool_count`, `methods[N].attr[N].length`, `Code.code`, `cp[N].tag/int/long_*`).
+  `float v = -2L + 1.0f` should fold to one `Float -1.0f`; njavac stops at the type
+  boundary and emits a `Long -2L` (2 pool slots) + `l2f` + `fadd`. The bigger fix, in
+  codegen's folder (mixed-promotion constant paths). Repro: `Fuzz0000003.java`.
+
+Fix each as its own cycle with the fuzzer as the regression gate (fix → `make fuzz`
+→ the signature disappears → drop the minimized case into `fixtures/`).
 
 ### 0.2 Single-fixture verify command — ✅ DONE (2026-07)
 - **What.** Teach `bench` to accept a single `.java` *file* (not just a
@@ -340,10 +366,10 @@ files its "what would help" items here.
 
 ## Status
 
-- **Phase 0** — landed 0.2 (single-fixture verify), 0.3 (structured class-file
-  differ), 0.5 (fast offline gate, volume-backed & on-policy); commands documented
-  in CLAUDE.md §Testing. **0.1 (fuzzer) is now NEXT UP** (un-deferred 2026-07 after
-  the `&&`/`||` rung showed hand-enumeration missing combinatorial corners); **0.4
+- **Phase 0** — landed 0.1 (differential fuzzer, 2026-07 — found a real
+  constant-folding bug family on its first run; see the backlog above), 0.2
+  (single-fixture verify), 0.3 (structured class-file differ), 0.5 (fast offline
+  gate, volume-backed & on-policy); commands documented in CLAUDE.md §Testing. **0.4
   (CI gate) remains deferred** by decision. All test execution runs through Docker
   via the `Makefile` (`make verify` fast / `make bench` authoritative); local runs
   are disallowed.

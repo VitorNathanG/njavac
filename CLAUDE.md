@@ -171,8 +171,44 @@ truth); its gates all build and run `bench` inside the pinned image:
 them directly (or `NJAVAC_BENCH_ALLOW_HOST=1 bench` to force host timing) is for
 debugging only and is **not** a sanctioned way to validate byte-identity.
 
-**Dev-loop tooling** (ROADMAP.md §Phase 0; fuzzer 0.1 and CI gate 0.4 deferred),
-all invoked *through Docker* per the policy above:
+**Dev-loop tooling** (ROADMAP.md §Phase 0; CI gate 0.4 deferred), all invoked
+*through Docker* per the policy above:
+
+- **Differential fuzzer (0.1).** `make fuzz [SEED=n COUNT=n BATCH=n]` generates
+  random *in-scope* Java (`src/bin/fuzz.rs`), compiles each with the pinned javac and
+  njavac (in-process), and byte-compares. `make fuzz-selftest` exercises the
+  finding→minimize→report machinery. Findings land in `fuzz-out/` (git-ignored) as a
+  minimized `.java` + a `.diff`. Key facts a future rung's generator MUST preserve:
+  - **The oracle contract — one sentence.** *Both compilers accept and the bytes
+    differ* is the ONLY hard-fail signal (it is, by definition, an njavac bug);
+    a javac reject is `generator-invalid` telemetry, an njavac panic is
+    `njavac-reject` telemetry (not a finding until Phase 1's taxonomy). Corollary:
+    the generator's in-subset discipline is a **yield** lever (keeps javac accepting),
+    never a soundness lever — generator over-reach can't manufacture a false finding.
+  - **Three invariants that keep it sound.** (1) the `ident()` chokepoint: class name
+    == filename == `source_file` arg (the `.class` couples to all three via the class
+    name, `SourceFile`, and `LineNumberTable`), reused by generation, the batch
+    writer, the in-process `compile()`, AND every minimizer candidate; (2) `reset_dir`
+    per batch + an exact-file-set assertion (no stale `.class`, no `$`-aux class a
+    future concat/switch generator might over-reach into); (3) generate-all-IR-before-
+    any-IO, so a transient hiccup changes tallies but never the seed-determined program
+    sequence.
+  - **The generator scope boundary.** Declarations only at method-body top level (sema
+    allocates slots for top-level decls only). A *branch-boolean* (`< <= > >= == != &&
+    || !`) may only be materialized on an empty base stack — an `if` cond or a boolean
+    decl/assign RHS; a *value-boolean* (literal, local, `&|^`) is used everywhere else.
+    This is the `BoolMode`/`ScopeCaps` split; getting it wrong only lowers yield.
+  - **Performance.** njavac runs in-process; ONE `javac -d <dir> @argfile` per batch
+    (default 1000) amortizes JVM startup — `@argfile` is required (a big argv blows
+    `ARG_MAX`), and scratch lives on the normal FS (`/dev/shm` is only 64 MB). `--jobs`
+    is deferred (asserts `==1`). `--keep-going` enumerates distinct finding signatures
+    (normalized structural divergence paths); `--no-min` skips minimization for a fast
+    census; `--dump-sources` prints generated sources (no compile) for a determinism
+    check. **A new rung grows the fuzzer by a 5-touch list** (add an `FExpr`/`FStmt`
+    variant, a gen arm, a render arm, a minimize pass, a `ScopeCaps` flag) — run
+    `make fuzz` as part of landing it. The current fuzzer-found bug backlog (a
+    constant-folding NaN-canonicalization bug and a mixed-type folding gap) lives in
+    ROADMAP.md §"Fuzzer-found bug backlog".
 
 - **Single-fixture verify (0.2).** `make verify FILE=<File.java>` (fast, cached
   goldens) or `make bench FILE=<File.java>` (online) compiles just that fixture
