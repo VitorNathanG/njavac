@@ -1411,13 +1411,22 @@ fn local_vti(t: ValType) -> VerificationType {
     }
 }
 
-/// The `i2b`/`i2s`/`i2c` needed to narrow an int-computational value of type
-/// `cur` to sub-int `to`, or `None` when `cur` already fits `to`.
+/// The `i2b`/`i2s`/`i2c` javac emits converting an int-computational value of
+/// sub-int type `cur` to sub-int `to`. javac's `Items.Item.coerce` emits the
+/// narrowing op for **every** sub-int target whose typecode differs from the
+/// source's — `Code.truncate` collapses byte/char/short to int, so the only pair it
+/// treats as already-coerced is same-typecode-to-same. That means even the
+/// *widening* `byte`->`short` emits `i2s` (numerically a no-op, but javac emits it),
+/// as does an implicit `short s = someByte;` assignment. `None` therefore means only
+/// `cur == to` (byte->byte / short->short / char->char).
 fn subint_narrow_op(cur: ValType, to: ValType) -> Option<u8> {
+    if cur == to {
+        return None;
+    }
     match to {
-        ValType::Byte => (cur != ValType::Byte).then_some(I2B),
-        ValType::Short => (!matches!(cur, ValType::Byte | ValType::Short)).then_some(I2S),
-        ValType::Char => (cur != ValType::Char).then_some(I2C),
+        ValType::Byte => Some(I2B),
+        ValType::Short => Some(I2S),
+        ValType::Char => Some(I2C),
         _ => None,
     }
 }
