@@ -41,6 +41,20 @@ and whether javac **constant-folds** the construct. Vary the probe across
 boundaries (literal magnitudes, slot indices, branch offsets, operand types) to
 find exactly where the bytes change — those boundaries become your fixtures.
 
+**For an opcode-*selection* rule, enumerate the COMPLETE truth table before you
+code the fix — never just the failing case.** When the decision is "which of a
+family" (`i2b`/`i2s`/`i2c`; a branch polarity; diamond-vs-bare boolean
+materialization), one probe tells you one cell; a fix guessed from one cell is
+routinely wrong on a *sibling* cell. List every input category (all source→target
+type pairs, both polarities, un-/single-/double-negated, constant vs live operand),
+`make probe`/`make src-diff` each, and only then write the rule against the whole
+table. Cautionary tale from the fuzzer tail: a `byte`→`short` cast still emits
+`i2s` (a *widening*!) because javac narrows on any *differing* sub-int typecode; and
+a first fix for `!p` (negated boolean local) that keyed on opcode polarity was
+silently wrong for the sibling `!!p` (javac diamonds *every* negation, it does not
+collapse `!!p` to identity) — a full `p`/`!p`/`!!p`/`p&q`/`true&&p`/`p&&q` table
+would have caught it before the detour.
+
 **When the construct has a hidden *model*, not just a fixed opcode choice** — e.g.
 `&&`/`||` are javac's `Gen.genCond`/`Items.CondItem`/`Code.mergeChains` jump-chain
 model, `switch` is a density cost model, string concat is a recipe encoding — do
@@ -90,6 +104,7 @@ globally unique and match the `public class` name.
 ```
 make verify                          # fast gate over the whole suite
 make verify FILE=fixtures/x/F.java   # one fixture
+make src-diff FILE=Probe.java        # diff both compilers on ANY source (not just fixtures)
 make bench                           # authoritative: full online run + timing
 make diff A=a.class B=b.class        # structural class-file diff by hand
 ```

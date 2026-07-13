@@ -151,7 +151,8 @@ still *open*.
 ## Commands
 
 The `Makefile` is the command surface — run `make help` to list it (`verify`,
-`record`, `bench`, `fuzz`, `fuzz-selftest`, `probe`, `diff`, `image`, `check`).
+`record`, `bench`, `fuzz`, `fuzz-selftest`, `probe`, `src-diff`, `diff`, `image`,
+`check`).
 Building and running the compiler itself:
 
 ```bash
@@ -168,8 +169,11 @@ compiler-internal debugging; byte-identity is only ever validated through Docker
 
 The reference toolchain is the pinned GraalVM CE `25.0.2-graalce` `javac`/`javap`
 baked into the image; inspect its output for any program with
-`make probe FILE=Probe.java`. Byte-identity is specific to that exact JDK build —
-a different `javac` version can legitimately produce different golden bytes.
+`make probe FILE=Probe.java`, or diff **both** compilers on an arbitrary source
+(byte-compare + classdiff + `javap -c` diff) with `make src-diff FILE=Probe.java` —
+the triage inner loop for a program that is not a fixture. Byte-identity is specific
+to that exact JDK build — a different `javac` version can legitimately produce
+different golden bytes.
 
 ## Testing = the benchmark (there is no `cargo test`)
 

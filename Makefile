@@ -8,6 +8,7 @@
 #   make record      [FILE=..]                 # re-record goldens (after fixtures/JDK change), then verify
 #   make bench       [FILE=..]                 # authoritative: full online correctness + deterministic timing
 #   make probe       FILE=Probe.java           # disassemble a probe with the pinned javac (javap -v -p)
+#   make src-diff    FILE=Probe.java           # diff BOTH compilers on one source (byte + classdiff + javap)
 #   make diff        A=a.class B=b.class       # structural class-file diff, in-container
 #   make fuzz        [SEED=n] [COUNT=n]        # differential fuzz: random in-scope Java vs pinned javac
 #   make fuzz-selftest                         # prove the finding->minimize->report machinery
@@ -29,7 +30,7 @@ COUNT     ?= 5000
 BATCH     ?=
 FUZZFLAGS ?=
 
-.PHONY: help image probe verify correctness record bench diff fuzz fuzz-selftest check
+.PHONY: help image probe src-diff verify correctness record bench diff fuzz fuzz-selftest check
 
 help:  ## show this help
 	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | sed -E 's/:.*## /\t/' | sort
@@ -41,6 +42,19 @@ probe: image  ## disassemble a .java with the pinned javac: make probe FILE=Prob
 	@test -n "$(FILE)" || { echo "usage: make probe FILE=path/to/Probe.java"; exit 2; }
 	docker run --rm -v "$(CURDIR):/w" -w /w --entrypoint sh $(IMAGE) -c \
 	  'd=$$(mktemp -d); "$$JAVA_HOME/bin/javac" -d "$$d" "$(FILE)" && "$$JAVA_HOME/bin/javap" -v -p "$$d"/*.class'
+
+src-diff: image  ## diff both compilers on ONE source: make src-diff FILE=Probe.java
+	@test -n "$(FILE)" || { echo "usage: make src-diff FILE=path/to/Probe.java"; exit 2; }
+	@docker run --rm -v "$(CURDIR):/w" -w /w --entrypoint sh $(IMAGE) -c \
+	  'jd=$$(mktemp -d); nd=$$(mktemp -d); n=$$(basename "$(FILE)" .java); \
+	   "$$JAVA_HOME/bin/javac" -d "$$jd" "$(FILE)" || { echo "javac rejected"; exit 3; }; \
+	   njavac -d "$$nd" "$(FILE)" || { echo "njavac rejected"; exit 4; }; \
+	   if cmp -s "$$jd/$$n.class" "$$nd/$$n.class"; then echo "IDENTICAL: $$n"; else \
+	     echo ">> bytes differ"; classdiff "$$jd/$$n.class" "$$nd/$$n.class" || true; \
+	     "$$JAVA_HOME/bin/javap" -c -p "$$jd/$$n.class" > "$$jd/v"; \
+	     "$$JAVA_HOME/bin/javap" -c -p "$$nd/$$n.class" > "$$nd/v"; \
+	     echo "=== javap -c diff (< javac / > njavac) ==="; diff "$$jd/v" "$$nd/v" || true; \
+	   fi'
 
 verify: image  ## fast gate: njavac vs cached goldens (whole suite, or one FILE=path)
 	@docker run --rm -v $(VOLUME):$(GOLDENS) --entrypoint sh $(IMAGE) \
