@@ -1646,13 +1646,15 @@ fn int_additive_const_delta(op: BinOp, p: ValType, value: &Expr) -> Option<i32> 
 }
 
 /// javac loads an int increment as a non-negative magnitude and picks the operator by
-/// sign: `(|delta|, is_add)` — `iadd` for `delta ≥ 0`, `isub` for `delta < 0`.
-/// `i32::MIN` has no representable magnitude, so it stays `iadd i32::MIN`.
+/// sign: `(|delta|, is_add)` — `iadd` for `delta ≥ 0`, `isub` for `delta < 0`. Every
+/// negative delta uses `isub`, *including* `i32::MIN`: its magnitude is unrepresentable
+/// so `wrapping_neg` returns `i32::MIN` itself, pushed as `-2147483648` with `isub`
+/// (verified — javac emits `isub` for `x += i32::MIN` too, since `x + MIN == x - MIN`).
 fn int_delta_magnitude(delta: i32) -> (i32, bool) {
     if delta >= 0 {
         (delta, true)
     } else {
-        (delta.wrapping_neg(), delta == i32::MIN)
+        (delta.wrapping_neg(), false)
     }
 }
 
