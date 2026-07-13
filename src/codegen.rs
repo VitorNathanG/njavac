@@ -903,12 +903,7 @@ impl<'a> Gen<'a> {
                     // `sipush -32768; isub`) and `x += -40000` becomes `… isub`.
                     // (This also lets `+= n` and `-= -n` share one pool entry.)
                     self.emit_load(slot, ValType::Int);
-                    let (mag, add) = if delta >= 0 {
-                        (delta, true)
-                    } else {
-                        // |i32::MIN| is unrepresentable; keep `iadd MIN` for it.
-                        (delta.wrapping_neg(), delta == i32::MIN)
-                    };
+                    let (mag, add) = int_delta_magnitude(delta);
                     self.emit_int_const(mag);
                     self.push(1);
                     self.code.push(if add { IADD } else { ISUB });
@@ -935,6 +930,17 @@ impl<'a> Gen<'a> {
                 self.pop(1);
             }
             self.emit_shift(p, op);
+        } else if let Some(delta) = int_additive_const_delta(op, p, value) {
+            // javac normalizes an additive *constant* on an int-family target to a
+            // non-negative magnitude, choosing the operator by the delta's sign — so
+            // `char v -= -100` is `bipush 100; iadd` (then i2c), never `bipush -100;
+            // isub`. Same split as the iinc-overflow path above; int-family only
+            // (a `long`/`float`/`double` target keeps the raw `lsub`/`dsub`/`fsub`).
+            let (mag, add) = int_delta_magnitude(delta);
+            self.emit_int_const(mag);
+            self.push(1);
+            self.code.push(if add { IADD } else { ISUB });
+            self.pop(1);
         } else {
             self.gen_promoted_operand(value, p);
             self.emit_binop(p, op);
@@ -1604,6 +1610,29 @@ fn const_convert(c: Const, to: ValType) -> Const {
         ValType::Short => Const::Int((to_i32(c) as i16) as i32),
         ValType::Char => Const::Int((to_i32(c) as u16) as i32),
         ValType::String => c,
+    }
+}
+
+/// The signed increment of an int-family additive compound-assign with a *constant*
+/// RHS (`+= k` → `k`, `-= k` → `-k`), or `None` when javac's magnitude normalization
+/// does not apply: a non-int-family promoted type (`long`/`float`/`double` keep the
+/// raw `lsub`/…), a non-additive op, or a non-constant RHS.
+fn int_additive_const_delta(op: BinOp, p: ValType, value: &Expr) -> Option<i32> {
+    if p.stack() != StackTy::Int || !matches!(op, BinOp::Add | BinOp::Sub) {
+        return None;
+    }
+    let k = to_i32(fold(value)?);
+    Some(if op == BinOp::Add { k } else { k.wrapping_neg() })
+}
+
+/// javac loads an int increment as a non-negative magnitude and picks the operator by
+/// sign: `(|delta|, is_add)` — `iadd` for `delta ≥ 0`, `isub` for `delta < 0`.
+/// `i32::MIN` has no representable magnitude, so it stays `iadd i32::MIN`.
+fn int_delta_magnitude(delta: i32) -> (i32, bool) {
+    if delta >= 0 {
+        (delta, true)
+    } else {
+        (delta.wrapping_neg(), delta == i32::MIN)
     }
 }
 

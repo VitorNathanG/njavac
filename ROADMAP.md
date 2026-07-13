@@ -120,21 +120,21 @@ and a third, unrelated root cause surfaced. The real breakdown is **three** caus
   narrows a constant distance via `emit_int_const(to_i32(c))`. B1 alone also fixes the
   independent `int y = x << 40L` divergence (max_stack 2 vs 3). Repros: `Fuzz0000551`
   (`long a = 127L >>> 62L`), and `int y = x << 40L`.
-- **C. Compound-assign with a negative constant on a narrowing target** (`cp[N].int`;
-  small). `char v -= -100` → javac normalizes `x -= c` to `x + (-c)` = `bipush 100;
-  iadd; i2c`; njavac emits the raw negative constant `bipush -100; isub; i2c`. The
-  `int` iinc-overflow path (`codegen.rs:900-916`) already normalizes (positive
-  magnitude, operator by sign) but is gated on `target == ValType::Int`; the general
-  narrowing path skips it. Scope confirmed by probe: normalization is **int-family
-  only** (int/byte/short/char) — `long`/`float`/`double` emit `lsub`/`dsub`/`fsub`
-  raw. Fix: apply the same `(mag, add)` normalization in the general path when the
-  promoted type is `StackTy::Int`, op is additive, and the value is constant. Repro:
-  `Fuzz0000598` (`char v0`; `v0 -= <negative const>`).
+- **C. Compound-assign with a negative constant on a narrowing target** — ✅ **FIXED
+  (2026-07-12).** `char v -= -100` emitted the raw `bipush -100; isub; i2c` where javac
+  normalizes to `bipush 100; iadd; i2c` (non-negative magnitude, operator chosen by the
+  effective delta's sign). The `int` iinc-overflow path already normalized; the general
+  narrowing path (char/short/byte) did not. Fix: a shared `int_delta_magnitude` helper +
+  an `int_additive_const_delta` guard in the general path — `StackTy::Int` + additive op
+  + constant RHS only, so `long`/`float`/`double` keep the raw `lsub`/`dsub`/`fsub`.
+  Removed the `cp[N].int` signature and most `Code.code` findings (census 790 → 737).
+  Regression fixture: `fixtures/compound-assign/CompoundNegConst.java`.
 
 Fix each as its own cycle with the fuzzer as the regression gate (fix → `make
 correctness` green + `make fuzz` shows the signature gone → commit a minimal,
 documented regression fixture in the fitting `fixtures/` subfolder, per CLAUDE.md
-§"Every bug fix lands with a documented regression fixture").
+§"Every bug fix lands with a documented regression fixture"). **Remaining: B** (`long
+>>> long` shift) — the whole 737-finding tail.
 
 ### 0.2 Single-fixture verify command — ✅ DONE (2026-07)
 - **What.** Teach `bench` to accept a single `.java` *file* (not just a
