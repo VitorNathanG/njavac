@@ -72,118 +72,36 @@ making `Unsupported` (skip) genuinely distinct from an njavac invariant violatio
 
 ## Phase 0 — Enablers
 
-### 0.1 Differential fuzzer  *(the single highest-leverage item)* — ✅ DONE (2026-07)
-- **What.** A dependency-free `src/bin/fuzz.rs` that generates random *in-scope*
-  Java (`main` bodies: N primitive locals, literals biased toward the constant-load
-  boundaries + IEEE landmines, random operator/cast/compound-assign trees, nested
-  `if/else`, and boolean expression trees over `&& || ! < > == …` incl. constant
-  operands), compiles each with both compilers, and byte-compares. On mismatch it
-  auto-minimizes (statement-level ddmin) and dumps the reduced `.java` ready to drop
-  into `fixtures/`. Seed-based (`fuzz <seed>`) for reproducibility.
-- **Why.** The byte-identity property is unusually fuzzer-friendly: the oracle is
-  free and total (real `javac`), the predicate is a trivial `cmp`, and njavac
-  already *cleanly refuses* out-of-scope input. The generator emits valid in-scope
-  Java and the only hard-fail signal is *both compilers accept, bytes differ* — by
-  definition an njavac bug. It grows one rung at a time and is a permanent net.
-- **As built.** Shipped 2026-07, designed via a 4-lens agent panel. Its living
-  mechanics — the oracle contract, the three soundness invariants, the generator
-  scope boundary, the performance model, and the commands/flags — are documented
-  once in **CLAUDE.md §Testing** (a new rung grows the fuzzer by the 5-touch list
-  there); they are not restated here. It found a real constant-folding bug family on
-  its first run (backlog below).
-- **Deferred to v1.1.** Expression-level minimization (v1 is statement-level, so a
-  minimized fixture keeps its decls' full initializers); `--jobs` parallelism.
+### 0.1 Differential fuzzer — ✅ DONE *(the highest-leverage item)*
+`make fuzz`: random in-scope Java vs the pinned javac, in-process, byte-compared;
+auto-minimizes a mismatch into a droppable fixture. The only hard-fail signal is *both
+compilers accept, bytes differ* — by definition an njavac bug. Found a real bug family
+on its first run (backlog below). The mechanics and the 5-touch "grow it for a new
+rung" list live in CLAUDE.md §Testing; deferred sub-features are in §"Deferred /
+opportunistic improvements".
 
-### Fuzzer-found bug backlog (2026-07 census: 5000 cases)
-The first sweep found njavac diverging on ~18% of random in-scope programs
-(`generator-invalid=0` / `njavac-reject=0`, so all are confirmed real byte-identity
-bugs). A second sweep (2026-07-12) re-diagnosed each signature against a javac
-ground-truth probe corpus; the original two-root-cause summary was **partly wrong**
-(the `-2L + 1.0f` "mixed-type fold" it named already folds byte-identically today),
-and a third, unrelated root cause surfaced. The real breakdown is **three** causes:
+### Fuzzer-found bug backlog
+The fuzzer's first sweep diverged on ~18% of random in-scope programs (all confirmed
+real byte-identity bugs: `generator-invalid=0` / `njavac-reject=0`). Fixing them one
+per cycle — each with a regression fixture, and its reverse-engineered javac rule in
+a doc-comment at the fix site — has taken the census 894 → 289. Only the open work
+lives here (per CLAUDE.md §"Documentation: one fact, one home" — fixed bugs leave no
+entry; the code + fixtures + git log are their record).
 
-- **A. NaN not canonicalized** — ✅ **FIXED (2026-07-12).** `float v = -(0.0f/0.0f)`
-  folded to a sign-flipped NaN (`0xFFC00000`) where javac canonicalizes to
-  `0x7FC00000`. Fix: `ConstantPool::float`/`double` collapse every NaN to the
-  canonical bits before interning (matching `Float.floatToIntBits`), leaving `-0.0`
-  distinct. Removed the `cp[N].float_bits` (52) + `double_hi` (53) signatures; census
-  894 → 790 findings. Regression fixture: `fixtures/folding/NanCanon.java`.
-- **B. `long >>> long` shift** — ✅ **FIXED (2026-07-12).** Reverse-engineered rule:
-  javac constant-folds **every** shift *except* `long >>> long` (unsigned shift, left
-  `long`, right static type `long`) — a genuine ConstFold quirk — and always narrows a
-  *constant* shift distance to an `int` constant (`bipush 40`), never `ldc2_w long;
-  l2i`. njavac over-folded `long>>>long` and pushed the long distance + `l2i`. Fix:
-  (B2) `fold`'s `Expr::Binary` arm returns `None` for `UShr` with two `Const::Long`
-  operands; (B1) a `gen_shift_distance` helper narrows a constant distance in both the
-  `gen_binary` and `gen_compound` shift paths (also fixes the independent `int y = x <<
-  40L`, max_stack 2 vs 3). Removed `cp[N].long_hi/long_lo/tag` and most
-  `constant_pool_count`/`attr.length` findings (census 737 → 290). Regression fixture:
-  `fixtures/operators/ShiftLongConst.java`.
-- **C. Compound-assign with a negative constant on a narrowing target** — ✅ **FIXED
-  (2026-07-12).** `char v -= -100` emitted the raw `bipush -100; isub; i2c` where javac
-  normalizes to `bipush 100; iadd; i2c` (non-negative magnitude, operator chosen by the
-  effective delta's sign). The `int` iinc-overflow path already normalized; the general
-  narrowing path (char/short/byte) did not. Fix: a shared `int_delta_magnitude` helper +
-  an `int_additive_const_delta` guard in the general path — `StackTy::Int` + additive op
-  + constant RHS only, so `long`/`float`/`double` keep the raw `lsub`/`dsub`/`fsub`.
-  Removed the `cp[N].int` signature and most `Code.code` findings (census 790 → 737).
-  Regression fixture: `fixtures/compound-assign/CompoundNegConst.java`.
+**Open — the `attr.length` tail** (289 findings: 269 `attr.length` + 20
+`constant_pool_count`). Untriaged, and the minimized cases look like more than one
+cause (`Fuzz0000004` — `long` arithmetic with a `byte` operand; `Fuzz0000356` — a
+boolean comparison materialized with a constant operand). Next census target: `make
+fuzz --keep-going`, triage a handful, reverse-engineer the rule, fix + fixture.
 
-Fix each as its own cycle with the fuzzer as the regression gate (fix → `make
-correctness` green + `make fuzz` shows the signature gone → commit a minimal,
-documented regression fixture in the fitting `fixtures/` subfolder, per CLAUDE.md
-§"Every bug fix lands with a documented regression fixture").
+### 0.2 Single-fixture verify — ✅ DONE
+`make verify FILE=<f>` (cached) / `make bench FILE=<f>` (online): compile one fixture,
+byte-compare, print the localized diff on mismatch. See CLAUDE.md §Testing.
 
-**Post-A/B/C re-census (2026-07-12): 290 residual findings, 3 signatures.** Clearing
-A/B/C unmasked further, independent bugs. Not the same "constant folding" family —
-these need their own triage:
-- **D. `i32::MIN` compound-assign delta** (1 `Code.code` case, e.g. `byte v -=
-  -2147483648`; repro `Fuzz0001145`). When the increment delta is exactly `i32::MIN`
-  its magnitude is unrepresentable, so javac keeps the *raw* `push c; <original op>`
-  (`ldc -2147483648; isub`) instead of normalizing. The C fix — and the pre-existing
-  `int` iinc-overflow path — normalize to `iadd i32::MIN`, wrong for `-=`. Fix: skip
-  normalization when `delta == i32::MIN` (fall through to plain `push c;
-  emit_binop(op)`); also closes a latent int-target bug. Small.
-- **E. the `attr.length` tail** (269 `attr.length` + 20 `constant_pool_count` — the
-  dominant remainder). Untriaged; the minimized cases look like more than one cause
-  (`Fuzz0000004` long arithmetic with a byte operand; `Fuzz0000356` boolean
-  comparison). Next census target.
-
-### 0.2 Single-fixture verify command — ✅ DONE (2026-07)
-- **What.** Teach `bench` to accept a single `.java` *file* (not just a
-  directory): compile just that one, byte-compare, and on mismatch print the
-  existing `print_first_divergence` diff, then exit. Expose it as a first-class
-  command and document it in CLAUDE.md as *the* verify command, replacing the
-  "there is no single-fixture flag / hand-run the pipeline" paragraph.
-- **Why.** Today iterating on one case means hand-running
-  `javac && njavac && cmp && javap -diff` from memory — error-prone (wrong `-d`,
-  stale artifacts, forgetting the header-line filtering the bench already does).
-  This collapses it to one canonical, correct, localized command. Highest
-  effort-to-payoff ratio for day-to-day (and agent) iteration.
-- **Effort.** Small (~1 hr) — reuses 100% of the existing correctness + diff
-  machinery in `bench.rs`.
-- **As built.** `bench` takes a `<File.java>` positional; under the Docker-only
-  test policy it is invoked through the `Makefile` — `make verify FILE=<File.java>`
-  (fast) or `make bench FILE=<File.java>` (online). (An earlier local wrapper and
-  the raw `docker-*.sh` scripts were folded into the self-contained Makefile.)
-- **Done when.** `make verify FILE=fixtures/branches/IfElse.java` prints pass or a
-  localized diff. ✅
-
-### 0.3 Structured class-file differ — ✅ DONE (2026-07)
-- **What.** A tool (bin or a `bench --raw`/`--pool-diff` mode) that parses both
-  `.class` byte streams into a typed tree (pool entries with resolved cross-refs,
-  methods, each attribute, decoded StackMapTable frames) and reports the *first
-  structurally-divergent node with a byte offset* — e.g. `constant_pool[17]:
-  javac=Methodref(...) njavac=NameAndType(...) at byte 0x84`.
-- **Why.** The current `javap -v` diff goes blind exactly when it matters — the
-  bench itself flags "bytes differ but javap matches → likely a trailing/attribute
-  byte" and gives nothing actionable. It also diffs *text* order, so a one-byte
-  pool-count shift cascades into hundreds of lines whose "first" divergence is far
-  from the cause. njavac already has the writer half; the reader is its mirror and
-  reuses `Entry`/`Method`/`StackFrame`. Pure tooling, zero byte-identity risk.
-- **Effort.** Small–medium (~half a day).
-- **Done when.** Given two `.class` files it names the first structural divergence
-  with a byte offset, even when `javap` output matches.
+### 0.3 Structured class-file differ — ✅ DONE
+The `classdiff` bin (`make diff A=… B=…`) and the first-structural-divergence report
+the bench prints on any mismatch — works even when `javap` output matches. It is the
+mirror of the `classfile` writer (`njavac::classdump`). See CLAUDE.md §Testing.
 
 ### 0.4 CI correctness gate — DEFERRED
 - **What.** A minimal `.github/workflows/ci.yml` that runs the **correctness pass
@@ -198,27 +116,11 @@ these need their own triage:
 - **Done when.** A push/PR runs the correctness pass on the pinned toolchain and
   fails red on any mismatch.
 
-### 0.5 Fast offline gate (volume-backed) — ✅ DONE (2026-07)
-- **What.** `bench --record` writes `javac` outputs to a cache dir; `bench
-  --offline --golden-dir <dir>` byte-compares njavac against that cache with no
-  `javac` invocation. Recording batches the whole suite into **one** javac
-  invocation (one JVM startup, not one per fixture).
-- **As built (Docker-only policy).** The original design was a *local* javac-free
-  loop, which the "all tests via Docker; local runs disallowed" policy forbids — a
-  host-recorded cache could reflect a non-pinned `javac`. The on-policy form is
-  `make verify`: it records the goldens **inside the image** (pinned javac) into a
-  **Docker volume** (`njavac-goldens`), then runs `bench --offline` against that
-  volume. Everything stays in Docker; the volume is just cache storage populated by
-  the pinned compiler, never committed, never hand-edited. Auto-records when the
-  volume is empty; `make record` forces a refresh after fixtures/JDK change.
-- **Why.** Makes the *mandatory* Docker correctness gate fast: ~1.3s for the whole
-  183-fixture suite (warm volume) vs ~30s for a full online run, because the online
-  path pays one javac JVM-startup per fixture and the offline path pays none.
-  `make bench` stays the authoritative from-scratch check (live pinned javac) plus
-  timing.
-- **Caveat.** The volume can go stale — re-record (`make record`) after changing
-  fixtures or rebuilding on a new JDK.
-- **Effort.** Small (~2 hr).
+### 0.5 Fast offline gate (volume-backed) — ✅ DONE
+`make verify` byte-compares njavac against goldens the pinned in-image javac recorded
+into a Docker volume — no javac spawns, ~1.3s for the whole suite (`make record`
+refreshes after a fixture/JDK change). `make bench` stays the authoritative
+from-scratch check. See CLAUDE.md §Testing.
 
 ---
 
@@ -400,14 +302,9 @@ files its "what would help" items here.
 
 ## Status
 
-- **Phase 0** — landed 0.1 (differential fuzzer, 2026-07 — found a real
-  constant-folding bug family on its first run; see the backlog above), 0.2
-  (single-fixture verify), 0.3 (structured class-file differ), 0.5 (fast offline
-  gate, volume-backed & on-policy); commands documented in CLAUDE.md §Testing. **0.4
-  (CI gate) remains deferred** by decision. All test execution runs through Docker
-  via the `Makefile` (`make verify` fast / `make bench` authoritative); local runs
-  are disallowed.
-- **Phase 1–3** — not started.
+Phase 0 landed (0.1–0.3 and 0.5; 0.4 CI gate deferred by decision); Phase 1–3 not
+started. All tests run through Docker via the `Makefile`.
 
-As items land, check them off here and record the resulting mechanics in CLAUDE.md
-(and any new language surface in README.md), in the same commit as the change.
+As items land, mark them ✅ in place and record the mechanics at the fix site / in
+CLAUDE.md — never restate them here, and delete a finished bug's backlog entry (per
+CLAUDE.md §"Documentation: one fact, one home").

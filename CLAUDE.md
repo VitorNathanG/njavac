@@ -47,13 +47,15 @@ a pointer.
   down here). **Not here:** the coverage checklist (→ README — do not re-enumerate
   the supported surface; it drifts), infra work not yet built (→ ROADMAP), a lone
   decision's fine detail that belongs in a code doc-comment at its function.
-- **ROADMAP.md — the infrastructure & architecture evolution plan.** *Ordered infra/
-  refactor work not yet done*, the *record of what landed* (checked off, with a
-  one-line "as built" + a pointer to the mechanics in CLAUDE.md), and the *open
-  fuzzer-found bug backlog*. **Update when** an infra item is planned or lands, or a
-  bug is triaged. **Not here:** language-rung order (→ README), the living mechanics
-  of a landed item (→ CLAUDE.md — ROADMAP keeps only the completion record),
-  how-we-work rules (→ CLAUDE.md).
+- **ROADMAP.md — the infrastructure & architecture evolution plan.** *Open, ordered
+  infra/refactor work* and the *open bug backlog* — a to-do list, **not a changelog**.
+  **When an item is done, delete its entry** (shrink a landed infra phase to a
+  one-line ✅ + pointer at most); never accumulate "✅ FIXED — here is the full story"
+  writeups. The record of finished work is the code + its doc-comment at the fix site,
+  the regression fixture, and the git commit — not a ROADMAP entry. **Update when**
+  work is planned, triaged, or **completed (by removing it)**. **Not here:**
+  language-rung order (→ README), the mechanics of anything landed (→ CLAUDE.md or the
+  code), how-we-work rules (→ CLAUDE.md).
 - **Code doc-comments & `make help` — the finest grain.** A specific javac-matching
   decision's rationale lives in the doc-comment on its function; the prose docs
   *reference the function*, they don't re-derive it. The command/flag list's source
@@ -140,7 +142,11 @@ used to diverge, and lives in the topical subfolder that fits (`folding/`,
 `compound-assign/`, …). Work one bug per cycle: reproduce → fix → verify the fix
 (`make correctness` green **and** `make fuzz` shows the signature gone) → add the
 fixture → commit+push → only then start the next bug. `NanCanon.java` is the pattern
-to copy.
+to copy. **Document the fix where it lives** — a doc-comment on the changed function
+carrying the reverse-engineered javac rule — and when the bug is fixed and committed,
+**delete its backlog entry** instead of annotating it "✅ done". The lasting record is
+that code comment + the fixture + the commit; the backlog stays a list of what is
+still *open*.
 
 ## Commands
 
