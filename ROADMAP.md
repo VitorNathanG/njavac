@@ -363,6 +363,21 @@ files its "what would help" items here.
   against stale goldens. A freshness check (re-record when any fixture is newer than
   the volume) would remove the footgun. `make correctness` already sidesteps it by
   always using live javac.
+- **fuzz: expression-level minimization (v1.1).** The minimizer is statement-level
+  only, but the fuzzer's own findings (constant folding) live *inside* a
+  declaration's initializer, so a minimized case stays at ~6 decls with full
+  initializer expressions instead of a one-liner. Add node-level shrinking (replace a
+  `Bin`/`Cmp`/`Logic` node with a child, drop casts/parens, shrink literals toward
+  0/1), each gated by the existing three-conjunct predicate, so a fixture is directly
+  droppable into `fixtures/`. Wanted before working the fuzzer-found bug backlog.
+- **fuzz: generator-validity smoke gate.** The `v ^= 1.5` generator bug (compound
+  bitwise with a float RHS → javac-reject) was caught by eyeballing `--dump-sources`,
+  not systematically. A cheap gate asserting `generator-invalid ≈ 0` over a small
+  probe corpus would catch a new rung's generation code emitting invalid Java the
+  moment it regresses (today it silently lowers yield).
+- **fuzz: "replay case N of seed S".** A mode to re-run/re-minimize one specific
+  finding (e.g. `Fuzz0000264`) without sweeping from the seed — a triage convenience
+  for working the backlog.
 
 ## Status
 
