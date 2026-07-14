@@ -259,12 +259,17 @@ debugging only and is **not** a sanctioned way to validate byte-identity.
   skips timing. This is the edit→verify inner loop — not a hand-run
   `javac && njavac && cmp`.
 - **Structured differ (0.3).** On any mismatch the bench prints a **classdiff** —
-  the first *structurally*-divergent field with its byte offset and readable
-  context (`methods[0].attr[0].Code.max_stack`, `cp[17].bytes`) — *before* the
-  javap diff. It localizes to the cause and works even when javap output matches
-  ("bytes differ, javap agrees"). The same engine (`njavac::classdump`) backs the
-  `classdiff` bin, baked into the image; diff two class files with
-  `make diff A=a.class B=b.class`.
+  the first *substantive* structurally-divergent field with its byte offset and
+  readable context (`methods[0].attr[0].Code.max_stack`, `cp[17].bytes`) — *before*
+  the javap diff. A *derived* field (a count/byte-length like `constant_pool_count`
+  or `attr[..].length` that differs only as a *consequence* of the content it
+  measures) is demoted to a one-line note so the headline is the cause, not the
+  symptom (`is_derived` in `classdump.rs`); the report still leads with the
+  first-differing-byte offset, so the ordered ground truth is never overruled. This
+  is also what makes the fuzzer's `--keep-going` census cluster by cause. It works
+  even when javap output matches ("bytes differ, javap agrees"). The same engine
+  (`njavac::classdump`) backs the `classdiff` bin, baked into the image; diff two
+  class files with `make diff A=a.class B=b.class`.
 - **Fast offline gate (0.5).** `make verify` records goldens from the **pinned**
   javac *inside* the image (one batch javac invocation) and persists them to a
   Docker volume (`njavac-goldens`), then byte-compares njavac against that cache
