@@ -650,7 +650,7 @@ impl<'a> Gen<'a> {
 
         // A bare boolean value already sits on the stack as 0/1, un-branched, so it
         // needs no materialization diamond (javac leaves `true && p` a bare `iload`).
-        // All five conjuncts matter:
+        // All six conjuncts matter:
         //  - `a && b && c` carries value_on_stack up from its last leaf but has a live
         //    false_chain, so it must NOT take this shortcut.
         //  - `value_on_stack` holds the invariant "the stacked 0/1 IS the result"; a
@@ -662,11 +662,21 @@ impl<'a> Gen<'a> {
         //    value sits at that merge and javac materializes it with the diamond, not a
         //    bare load — e.g. `((a || true) && true) && v` resolves `a`'s residual jump
         //    right before loading `v`. Guard on the frame count being unchanged.
+        //  - `!taints_materialization`: a `!` of a *left-constant* short-circuit fold
+        //    with a live local buried under it (`(!(true||v1)) || v1`) is erased by
+        //    `gen_cond`'s fold-shortcut before `negate()` can clear value_on_stack, so
+        //    the surviving leaf reaches here looking bare — but javac diamonds it. The
+        //    predicate re-derives that taint from the original AST and vetoes the
+        //    shortcut. This conjunct is the *only* one that fires for that family; every
+        //    other diamond/residual/const family already fails one of the five above (or
+        //    never reaches this function, being `fold`-constant), so the predicate can
+        //    never turn a genuinely-bare case into a diamond. See `taints_materialization`.
         if c.value_on_stack
             && c.true_chain.is_none()
             && c.false_chain.is_none()
             && matches!(c.opcode, CondOp::Test(_))
             && self.frames.len() == frames_before
+            && !taints_materialization(cond)
         {
             return ValType::Boolean;
         }
@@ -1696,6 +1706,83 @@ fn fold(expr: &Expr) -> Option<Const> {
 /// over constants folds; anything reading a (non-`final`) local does not.
 fn fold_bool(cond: &Expr) -> Option<bool> {
     fold(cond).map(|c| to_i32(c) != 0)
+}
+
+/// Whether `e` mentions any local (`Name`). In this subset there are no
+/// `final`/constant locals — every `Name` is a non-constant local and `fold`
+/// returns `None` for it — so "contains a `Name`" is exactly "`e` is **not** a
+/// JLS §15.28 constant expression". This is clause (τ2) of the tainted-`!` test in
+/// `taints_materialization`. The match is **wildcard-free on purpose**: a `Name`
+/// buried under a future `Expr` variant must force a decision here (a missed arm is
+/// a compile error), because misclassifying a tainted `!` as clean would leave the
+/// boolean-materialization diamond bug live for that shape. (`Println` cannot occur
+/// under a boolean `!`, but is matched to keep exhaustiveness.)
+fn contains_name(e: &Expr) -> bool {
+    match e {
+        Expr::Name(_) => true,
+        Expr::IntLit(_)
+        | Expr::LongLit(_)
+        | Expr::FloatLit(_)
+        | Expr::DoubleLit(_)
+        | Expr::BoolLit(_)
+        | Expr::CharLit(_)
+        | Expr::StringLit(_) => false,
+        Expr::Neg(e) | Expr::BitNot(e) | Expr::Not(e) | Expr::Println(e) => contains_name(e),
+        Expr::Cast { expr, .. } => contains_name(expr),
+        Expr::Binary { left, right, .. }
+        | Expr::Compare { left, right, .. }
+        | Expr::Logical { left, right, .. } => contains_name(left) || contains_name(right),
+    }
+}
+
+/// Whether a `Logical`'s left operand statically short-circuits its right away, per
+/// `fold` of the deciding operand: `false && _` and `true || _` drop the right; a
+/// live or forcing-right left (`fold(left) == None`) keeps it. Uses **only `fold`**
+/// as its oracle — the same one `gen_cond` consults at its fold-shortcut — so there
+/// is no second decision model to drift from lowering.
+fn left_drops_right(op: LogOp, left: &Expr) -> bool {
+    match (op, fold(left)) {
+        (LogOp::And, Some(c)) => to_i32(c) == 0, // false && _  -> right dead
+        (LogOp::Or, Some(c)) => to_i32(c) != 0,  // true  || _  -> right dead
+        _ => false,                              // live / forcing-right left: right evaluated
+    }
+}
+
+/// Whether a **tainted `!`** lies on `e`'s surviving short-circuit-decision path —
+/// the discriminator for the boolean-materialization diamond bug (DIAMOND-3b). See
+/// the sixth bullet in `gen_bool_value`'s fast-path doc-block for how it is used.
+///
+/// A `!(inner)` is **tainted** iff `fold(inner).is_some()` **and**
+/// `contains_name(inner)`. The two clauses are jointly satisfiable only when `inner`
+/// is a *left-constant* short-circuit fold (`true || v1`, `false && v1`, or a
+/// `!`/`Cast` chain over one) with a live local buried under it: `fold` over-computes
+/// such an `inner` to a clean verdict (via its short-circuit-aware `Logical` arm), so
+/// `gen_cond`'s fold-shortcut collapses the whole `!(…)` node **before** the
+/// `Expr::Not => …negate()` arm can run — the `!` is erased, `value_on_stack` is never
+/// cleared, and the surviving leaf gets bared. javac instead keeps the `!` as a
+/// negated `CondItem` and materializes the surviving leaf through the true/false
+/// diamond. A `Name`-free `!` (`!true`, `!(1>0)`) folds cleanly and stays bare (τ2
+/// fails); a `!` whose operand does not fold (`!((x>0) && false)` — forcing const on
+/// the right, so `fold(left)` is `None`) is not tainted (τ1 fails) and lowers
+/// correctly through `negate()` already.
+///
+/// The walk visits only the **evaluated** region: at a `Logical`, always the left,
+/// and the right unless `left_drops_right` (so a tainting `!` inside a dropped dead
+/// branch stays inert). Its sole oracle is `fold`; it is sound because
+/// `gen_bool_value` reaches it only when `fold(EXPR) == None`.
+fn taints_materialization(e: &Expr) -> bool {
+    match e {
+        Expr::Not(inner) => {
+            (fold(inner).is_some() && contains_name(inner)) || taints_materialization(inner)
+        }
+        Expr::Logical { op, left, right } => {
+            taints_materialization(left)
+                || (!left_drops_right(*op, left) && taints_materialization(right))
+        }
+        Expr::Cast { expr, .. } => taints_materialization(expr),
+        // Compare / Name / value-boolean `Binary` / literals carry no surviving `!`.
+        _ => false,
+    }
 }
 
 /// Evaluate a constant comparison, with binary numeric promotion. Float/double

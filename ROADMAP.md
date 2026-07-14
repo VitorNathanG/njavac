@@ -109,27 +109,6 @@ focused `LineNumberTable` refactor, not a one-liner. A `reads_local`/JLS-constan
 predicate is necessary but not sufficient. Triage repro: `make src-diff` on a nested
 `if (!(true || (x>0)))` before an `else` vs. a standalone one.
 
-**Open — boolean materialization bares where javac diamonds, for `(!(true || X)) || v1`**
-(very rare; found once at 50 000 programs, `Fuzz0001391`). Same root family as the
-`LineNumberTable` bug above: njavac's `fold`/`gen_bool_value` fast-path collapses a
-short-circuit-past-a-`!`-of-constant to a bare value load, but javac keeps a residual
-that forces the true/false diamond. The confirmed truth table (`make src-diff` on a
-probe declaring each as a `boolean`; javac's shape in the last column):
-  - `false || v1` → **bare** (njavac ✓) — left is the *literal* `false`
-  - `(false && (x>0)) || v1` → **bare** (njavac ✓) — left folds to false, `x>0` dropped
-  - `(!(true || v1)) || v1` → **diamond** (njavac ✗ bare) — left `!(true||v1)` folds to false
-  - `(!(true || (x>0))) || v1` → **diamond** (njavac ✗ bare)
-  - `(!(true || v1)) || (x>0)` → **diamond** (njavac ✓ — right is a comparison)
-The paradox that makes this a *hidden model*, not a one-liner: javac materializes
-`!(true||v1)`, `false&&(x>0)`, and `true||v1` **in isolation** all as bare `iconst_0/1`
-(each has a constant boolean type-value), so at the CondItem level MA and H2 are
-indistinguishable — yet as the left of `|| v1`, H2 bares and MA diamonds. javac keeps a
-`Code`-state distinction between a *literal* `false` and a *folded-to-false `!`-compound*
-that four analytical passes could not pin. The fix wants the same reverse-engineering as
-the LNT bug (reconcile njavac's `fold` with javac's constant/genCond materialization
-model), so the two are best fixed together. Triage repro: `make src-diff` on a
-`boolean r = (!(true || v1)) || v1;` decl.
-
 ### 0.2 Single-fixture verify — ✅ DONE
 `make verify FILE=<f>` (cached) / `make bench FILE=<f>` (online): compile one fixture,
 byte-compare, print the localized diff on mismatch. See CLAUDE.md §Testing.
@@ -344,6 +323,21 @@ files its "what would help" items here.
   and prints the *union* of distinct finding signatures (with a reproduce-seed per
   signature) would make progress-tracking one command. Noticed while clearing the
   goto-compaction / materialization tail.
+- **codegen: split `fold` into a JLS-`constValue` fold vs. the short-circuit
+  decision.** njavac's single `fold` conflates two things javac keeps distinct: a
+  genuine JLS §15.28 constant (javac's `constValue`/`ImmediateItem`, materialized
+  bare) and the short-circuit static *verdict* `genCond` computes while walking
+  (a `CondItem`, materialized via load-or-diamond). Fusing them is the root of the
+  boolean-materialization diamond family (fixed pointwise by `taints_materialization`
+  in `codegen.rs`) and the sibling `LineNumberTable` pending-line bug (still open
+  above). A semantic split — a strict `const_fold` distinct from the decision, or an
+  `Immediate`/`Cond` item-kind mirroring javac's `Items` — is the North Star, but has
+  a large byte-identity blast radius and does **not** by itself fix either bug (both
+  still need a consumer-side handling). **Promote when a later rung forces it** (`?:`,
+  loops, non-empty-stack `full_frame` materialization make `gen_cond` distinguish item
+  kinds pervasively); the `contains_name` + `fold`-of-deciding-operand vocabulary
+  already drawn for `taints_materialization` is exactly that boundary, so the fix
+  graduates into the refactor rather than being thrown away. Do not do it speculatively.
 
 ## Status
 

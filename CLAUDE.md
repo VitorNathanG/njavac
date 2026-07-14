@@ -444,8 +444,12 @@ condition (`fold_bool`) drops to the taken arm; otherwise `is_false` skips only 
 *then* (the else still runs), and the trailing `goto`+else is emitted only when the
 else target is reachable (no spurious `goto`, no dead else). **`gen_bool_value`**
 materializes to 0/1 in one of three shapes: a bare value already on the stack
-(`value_on_stack`, no diamond), a statically-decided item with a residual branch
-(resolve it, then `iconst_0`/`iconst_1`), or the general true-first
+(`value_on_stack`, no diamond — **unless a tainted `!` vetoes it**: a `!` of a
+left-constant short-circuit fold over a live local, `(!(true||v1)) || v1`, which
+`fold`'s shortcut erases before `negate()` can clear `value_on_stack`, so
+`taints_materialization` re-derives the taint from the AST to force the diamond
+javac emits), a statically-decided item with a residual branch (resolve it, then
+`iconst_0`/`iconst_1`), or the general true-first
 `iconst_1`/`goto`/`iconst_0` diamond — still asserting an **empty base stack**, so
 `println(a && b)`/`println(a < b)` (non-empty stack → `full_frame`) stay a refused
 later rung. Loops/`?:` will reuse `gen_cond` verbatim.
