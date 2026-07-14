@@ -645,20 +645,28 @@ impl<'a> Gen<'a> {
     /// rung; `println(a < b)`/`println(a && b)` stay refused by this assert).
     fn gen_bool_value(&mut self, cond: &Expr) -> ValType {
         assert!(self.cur == 0, "materialized boolean with non-empty operand stack is unsupported");
+        let frames_before = self.frames.len();
         let c = self.gen_cond(cond);
 
         // A bare boolean value already sits on the stack as 0/1, un-branched, so it
         // needs no materialization diamond (javac leaves `true && p` a bare `iload`).
-        // All four conjuncts matter: `a && b && c` carries value_on_stack up from its
-        // last leaf but has a live false_chain, so it must NOT take this shortcut.
-        // `value_on_stack` holds the invariant "the stacked 0/1 IS the result"; a `!`
-        // inverts that, so `negate()` clears the flag (see there) and `!p`/`!!p` both
-        // fall through to the diamond — matching javac, which diamonds every negation
-        // (taking the shortcut for `!p` would miscompile `boolean r = !p` to `r = p`).
+        // All five conjuncts matter:
+        //  - `a && b && c` carries value_on_stack up from its last leaf but has a live
+        //    false_chain, so it must NOT take this shortcut.
+        //  - `value_on_stack` holds the invariant "the stacked 0/1 IS the result"; a
+        //    `!` inverts that, so `negate()` clears the flag and `!p`/`!!p` fall through
+        //    to the diamond — matching javac (taking the shortcut for `!p` would
+        //    miscompile `boolean r = !p` to `r = p`).
+        //  - the fast-path holds only when the value reached the stack by STRAIGHT-LINE
+        //    code. If lowering placed a stack-map frame (a control-flow merge), the
+        //    value sits at that merge and javac materializes it with the diamond, not a
+        //    bare load — e.g. `((a || true) && true) && v` resolves `a`'s residual jump
+        //    right before loading `v`. Guard on the frame count being unchanged.
         if c.value_on_stack
             && c.true_chain.is_none()
             && c.false_chain.is_none()
             && matches!(c.opcode, CondOp::Test(_))
+            && self.frames.len() == frames_before
         {
             return ValType::Boolean;
         }
