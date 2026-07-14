@@ -449,7 +449,15 @@ The physical machinery is unchanged and reused: forward branches use the
 label/fixup table backpatched in `resolve_branches` (which **threads jumps through
 unconditional `goto`s**), and `build_frames` emits a frame only at pcs that survive
 as real jump targets — `gen_cond` only decides *at which pcs* `resolve_chain` calls
-`add_frame`. The running-locals snapshot (`Gen::locals`) grows as method-body
+`add_frame`. Because njavac emits branches eagerly, a nested constant-operand
+short-circuit (`(!(x>k || false)) || false`) leaves behind `goto`s javac's aliveness
+model never keeps, so **`compact_gotos` runs before `resolve_branches`** — a
+post-emission fixpoint that deletes exactly the `goto`s that are unreachable or jump
+to the next instruction (javac's `Code.resolve` compaction), remapping every
+pc-bearing table (`fixups`, `labels` — *threaded* to the goto's ultimate
+non-goto destination, not collapsed onto the next byte — `line_numbers`, frame
+offsets). It is a no-op on any program javac already matches (empty death set → no
+bytes move). The running-locals snapshot (`Gen::locals`) grows as method-body
 locals are declared and is what each frame captures — the push stays *after*
 `gen_stmt` so a frame inside a declaration's own initializer (`boolean r = a && b`)
 snapshots locals *without* the new local, matching javac. Branch bodies declare no

@@ -246,6 +246,7 @@ fn gen_method(cp: &mut ConstantPool, method: &Method, info: &MethodInfo) -> CfMe
     g.code.push(RETURN);
     g.add_line(ret_pc, method.close_line);
 
+    g.compact_gotos(); // delete dead / goto-to-next gotos (javac's Code.resolve)
     let live_targets = g.resolve_branches();
     let stack_frames = g.build_frames(&live_targets);
 
@@ -802,8 +803,16 @@ impl<'a> Gen<'a> {
 
     /// Follow a chain of unconditional `goto`s from `label` to the final pc.
     fn thread_target(&self, label: usize) -> u32 {
-        let mut pc = self.labels[label];
+        let pc = self.labels[label];
         debug_assert!(pc != u32::MAX, "unplaced branch label");
+        self.thread_from_pc(pc)
+    }
+
+    /// Follow a chain of unconditional `goto`s from byte pc `start` to the final
+    /// non-`goto` pc (the ultimate destination). Bounded by the fixup count to guard
+    /// against a `goto` cycle.
+    fn thread_from_pc(&self, start: u32) -> u32 {
+        let mut pc = start;
         for _ in 0..=self.fixups.len() {
             if self.code.get(pc as usize) != Some(&GOTO) {
                 break;
@@ -821,6 +830,161 @@ impl<'a> Gen<'a> {
             }
         }
         pc
+    }
+
+    /// javac's `Code.resolve` dead/redundant-`goto` elimination, as a post-emission
+    /// fixpoint (njavac emits branches eagerly, so this is a byte pass rather than the
+    /// inline `alive`-flag pruning javac does at emit time). It deletes **only** `goto`
+    /// (0xa7) instructions that are either
+    ///   (a) **unreachable** — nothing reaches them once every jump threads *past*
+    ///       them (`if (!(x>k || false)) || false` leaves such a dead goto), or
+    ///   (b) **goto-to-next** — the (threaded) target is the very next instruction, so
+    ///       the jump is a no-op (exposed only after (a)'s deletion shifts the pcs).
+    /// Everything else — a conditional branch, a real skip-else `goto`, a value
+    /// diamond's `goto` — is preserved. Deletion cascades (removing one goto can turn
+    /// another into goto-to-next), so it iterates to a fixpoint; each working round
+    /// strictly drops the goto-byte count, so it terminates. The pass is a **no-op on
+    /// any program javac already matches** (javac never emits a dead/goto-to-next goto,
+    /// so the death set is empty and no bytes move). Stack-neutral: `max_stack`,
+    /// `entry_locals`, and locals are never read or written. The subsequent (unchanged)
+    /// `resolve_branches` bakes every final offset over the compacted code.
+    fn compact_gotos(&mut self) {
+        #[cfg(debug_assertions)]
+        self.assert_compaction_preconditions();
+
+        loop {
+            // Threaded target pc of each fixup (parallel to `self.fixups`). Reachability
+            // and the goto-to-next test both read THESE, never raw `labels`: a goto that
+            // every jump threads past gets no inbound edge and dies.
+            let targets: Vec<u32> =
+                self.fixups.iter().map(|fx| self.thread_target(fx.label)).collect();
+            let fixup_at: std::collections::HashMap<u32, usize> =
+                self.fixups.iter().enumerate().map(|(i, fx)| (fx.branch_pc, i)).collect();
+
+            // Reachability worklist seeded only at method entry (pc 0). A branch's
+            // target is enqueued only when the branch itself is reached — never as a
+            // blanket seed, so a dead branch can't keep its target alive.
+            let n = self.code.len();
+            let mut reachable = vec![false; n + 1];
+            let mut work = vec![0usize];
+            while let Some(p) = work.pop() {
+                if p >= n || reachable[p] {
+                    continue;
+                }
+                reachable[p] = true;
+                let op = self.code[p];
+                let len = insn_len(&self.code, p);
+                if op == GOTO {
+                    work.push(targets[fixup_at[&(p as u32)]] as usize); // no fall-through
+                } else if is_cond_branch(op) {
+                    work.push(targets[fixup_at[&(p as u32)]] as usize);
+                    work.push(p + len);
+                } else if op != RETURN {
+                    work.push(p + len); // RETURN is terminal
+                }
+            }
+
+            // Death set: a `goto` that is unreachable, or that jumps to the instruction
+            // that will immediately follow it (goto-to-next, compared in pc space).
+            let mut dead: Vec<u32> = Vec::new();
+            for (i, fx) in self.fixups.iter().enumerate() {
+                if self.code[fx.branch_pc as usize] != GOTO {
+                    continue;
+                }
+                let alive = reachable[fx.branch_pc as usize];
+                if !alive || targets[i] == fx.branch_pc + 3 {
+                    dead.push(fx.branch_pc);
+                }
+            }
+            if dead.is_empty() {
+                break; // fixpoint
+            }
+            dead.sort_unstable();
+            let dead_set: std::collections::HashSet<u32> = dead.iter().copied().collect();
+
+            // Rebuild the byte stream skipping each dead goto's 3 bytes, recording a
+            // monotone old-pc -> new-pc map (a byte inside a deleted goto maps to the
+            // new pc of the following surviving byte).
+            let mut remap = vec![0u32; n + 1];
+            let mut new_code: Vec<u8> = Vec::with_capacity(n);
+            let mut di = 0usize;
+            let mut old = 0usize;
+            while old <= n {
+                remap[old] = new_code.len() as u32;
+                if old == n {
+                    break;
+                }
+                if di < dead.len() && dead[di] as usize == old {
+                    old += 3; // drop the whole goto
+                    di += 1;
+                } else {
+                    new_code.push(self.code[old]);
+                    old += 1;
+                }
+            }
+
+            // Compute each label's new pc FIRST, while `code`/`fixups`/`labels` are
+            // still original: a label pointing at a deleted goto must follow that
+            // goto's chain to its ultimate non-goto destination (never deleted), not
+            // collapse onto the byte after the goto. `remap[thread_from_pc(l)]` gets
+            // both cases right (a non-goto threads to itself). Assigned below.
+            let new_labels: Vec<u32> = self
+                .labels
+                .clone()
+                .iter()
+                .map(|&l| if l == u32::MAX { u32::MAX } else { remap[self.thread_from_pc(l) as usize] })
+                .collect();
+
+            // Remap every remaining pc-bearing structure onto the compacted code.
+            self.fixups.retain(|fx| !dead_set.contains(&fx.branch_pc));
+            for fx in &mut self.fixups {
+                fx.branch_pc = remap[fx.branch_pc as usize];
+                fx.operand_pos = fx.branch_pc as usize + 1; // opcode, then 2-byte operand
+            }
+            self.labels = new_labels;
+            for f in &mut self.frames {
+                debug_assert!(!dead_set.contains(&(f.offset as u32)), "frame at a deleted goto");
+                f.offset = remap[f.offset as usize] as u16;
+            }
+            let mut new_lines: Vec<(u16, u16)> = Vec::with_capacity(self.line_numbers.len());
+            for &(pc, line) in &self.line_numbers {
+                debug_assert!(!dead_set.contains(&(pc as u32)), "line entry on a deleted goto");
+                let np = remap[pc as usize] as u16;
+                // Preserve add_line's rule: an entry only when the line changes.
+                if new_lines.last().map(|&(_, l)| l) != Some(line) {
+                    new_lines.push((np, line));
+                }
+            }
+            self.line_numbers = new_lines;
+            self.code = new_code;
+        }
+    }
+
+    /// Debug tripwires for `compact_gotos`'s assumptions — they hold for the current
+    /// emitter but must be revisited when loops/switch/exceptions add opcodes: every
+    /// fixup sits on a branch opcode, and no LineNumberTable/StackMapTable entry sits
+    /// on a `goto` pc (the remap of those tables drops nothing only because of this).
+    #[cfg(debug_assertions)]
+    fn assert_compaction_preconditions(&self) {
+        for fx in &self.fixups {
+            debug_assert!(
+                is_branch(self.code[fx.branch_pc as usize]),
+                "fixup not on a branch opcode at pc {}",
+                fx.branch_pc
+            );
+        }
+        let goto_pcs: std::collections::HashSet<u32> = self
+            .fixups
+            .iter()
+            .filter(|fx| self.code[fx.branch_pc as usize] == GOTO)
+            .map(|fx| fx.branch_pc)
+            .collect();
+        for f in &self.frames {
+            debug_assert!(!goto_pcs.contains(&(f.offset as u32)), "frame requested at a goto");
+        }
+        for &(pc, _) in &self.line_numbers {
+            debug_assert!(!goto_pcs.contains(&(pc as u32)), "line entry at a goto");
+        }
     }
 
     /// Collect the requested frames into serializer-ready form: one per distinct
@@ -1246,6 +1410,33 @@ impl<'a> Gen<'a> {
 }
 
 // ---- opcode/table helpers ----
+
+/// Byte length of the instruction at `code[pc]`, over exactly the opcodes this
+/// emitter produces — the compaction pass walks the code with it. Branches are
+/// always the 2-byte-signed-offset form (never `goto_w`), and the only `wide`
+/// prefix is on `iinc`.
+fn insn_len(code: &[u8], pc: usize) -> usize {
+    match code[pc] {
+        WIDE => 6, // wide iinc: WIDE, IINC, u16 slot, u16 delta
+        SIPUSH | LDC_W | LDC2_W | IINC | IFEQ | IFNE | IFLT | IFGE | IFGT | IFLE | IF_ICMPEQ
+        | IF_ICMPNE | IF_ICMPLT | IF_ICMPGE | IF_ICMPGT | IF_ICMPLE | GOTO | GETSTATIC
+        | INVOKEVIRTUAL | INVOKESPECIAL => 3,
+        BIPUSH | LDC | ILOAD | LLOAD | FLOAD | DLOAD | ISTORE | LSTORE | FSTORE | DSTORE => 2,
+        _ => 1,
+    }
+}
+
+/// A conditional branch opcode (`ifeq`…`if_icmple`): falls through *and* may jump.
+fn is_cond_branch(op: u8) -> bool {
+    (IFEQ..=IF_ICMPLE).contains(&op)
+}
+
+/// Any branch opcode this emitter produces — a conditional or an unconditional `goto`.
+/// Only the debug-build compaction preconditions consult it.
+#[cfg(debug_assertions)]
+fn is_branch(op: u8) -> bool {
+    is_cond_branch(op) || op == GOTO
+}
 
 /// (slot-0 short opcode, wide opcode) for a load of type `ty`.
 fn load_ops(ty: ValType) -> (u8, u8) {

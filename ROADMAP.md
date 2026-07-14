@@ -84,23 +84,20 @@ opportunistic improvements".
 The fuzzer's first sweep diverged on ~18% of random in-scope programs (all confirmed
 real byte-identity bugs: `generator-invalid=0` / `njavac-reject=0`). Fixing them one
 per cycle — each with a regression fixture, and its reverse-engineered javac rule in
-a doc-comment at the fix site — has taken the census 894 → 25. Only the open work
-lives here (per CLAUDE.md §"Documentation: one fact, one home" — fixed bugs leave no
-entry; the code + fixtures + git log are their record).
+a doc-comment at the fix site — took the census 894 → single-digit findings per 5000.
+Only the open work lives here (per CLAUDE.md §"Documentation: one fact, one home" —
+fixed bugs leave no entry; the code + fixtures + git log are their record).
 
-**Open — redundant/dead `goto` compaction** (25 findings, all `attr.length`; e.g.
-`Fuzz0000073`). njavac's branch model emits `goto`s eagerly and only *threads* jumps
-through them in `resolve_branches` (retargeting), never *removing* the now-orphaned
-`goto` bytes. javac's `Code` tracks aliveness and, in `Code.resolve`, deletes a
-`goto` whose target is the immediately-following instruction (rewinds the code
-pointer). So a nested short-circuit with constant operands where an inner
-`||false`/`&&true` is negated and recombined — minimal repro `if ((!((vb > k) ||
-false)) || false)` — makes njavac emit one redundant `goto` and one dead
-(unreachable) `goto` that javac collapses, leaving njavac's `Code` ~6 bytes longer.
-The fix is a real **jump/dead-code compaction pass** (remove goto-to-next + dead code
-after an unconditional jump, then recompute all branch offsets, `LineNumberTable`
-pcs, and `StackMapTable` frame offsets) — bigger than the one-line folding fixes, and
-delicate: it must match javac's rule exactly or it introduces new divergences.
+**Open — boolean materialization reuses a stacked value javac diamonds** (rare; the
+random-seed fuzzer finds it every few 5000-program runs, e.g. `Fuzz0002248`). A deeply
+nested boolean value expression (many `&`/`|`/`^`/`&&`/`||` over locals, ending
+`… && v`) materializes to a bare `istore` in njavac where javac builds the
+`ifeq/iconst_1/goto/iconst_0` diamond — `gen_bool_value`'s `value_on_stack` fast-path
+fires in a case javac does not leave bare, lengthening `Code`. Same family as the
+`!localBoolean` fix (`branches/NotLocalMat.java`) but a different trigger; the exact
+javac boundary for "bare value vs diamond" over compound `&|^`/`&&`/`||` still needs
+reverse-engineering. Triage: `make fuzz` until it reappears, then `make src-diff` to
+minimize and probe the boundary.
 
 ### 0.2 Single-fixture verify — ✅ DONE
 `make verify FILE=<f>` (cached) / `make bench FILE=<f>` (online): compile one fixture,
