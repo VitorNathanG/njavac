@@ -88,16 +88,26 @@ a doc-comment at the fix site — took the census 894 → single-digit findings 
 Only the open work lives here (per CLAUDE.md §"Documentation: one fact, one home" —
 fixed bugs leave no entry; the code + fixtures + git log are their record).
 
-**Open — boolean materialization reuses a stacked value javac diamonds** (rare; the
-random-seed fuzzer finds it every few 5000-program runs, e.g. `Fuzz0002248`). A deeply
-nested boolean value expression (many `&`/`|`/`^`/`&&`/`||` over locals, ending
-`… && v`) materializes to a bare `istore` in njavac where javac builds the
-`ifeq/iconst_1/goto/iconst_0` diamond — `gen_bool_value`'s `value_on_stack` fast-path
-fires in a case javac does not leave bare, lengthening `Code`. Same family as the
-`!localBoolean` fix (`branches/NotLocalMat.java`) but a different trigger; the exact
-javac boundary for "bare value vs diamond" over compound `&|^`/`&&`/`||` still needs
-reverse-engineering. Triage: `make fuzz` until it reappears, then `make src-diff` to
-minimize and probe the boundary.
+**Open — `LineNumberTable` needs javac's pending-line model** (rare; the random-seed
+fuzzer finds it every few 5000-program runs, e.g. `Fuzz0000315`). njavac's `add_line`
+records `(current_pc, line)` eagerly at each statement/`if` start; javac instead keeps
+the line *pending* and attaches it to the **next instruction emitted**, where a later
+statement's line *overwrites* a still-pending one. The two diverge only for a
+statically-decided-but-not-*constant* `if` (`if (!(true || x>0))` — folds to a verdict
+via short-circuit yet reads a local, so it is not a JLS constant like `if (false)`).
+Such an `if` emits no code for its own condition, so:
+  - if the next instruction is the enclosing `if`'s skip-else `goto` (no statement
+    between), javac attaches the dead `if`'s line to that goto — njavac emits nothing
+    (`L2`/`Fuzz0000315`, njavac's `Code` a `LineNumberTable` entry short);
+  - if the next thing is another statement (e.g. the closing-brace `return`), that
+    statement's line overwrites it and javac drops it too (`branches/LogicalConstIf.java`
+    — which is why the naive "emit a line whenever the condition reads a local" fix
+    regresses it).
+The correct fix is to port javac's pending-line-attaches-to-next-instruction model
+(with overwrite) into `add_line` + the emit path + the trailing-`return` handling — a
+focused `LineNumberTable` refactor, not a one-liner. A `reads_local`/JLS-constant
+predicate is necessary but not sufficient. Triage repro: `make src-diff` on a nested
+`if (!(true || (x>0)))` before an `else` vs. a standalone one.
 
 ### 0.2 Single-fixture verify — ✅ DONE
 `make verify FILE=<f>` (cached) / `make bench FILE=<f>` (online): compile one fixture,
