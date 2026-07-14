@@ -139,18 +139,10 @@ The `classdiff` bin (`make diff A=… B=…`) and the first-structural-divergenc
 the bench prints on any mismatch — works even when `javap` output matches. It is the
 mirror of the `classfile` writer (`njavac::classdump`). See CLAUDE.md §Testing.
 
-### 0.4 CI correctness gate — DEFERRED
-- **What.** A minimal `.github/workflows/ci.yml` that runs the **correctness pass
-  only** (timing is host/harness-gated and pointless in CI). Prefer reusing the
-  existing Docker image (`docker build` then run the bench in correctness-only
-  mode) since that is the exact pinned `25.0.2-graalce` environment that
-  guarantees the golden bytes.
-- **Why.** Nothing today prevents a commit that breaks byte-identity from reaching
-  `main`, and the standing rule is push-after-every-commit. The reproducible-javac
-  hard part is already solved — we are one YAML file from a real backstop.
-- **Effort.** Small (~1–2 hr).
-- **Done when.** A push/PR runs the correctness pass on the pinned toolchain and
-  fails red on any mismatch.
+### 0.4 CI correctness gate — ✅ DONE
+`.github/workflows/ci.yml` runs `make correctness` (correctness only, no timing/fuzz)
+on push/PR in the pinned image — the unconditional backstop against a byte-breaking
+commit reaching `main`. A cold `docker build` each run for now (no GHA layer cache yet).
 
 ### 0.5 Fast offline gate (volume-backed) — ✅ DONE
 `make verify` byte-compares njavac against goldens the pinned in-image javac recorded

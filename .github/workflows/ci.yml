@@ -1,0 +1,25 @@
+# Byte-identity correctness gate. The repo commits straight to `main` with no
+# reviewer, so this is the only unconditional backstop against a byte-breaking
+# commit silently becoming the baseline (ROADMAP §0.4). Correctness only: timing
+# is host/CI noise, and the fuzzer's fresh-random-seed design makes a fixed CI
+# seed false comfort — neither belongs here.
+#
+# Reliability over speed for now: a cold `docker build` of the pinned GraalVM
+# image each run (no GHA layer cache yet). Only the pinned javac reproduces the
+# golden bytes, so `make correctness` builds and runs entirely inside that image.
+# Add layer caching later only if the cold build's runtime hurts.
+name: byte-identity
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  correctness:
+    runs-on: ubuntu-latest
+    env:
+      DOCKER_BUILDKIT: "1" # the Dockerfile uses `RUN --mount=type=cache`
+    steps:
+      - uses: actions/checkout@v4
+      - name: correctness gate (njavac vs pinned javac, in Docker)
+        run: make correctness
