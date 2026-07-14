@@ -314,6 +314,12 @@ files its "what would help" items here.
 - **fuzz: "replay case N of seed S".** A mode to re-run/re-minimize one specific
   finding (e.g. `Fuzz0000264`) without sweeping from the seed — a triage convenience
   for working the backlog.
+- **fuzz: multi-seed census helper.** Now that a bare `make fuzz` uses a fresh random
+  seed, one run is a spot check — gauging "is the tail clearing?" means eyeballing
+  several runs. A `make fuzz-census [RUNS=n]` that runs n random seeds in one command
+  and prints the *union* of distinct finding signatures (with a reproduce-seed per
+  signature) would make progress-tracking one command. Noticed while clearing the
+  goto-compaction / materialization tail.
 
 ## Status
 

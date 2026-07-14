@@ -41,19 +41,26 @@ and whether javac **constant-folds** the construct. Vary the probe across
 boundaries (literal magnitudes, slot indices, branch offsets, operand types) to
 find exactly where the bytes change — those boundaries become your fixtures.
 
-**For an opcode-*selection* rule, enumerate the COMPLETE truth table before you
-code the fix — never just the failing case.** When the decision is "which of a
-family" (`i2b`/`i2s`/`i2c`; a branch polarity; diamond-vs-bare boolean
-materialization), one probe tells you one cell; a fix guessed from one cell is
-routinely wrong on a *sibling* cell. List every input category (all source→target
-type pairs, both polarities, un-/single-/double-negated, constant vs live operand),
-`make probe`/`make src-diff` each, and only then write the rule against the whole
-table. Cautionary tale from the fuzzer tail: a `byte`→`short` cast still emits
-`i2s` (a *widening*!) because javac narrows on any *differing* sub-int typecode; and
-a first fix for `!p` (negated boolean local) that keyed on opcode polarity was
-silently wrong for the sibling `!!p` (javac diamonds *every* negation, it does not
-collapse `!!p` to identity) — a full `p`/`!p`/`!!p`/`p&q`/`true&&p`/`p&&q` table
-would have caught it before the detour.
+**For ANY javac-matching rule, enumerate the COMPLETE truth table before you code
+the fix — never just the failing case.** This is the single most repeated mistake:
+it applies to opcode selection (`i2b`/`i2s`/`i2c`, a branch polarity, diamond-vs-bare
+materialization) *and* to control-flow and side-table rules (`LineNumberTable`
+entries, dead-branch handling, frame placement) alike. One probe tells you one cell;
+a fix guessed from one cell is routinely wrong on a *sibling* cell. List every input
+category (all source→target type pairs, both polarities, un-/single-/double-negated,
+constant vs live operand, *and the surrounding context* — nested vs top-level, with vs
+without a following `else`/statement), `make probe`/`make src-diff` each, and only then
+write the rule against the whole table. Cautionary tales, all from the fuzzer tail:
+- a `byte`→`short` cast still emits `i2s` (a *widening*!) because javac narrows on any
+  *differing* sub-int typecode;
+- a first fix for `!p` keyed on opcode polarity was silently wrong for the sibling
+  `!!p` (javac diamonds *every* negation; it does not collapse `!!p` to identity) — a
+  full `p`/`!p`/`!!p`/`p&q`/`true&&p`/`p&&q` table would have caught it;
+- a `LineNumberTable` fix (`emit a line whenever the dead `if`'s condition reads a
+  local`) written from ONE case (`if (!(true||x>0))` before an `else`, where the line
+  survives) regressed its sibling (a standalone dead `if`, where the next statement
+  *overwrites* the line) — the two cells needed *javac's pending-line model*, not a
+  local predicate. Probe the sibling **context**, not just the sibling expression.
 
 **When the construct has a hidden *model*, not just a fixed opcode choice** — e.g.
 `&&`/`||` are javac's `Gen.genCond`/`Items.CondItem`/`Code.mergeChains` jump-chain
