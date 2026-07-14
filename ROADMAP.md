@@ -226,6 +226,17 @@ Phase 0's net (fuzzer + differ + single-fixture verify + CI) proves it.
   collapses the duplicated intern-order-vs-write-order lists into one ordered
   `Vec`. It is the hard prerequisite for the next real language rung (string
   concat → `invokedynamic` → `BootstrapMethods`).
+- **Order authority (the keystone's teeth).** Phase-2 interning must be *derived
+  by walking the single ordered `Vec`* — `intern_constants` walks the write plan
+  in the exact order `to_bytes` emits it, so interner and byte-writer share ONE
+  sequence and `attribute_length` is *measured* from the body buffer (as
+  `stack_map_body` already does), not hand-summed. That makes the phase-2 half of
+  the intern-order-vs-write-order hazard (the "Wrong constant-pool / attribute
+  order" known issue, #3) *unrepresentable by construction*, not merely
+  test-catchable. **Scope it honestly:** this closes only phase 2. Phase-1
+  composite/BFS pool *insertion* order (codegen-driven, `classfile.rs`) stays a
+  separate hand-maintained order the keystone does not make unrepresentable — so
+  don't overclaim "impossible."
 - **Effort.** Medium.
 - **Key files.** `classfile.rs` (`ClassFile::to_bytes`, the attribute writers).
 - **Related.** `invokedynamic`/`Dynamic` pool entries break the "every child is a
