@@ -351,6 +351,7 @@ enum Materialization {
 enum CodeFreePosition {
     None,
     PreserveFalseIfLine,
+    PreserveThroughLogicalLeft,
 }
 
 /// The deciding branch of a `CondItem`: a real conditional test (taken when the
@@ -409,6 +410,21 @@ impl CondItem {
     fn parenthesize(mut self) -> CondItem {
         if self.origin == CondOrigin::NegatedShortcut {
             self.materialization = Materialization::DiamondRequired;
+            if self.position == CodeFreePosition::PreserveFalseIfLine {
+                self.position = CodeFreePosition::PreserveThroughLogicalLeft;
+            }
+        }
+        self
+    }
+
+    /// javac drops a static-false negated shortcut's pending `if` position when
+    /// that item is used ungrouped as the left operand of another logical node.
+    /// A static-true item carries it through the evaluated right operand, while
+    /// explicit grouping preserves either verdict through the wrapper. This is
+    /// independent of grouping's value-materialization effect.
+    fn as_logical_left(mut self) -> CondItem {
+        if self.is_false() && self.position == CodeFreePosition::PreserveFalseIfLine {
+            self.position = CodeFreePosition::None;
         }
         self
     }
@@ -422,8 +438,8 @@ impl CondItem {
         if prefix.materialization == Materialization::DiamondRequired || crossed_join {
             self.materialization = Materialization::DiamondRequired;
         }
-        if prefix.position == CodeFreePosition::PreserveFalseIfLine {
-            self.position = CodeFreePosition::PreserveFalseIfLine;
+        if prefix.position != CodeFreePosition::None {
+            self.position = prefix.position;
         }
     }
 }
@@ -537,8 +553,8 @@ impl<'a> Gen<'a> {
         let c = self.gen_cond(cond);
 
         // A code-free verdict has no instruction to consume the condition line.
-        // Restore the previous pending position unless this is javac's one
-        // preserving case: a static-false negated shortcut.
+        // Restore the previous pending position unless the lowered item carries
+        // javac's preserving provenance for a static-false negated shortcut.
         if self.code.len() == code_before {
             let taken = if c.is_true() {
                 true
@@ -548,7 +564,7 @@ impl<'a> Gen<'a> {
                 unreachable!("code-free condition without a static verdict")
             };
             let preserve_false_line = !taken
-                && c.position == CodeFreePosition::PreserveFalseIfLine
+                && c.position != CodeFreePosition::None
                 && !entered_by_branch;
             if !preserve_false_line {
                 self.pending_line = previous_line;
@@ -614,7 +630,7 @@ impl<'a> Gen<'a> {
             }
             Expr::Compare { op, left, right } => self.gen_compare_cond(*op, left, right),
             Expr::Logical { op: LogOp::And, left, right } => {
-                let lc = self.gen_cond(left);
+                let lc = self.gen_cond(left).as_logical_left();
                 if lc.is_false() {
                     return lc.mark_shortcut(); // false && _ : right is dead
                 }
@@ -628,7 +644,7 @@ impl<'a> Gen<'a> {
                 rc
             }
             Expr::Logical { op: LogOp::Or, left, right } => {
-                let lc = self.gen_cond(left);
+                let lc = self.gen_cond(left).as_logical_left();
                 if lc.is_true() {
                     return lc.mark_shortcut(); // true || _ : right is dead
                 }
