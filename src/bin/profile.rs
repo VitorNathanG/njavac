@@ -36,9 +36,10 @@ fn main() {
     fixtures.sort_by(|a, b| a.1.cmp(&b.1));
 
     let total_bytes: usize = fixtures.iter().map(|(s, _)| s.len()).sum();
+    let total_lines: usize = fixtures.iter().map(|(s, _)| s.lines().count()).sum();
     let compiles = (fixtures.len() * rounds) as f64;
     println!(
-        "profiling {} fixtures ({total_bytes} source bytes) x {rounds} rounds = {:.0} compiles\n",
+        "profiling {} fixtures ({total_bytes} bytes, {total_lines} lines) x {rounds} rounds = {:.0} compiles\n",
         fixtures.len(),
         compiles
     );
@@ -83,11 +84,13 @@ fn main() {
     row("total", full, full);
 
     let mb_s = (total_bytes as f64 * rounds as f64) / t_full * 1000.0;
+    let loc_s = (total_lines as f64 * rounds as f64) / t_full * 1e9;
     println!(
-        "\nthroughput: {:.2}M compiles/s   {:.0} ns/compile   {:.0} MB/s source",
+        "\nthroughput: {:.2}M compiles/s   {:.0} ns/compile   {:.0} MB/s source   {:.2}M loc/s",
         1000.0 / full,
         full,
-        mb_s
+        mb_s,
+        loc_s / 1e6,
     );
 }
 
