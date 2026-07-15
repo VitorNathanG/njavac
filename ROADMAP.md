@@ -81,33 +81,51 @@ rung" list live in CLAUDE.md §Testing; deferred sub-features are in §"Deferred
 opportunistic improvements".
 
 ### Fuzzer-found bug backlog
-The fuzzer's first sweep diverged on ~18% of random in-scope programs (all confirmed
-real byte-identity bugs: `generator-invalid=0` / `njavac-reject=0`). Fixing them one
-per cycle — each with a regression fixture, and its reverse-engineered javac rule in
-a doc-comment at the fix site — took the census 894 → single-digit findings per 5000.
-Only the open work lives here (per CLAUDE.md §"Documentation: one fact, one home" —
-fixed bugs leave no entry; the code + fixtures + git log are their record).
 
-**Open — `LineNumberTable` needs javac's pending-line model** (rare; the random-seed
-fuzzer finds it every few 5000-program runs, e.g. `Fuzz0000315`). njavac's `add_line`
-records `(current_pc, line)` eagerly at each statement/`if` start; javac instead keeps
-the line *pending* and attaches it to the **next instruction emitted**, where a later
-statement's line *overwrites* a still-pending one. The two diverge only for a
-statically-decided-but-not-*constant* `if` (`if (!(true || x>0))` — folds to a verdict
-via short-circuit yet reads a local, so it is not a JLS constant like `if (false)`).
-Such an `if` emits no code for its own condition, so:
-  - if the next instruction is the enclosing `if`'s skip-else `goto` (no statement
-    between), javac attaches the dead `if`'s line to that goto — njavac emits nothing
-    (`L2`/`Fuzz0000315`, njavac's `Code` a `LineNumberTable` entry short);
-  - if the next thing is another statement (e.g. the closing-brace `return`), that
-    statement's line overwrites it and javac drops it too (`branches/LogicalConstIf.java`
-    — which is why the naive "emit a line whenever the condition reads a local" fix
-    regresses it).
-The correct fix is to port javac's pending-line-attaches-to-next-instruction model
-(with overwrite) into `add_line` + the emit path + the trailing-`return` handling — a
-focused `LineNumberTable` refactor, not a one-liner. A `reads_local`/JLS-constant
-predicate is necessary but not sufficient. Triage repro: `make src-diff` on a nested
-`if (!(true || (x>0)))` before an `else` vs. a standalone one.
+**Open — grouping provenance is erased around a negated shortcut** (`Fuzz0766276`,
+seed `18006986217243057667`, case 766276). Minimal shape:
+`v = (!(true || (1L >>> 1L) > 0L)) || v;`. javac materializes the final `v` through
+an `ifeq`/`iconst_1`/`goto`/`iconst_0` diamond and emits `StackMapTable`; njavac emits
+a bare `iload`/`istore`, so the first structural divergence is the missing
+`"StackMapTable"` pool entry. The pool is only the symptom.
+
+The complete black-box split is syntax-sensitive. An unparenthesized
+`!(true || N) || v` (and its `!!`/`!!!` siblings) reduces to a bare `v`; wrapping
+the complete negated left operand, `(!(true || N)) || v`, forces the final diamond
+without emitting an `iconst`/test for that left operand. Parentheses remain
+transparent for literals, strict comparisons, locals, live `!local`, non-negated
+shortcuts, residual logical items, and bitwise boolean values. njavac currently
+cannot represent that distinction because `parser::primary` erases grouping, while
+`has_tainted_not` reconstructs an over-broad approximation and `contains_name`
+misses the name-free `long >>> long` non-folding quirk.
+
+The fix needs `Expr::Paren`, a strict lowering-constant query separate from
+short-circuit verdicts, and explicit condition-item origin/materialization/position
+state. It must remove the AST reconstruction and frame-count heuristics, preserving
+the existing label/fixup/frame machinery. Cover grouped and ungrouped local,
+`long >>> long`, ordinarily-foldable shift, one/two/three `!`, logical wrapper,
+materialization, merge, and pending-line siblings before changing behavior.
+
+Targeted census confirms both deciding directions, a final bitwise-boolean leaf,
+nested logical wrappers, and arithmetic/cast wrappers around
+`N = long >>> long`. The code-free static-false form independently preserves its
+line when it ends an outer then-arm, for grouped, ungrouped, local, and name-free
+forms; a following statement overwrites that pending line. Controls that already
+match include no surrounding `!`, an evaluated (not dropped) `N`, `long >> long`,
+`long >>> int`, and ordinary `if` branch use. These are one root-cause family, not
+separate pool/frame/line bugs.
+
+**Open — boolean cast loses a left-deciding short-circuit item.** Minimal shapes:
+`r = ((boolean) (true || v)) && v;` and `if ((boolean) (false && v)) ... else ...`.
+javac materializes the cast operand (`iconst_1; ifeq` or `iconst_0; ifne`) before
+the outer logical/statement consumer; njavac's `fold` treats `Cast` transparently,
+so `gen_cond`/`gen_if` collapse it to a verdict and omit the residual branch,
+diamond, frames, and sometimes a whole arm shape. A cast around the tainted-`!`
+family fails for the same reason even when `has_tainted_not` correctly forces the
+final diamond. Direct cast assignment and casts of a literal, local, ordinary
+`!local`, or fully constant expression all match. The fuzzer does not currently
+generate boolean casts, so this family needs a hand-built truth table before its own
+fix cycle; it is related to, but not fixed by, broadening the taint predicate above.
 
 ### 0.2 Single-fixture verify — ✅ DONE
 `make verify FILE=<f>` (cached) / `make bench FILE=<f>` (online): compile one fixture,
@@ -294,6 +312,12 @@ anything — captured here so they surface proactively instead of waiting until
 someone trips on them. End-of-cycle reflection (CLAUDE.md §Working conventions)
 files its "what would help" items here.
 
+- **Formatting: define a sanctioned rustfmt surface.** The repository is not
+  normalized to the current host rustfmt, so `cargo fmt --all` rewrites unrelated
+  files and obscures focused diffs. Pin the formatter/config (preferably through a
+  `make fmt-check` command using the repository's Rust toolchain) and decide whether
+  to do one explicit normalization change; until then, avoid repo-wide formatting.
+
 - **classdiff: disassemble the `code[]` array.** Today the bytecode is one raw-hex
   field, so a `Code` divergence localizes to a byte offset but not an opcode.
   Decoding the instruction stream would name the diverging op (and its operands).
@@ -323,22 +347,6 @@ files its "what would help" items here.
   and prints the *union* of distinct finding signatures (with a reproduce-seed per
   signature) would make progress-tracking one command. Noticed while clearing the
   goto-compaction / materialization tail.
-- **codegen: split `fold` into a JLS-`constValue` fold vs. the short-circuit
-  decision.** njavac's single `fold` conflates two things javac keeps distinct: a
-  genuine JLS §15.28 constant (javac's `constValue`/`ImmediateItem`, materialized
-  bare) and the short-circuit static *verdict* `genCond` computes while walking
-  (a `CondItem`, materialized via load-or-diamond). Fusing them is the root of the
-  boolean-materialization diamond family (fixed pointwise by `taints_materialization`
-  in `codegen.rs`) and the sibling `LineNumberTable` pending-line bug (still open
-  above). A semantic split — a strict `const_fold` distinct from the decision, or an
-  `Immediate`/`Cond` item-kind mirroring javac's `Items` — is the North Star, but has
-  a large byte-identity blast radius and does **not** by itself fix either bug (both
-  still need a consumer-side handling). **Promote when a later rung forces it** (`?:`,
-  loops, non-empty-stack `full_frame` materialization make `gen_cond` distinguish item
-  kinds pervasively); the `contains_name` + `fold`-of-deciding-operand vocabulary
-  already drawn for `taints_materialization` is exactly that boundary, so the fix
-  graduates into the refactor rather than being thrown away. Do not do it speculatively.
-
 ## Status
 
 Phase 0 landed (0.1–0.3 and 0.5; 0.4 CI gate deferred by decision); Phase 1–3 not

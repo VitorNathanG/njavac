@@ -221,6 +221,7 @@ fn gen_method(cp: &mut ConstantPool, method: &Method, info: &MethodInfo) -> CfMe
         // realloc (RawVec::grow_one was the top allocator path in profiling).
         code: Vec::with_capacity(64),
         line_numbers: Vec::with_capacity(16),
+        pending_line: None,
         max_stack: 0,
         cur: 0,
         locals: entry_locals.clone(),
@@ -244,9 +245,8 @@ fn gen_method(cp: &mut ConstantPool, method: &Method, info: &MethodInfo) -> CfMe
     }
 
     // Every void method ends with an appended `return`, mapped to the closing brace.
-    let ret_pc = g.code.len() as u16;
-    g.code.push(RETURN);
-    g.add_line(ret_pc, method.close_line);
+    g.mark_line(method.close_line);
+    g.emit_op(RETURN);
 
     g.compact_gotos(); // delete dead / goto-to-next gotos (javac's Code.resolve)
     let live_targets = g.resolve_branches();
@@ -379,6 +379,9 @@ struct Gen<'a> {
     info: &'a MethodInfo,
     code: Vec<u8>,
     line_numbers: Vec<(u16, u16)>,
+    /// Source line waiting to attach to the next instruction opcode. A later
+    /// source position overwrites it if no instruction was emitted in between.
+    pending_line: Option<u16>,
     max_stack: u16,
     cur: u16,
     /// The assigned, in-scope locals in slot order (params first), as verifier
@@ -412,7 +415,7 @@ impl<'a> Gen<'a> {
             self.gen_if(stmt.line, cond, then_branch, else_branch.as_deref());
             return;
         }
-        let pc = self.code.len() as u16;
+        self.mark_line(stmt.line);
         match &stmt.kind {
             StmtKind::LocalDecl { name, init, .. } => {
                 if let Some(init) = init {
@@ -424,20 +427,25 @@ impl<'a> Gen<'a> {
             StmtKind::Expr(expr) => self.gen_expr_stmt(expr),
             StmtKind::If { .. } => unreachable!("handled above"),
         }
-        if self.code.len() as u16 > pc {
-            self.add_line(pc, stmt.line);
-        }
     }
 
-    /// `if (cond) then [else els]`, a faithful port of javac's `visitIf`. A
-    /// whole-constant condition folds away (only the taken arm is emitted, no
-    /// branch, no frame — the dead-branch rule); otherwise `gen_cond` lowers the
+    /// `if (cond) then [else els]`, a faithful port of javac's `visitIf`. A static
+    /// verdict emits only the taken arm and no frame; a static-false tainted `!`
+    /// still leaves its source line pending. Otherwise `gen_cond` lowers the
     /// condition to a `CondItem` and its chains are resolved to the then/else/end
     /// targets. When the condition is statically false only the *then* is dropped
     /// (the else still runs); the trailing `goto`+else block is emitted only when
     /// the else is actually reachable (no spurious `goto`, no dead else).
     fn gen_if(&mut self, line: u16, cond: &Expr, then_b: &[Stmt], else_b: Option<&[Stmt]>) {
         if let Some(taken) = fold_bool(cond) {
+            // For a static FALSE verdict, javac leaves the `if` line pending only
+            // when a tainted `!` survives on the evaluated short-circuit path.
+            // Plain `false && local`, a genuine constant, and every static TRUE
+            // verdict leave no position. A following source mark may still
+            // overwrite this pending line before any instruction consumes it.
+            if !taken && has_tainted_not(cond) {
+                self.mark_line(line);
+            }
             let arm = if taken { Some(then_b) } else { else_b };
             for s in arm.unwrap_or(&[]) {
                 self.gen_stmt(s);
@@ -447,8 +455,7 @@ impl<'a> Gen<'a> {
 
         // The gen_cond path always emits ≥1 instruction (a non-constant operand is
         // present), so the condition's line entry never lands on a phantom pc.
-        let cond_pc = self.code.len() as u16;
-        self.add_line(cond_pc, line);
+        self.mark_line(line);
 
         let c = self.gen_cond(cond);
         let is_false = c.is_false();
@@ -566,21 +573,21 @@ impl<'a> Gen<'a> {
             StackTy::Long => {
                 self.gen_promoted_operand(left, ValType::Long);
                 self.gen_promoted_operand(right, ValType::Long);
-                self.code.push(LCMP);
+                self.emit_op(LCMP);
                 self.cur -= 3; // two longs (4w) -> one int
                 int_zero_branch(op, true)
             }
             StackTy::Float => {
                 self.gen_promoted_operand(left, ValType::Float);
                 self.gen_promoted_operand(right, ValType::Float);
-                self.code.push(if matches!(op, CmpOp::Lt | CmpOp::Le) { FCMPG } else { FCMPL });
+                self.emit_op(if matches!(op, CmpOp::Lt | CmpOp::Le) { FCMPG } else { FCMPL });
                 self.cur -= 1; // two floats -> one int
                 int_zero_branch(op, true)
             }
             StackTy::Double => {
                 self.gen_promoted_operand(left, ValType::Double);
                 self.gen_promoted_operand(right, ValType::Double);
-                self.code.push(if matches!(op, CmpOp::Lt | CmpOp::Le) { DCMPG } else { DCMPL });
+                self.emit_op(if matches!(op, CmpOp::Lt | CmpOp::Le) { DCMPG } else { DCMPL });
                 self.cur -= 3; // two doubles (4w) -> one int
                 int_zero_branch(op, true)
             }
@@ -664,7 +671,7 @@ impl<'a> Gen<'a> {
         //    value sits at that merge and javac materializes it with the diamond, not a
         //    bare load — e.g. `((a || true) && true) && v` resolves `a`'s residual jump
         //    right before loading `v`. Guard on the frame count being unchanged.
-        //  - `!taints_materialization`: a `!` of a *left-constant* short-circuit fold
+        //  - `!has_tainted_not`: a `!` of a *left-constant* short-circuit fold
         //    with a live local buried under it (`(!(true||v1)) || v1`) is erased by
         //    `gen_cond`'s fold-shortcut before `negate()` can clear value_on_stack, so
         //    the surviving leaf reaches here looking bare — but javac diamonds it. The
@@ -672,13 +679,13 @@ impl<'a> Gen<'a> {
         //    shortcut. This conjunct is the *only* one that fires for that family; every
         //    other diamond/residual/const family already fails one of the five above (or
         //    never reaches this function, being `fold`-constant), so the predicate can
-        //    never turn a genuinely-bare case into a diamond. See `taints_materialization`.
+        //    never turn a genuinely-bare case into a diamond. See `has_tainted_not`.
         if c.value_on_stack
             && c.true_chain.is_none()
             && c.false_chain.is_none()
             && matches!(c.opcode, CondOp::Test(_))
             && self.frames.len() == frames_before
-            && !taints_materialization(cond)
+            && !has_tainted_not(cond)
         {
             return ValType::Boolean;
         }
@@ -692,23 +699,23 @@ impl<'a> Gen<'a> {
             // `q && false`: the residual false branch is already emitted; resolve
             // it here, the value is always 0.
             self.resolve_chain(fj);
-            self.code.push(ICONST_0);
+            self.emit_op(ICONST_0);
             self.push(1);
         } else if is_true {
             // `q || true`: statically true with a residual true branch; resolve it,
             // the value is always 1.
             self.resolve_chain(true_chain);
-            self.code.push(ICONST_1);
+            self.emit_op(ICONST_1);
             self.push(1);
         } else {
             // General true-first diamond.
             self.resolve_chain(true_chain); // true-entry (frame iff a branch lands)
-            self.code.push(ICONST_1);
+            self.emit_op(ICONST_1);
             self.push(1);
             let lmerge = self.branch_to_new(GOTO);
             self.resolve_chain(fj);
             self.cur = 0; // the iconst_1 lives only on the fall-through path
-            self.code.push(ICONST_0);
+            self.emit_op(ICONST_0);
             self.push(1);
             self.place_label(lmerge);
             self.add_frame(vec![VerificationType::Integer]);
@@ -760,13 +767,23 @@ impl<'a> Gen<'a> {
         }
     }
 
-    /// Append a LineNumberTable entry, unless it would repeat the previous entry's
-    /// line — javac emits an entry only when the source line changes, so several
-    /// statements (or a condition and its same-line body) share one entry.
-    fn add_line(&mut self, pc: u16, line: u16) {
-        if self.line_numbers.last().map(|&(_, l)| l) != Some(line) {
-            self.line_numbers.push((pc, line));
+    /// Replace the source line waiting to attach to the next real instruction.
+    /// This mirrors javac's pending-stat-position model: a code-free construct's
+    /// line survives only if no later source position is marked before emission.
+    fn mark_line(&mut self, line: u16) {
+        self.pending_line = Some(line);
+    }
+
+    /// Emit an instruction's opcode byte, first consuming any pending source line.
+    /// Operand bytes deliberately bypass this method so one instruction can add at
+    /// most one LineNumberTable entry. Consecutive equal lines remain deduplicated.
+    fn emit_op(&mut self, opcode: u8) {
+        if let Some(line) = self.pending_line.take() {
+            if self.line_numbers.last().map(|&(_, l)| l) != Some(line) {
+                self.line_numbers.push((self.code.len() as u16, line));
+            }
         }
+        self.code.push(opcode);
     }
 
     /// Reserve a fresh, not-yet-placed label.
@@ -783,7 +800,7 @@ impl<'a> Gen<'a> {
     /// Emit a branch opcode with a placeholder 2-byte offset, recording a fixup.
     fn emit_branch_op(&mut self, opcode: u8, label: usize) {
         let branch_pc = self.code.len() as u32;
-        self.code.push(opcode);
+        self.emit_op(opcode);
         let operand_pos = self.code.len();
         self.code.push(0);
         self.code.push(0);
@@ -968,9 +985,13 @@ impl<'a> Gen<'a> {
             }
             let mut new_lines: Vec<(u16, u16)> = Vec::with_capacity(self.line_numbers.len());
             for &(pc, line) in &self.line_numbers {
-                debug_assert!(!dead_set.contains(&(pc as u32)), "line entry on a deleted goto");
+                // javac may attach a pending line to a goto that Code.resolve then
+                // removes. The instruction and its line entry disappear together.
+                if dead_set.contains(&(pc as u32)) {
+                    continue;
+                }
                 let np = remap[pc as usize] as u16;
-                // Preserve add_line's rule: an entry only when the line changes.
+                // Preserve emit_op's rule: an entry only when the line changes.
                 if new_lines.last().map(|&(_, l)| l) != Some(line) {
                     new_lines.push((np, line));
                 }
@@ -982,8 +1003,9 @@ impl<'a> Gen<'a> {
 
     /// Debug tripwires for `compact_gotos`'s assumptions — they hold for the current
     /// emitter but must be revisited when loops/switch/exceptions add opcodes: every
-    /// fixup sits on a branch opcode, and no LineNumberTable/StackMapTable entry sits
-    /// on a `goto` pc (the remap of those tables drops nothing only because of this).
+    /// fixup sits on a branch opcode and no StackMapTable entry sits on a `goto` pc.
+    /// A LineNumberTable entry may sit on a goto via javac's pending-line model;
+    /// compaction drops it if that goto is deleted.
     #[cfg(debug_assertions)]
     fn assert_compaction_preconditions(&self) {
         for fx in &self.fixups {
@@ -1001,9 +1023,6 @@ impl<'a> Gen<'a> {
             .collect();
         for f in &self.frames {
             debug_assert!(!goto_pcs.contains(&(f.offset as u32)), "frame requested at a goto");
-        }
-        for &(pc, _) in &self.line_numbers {
-            debug_assert!(!goto_pcs.contains(&(pc as u32)), "line entry at a goto");
         }
     }
 
@@ -1037,7 +1056,7 @@ impl<'a> Gen<'a> {
 
     fn gen_println(&mut self, arg: &Expr) {
         let field = self.cp.fieldref("java/lang/System", "out", "Ljava/io/PrintStream;");
-        self.code.push(GETSTATIC);
+        self.emit_op(GETSTATIC);
         push_u16(&mut self.code, field);
         self.push(1); // PrintStream objectref
 
@@ -1052,7 +1071,7 @@ impl<'a> Gen<'a> {
             ValType::String => "(Ljava/lang/String;)V",
         };
         let method = self.cp.methodref("java/io/PrintStream", "println", desc);
-        self.code.push(INVOKEVIRTUAL);
+        self.emit_op(INVOKEVIRTUAL);
         push_u16(&mut self.code, method);
         self.pop(1 + ty.width()); // objectref + arg consumed, void return
     }
@@ -1081,12 +1100,12 @@ impl<'a> Gen<'a> {
                 let k = to_i32(c);
                 let delta = if op == BinOp::Add { k } else { k.wrapping_neg() };
                 if slot <= 0xff && (-128..=127).contains(&delta) {
-                    self.code.push(IINC);
+                    self.emit_op(IINC);
                     self.code.push(slot as u8);
                     self.code.push(delta as i8 as u8);
                     return;
                 } else if (-32768..=32767).contains(&delta) {
-                    self.code.push(WIDE);
+                    self.emit_op(WIDE);
                     self.code.push(IINC);
                     push_u16(&mut self.code, slot);
                     push_u16(&mut self.code, delta as i16 as u16);
@@ -1101,7 +1120,7 @@ impl<'a> Gen<'a> {
                     let (mag, add) = int_delta_magnitude(delta);
                     self.emit_int_const(mag);
                     self.push(1);
-                    self.code.push(if add { IADD } else { ISUB });
+                    self.emit_op(if add { IADD } else { ISUB });
                     self.pop(1);
                     self.emit_store(slot, ValType::Int);
                     return;
@@ -1130,7 +1149,7 @@ impl<'a> Gen<'a> {
             let (mag, add) = int_delta_magnitude(delta);
             self.emit_int_const(mag);
             self.push(1);
-            self.code.push(if add { IADD } else { ISUB });
+            self.emit_op(if add { IADD } else { ISUB });
             self.pop(1);
         } else {
             self.gen_promoted_operand(value, p);
@@ -1196,7 +1215,7 @@ impl<'a> Gen<'a> {
             Expr::Neg(e) => {
                 self.gen_value(e);
                 let p = sema::unary_promote(sema::type_of(e, self.info));
-                self.code.push(neg_op(p.stack()));
+                self.emit_op(neg_op(p.stack()));
                 p
             }
             Expr::BitNot(e) => {
@@ -1228,7 +1247,7 @@ impl<'a> Gen<'a> {
         } else {
             let at = self.gen_value(right);
             if at.stack() == StackTy::Long {
-                self.code.push(L2I);
+                self.emit_op(L2I);
                 self.pop(1); // long amount narrowed to int
             }
         }
@@ -1280,14 +1299,14 @@ impl<'a> Gen<'a> {
     /// Load an `int` constant with the tightest opcode javac would choose.
     fn emit_int_const(&mut self, v: i32) {
         match v {
-            -1 => self.code.push(ICONST_M1),
-            0..=5 => self.code.push(ICONST_0 + v as u8),
+            -1 => self.emit_op(ICONST_M1),
+            0..=5 => self.emit_op(ICONST_0 + v as u8),
             -128..=127 => {
-                self.code.push(BIPUSH);
+                self.emit_op(BIPUSH);
                 self.code.push(v as u8);
             }
             -32768..=32767 => {
-                self.code.push(SIPUSH);
+                self.emit_op(SIPUSH);
                 push_u16(&mut self.code, v as u16);
             }
             _ => {
@@ -1299,11 +1318,11 @@ impl<'a> Gen<'a> {
 
     fn emit_long_const(&mut self, v: i64) {
         match v {
-            0 => self.code.push(LCONST_0),
-            1 => self.code.push(LCONST_1),
+            0 => self.emit_op(LCONST_0),
+            1 => self.emit_op(LCONST_1),
             _ => {
                 let idx = self.cp.long(v);
-                self.code.push(LDC2_W);
+                self.emit_op(LDC2_W);
                 push_u16(&mut self.code, idx);
             }
         }
@@ -1313,9 +1332,9 @@ impl<'a> Gen<'a> {
         // Compare by bit pattern: only +0.0f/+1.0f/+2.0f get the const opcodes,
         // so -0.0f (and NaN) fall through to the pool.
         match v.to_bits() {
-            b if b == 0.0f32.to_bits() => self.code.push(FCONST_0),
-            b if b == 1.0f32.to_bits() => self.code.push(FCONST_1),
-            b if b == 2.0f32.to_bits() => self.code.push(FCONST_2),
+            b if b == 0.0f32.to_bits() => self.emit_op(FCONST_0),
+            b if b == 1.0f32.to_bits() => self.emit_op(FCONST_1),
+            b if b == 2.0f32.to_bits() => self.emit_op(FCONST_2),
             _ => {
                 let idx = self.cp.float(v);
                 self.emit_ldc(idx);
@@ -1325,11 +1344,11 @@ impl<'a> Gen<'a> {
 
     fn emit_double_const(&mut self, v: f64) {
         match v.to_bits() {
-            b if b == 0.0f64.to_bits() => self.code.push(DCONST_0),
-            b if b == 1.0f64.to_bits() => self.code.push(DCONST_1),
+            b if b == 0.0f64.to_bits() => self.emit_op(DCONST_0),
+            b if b == 1.0f64.to_bits() => self.emit_op(DCONST_1),
             _ => {
                 let idx = self.cp.double(v);
-                self.code.push(LDC2_W);
+                self.emit_op(LDC2_W);
                 push_u16(&mut self.code, idx);
             }
         }
@@ -1338,10 +1357,10 @@ impl<'a> Gen<'a> {
     /// `ldc`/`ldc_w` of a single-word pool entry (Integer/Float/String).
     fn emit_ldc(&mut self, idx: u16) {
         if idx <= 0xff {
-            self.code.push(LDC);
+            self.emit_op(LDC);
             self.code.push(idx as u8);
         } else {
-            self.code.push(LDC_W);
+            self.emit_op(LDC_W);
             push_u16(&mut self.code, idx);
         }
     }
@@ -1349,9 +1368,9 @@ impl<'a> Gen<'a> {
     fn emit_load(&mut self, slot: u16, ty: ValType) {
         let (short0, wide) = load_ops(ty);
         if slot <= 3 {
-            self.code.push(short0 + slot as u8);
+            self.emit_op(short0 + slot as u8);
         } else {
-            self.code.push(wide);
+            self.emit_op(wide);
             self.code.push(slot as u8);
         }
         self.push(ty.width());
@@ -1360,21 +1379,21 @@ impl<'a> Gen<'a> {
     fn emit_store(&mut self, slot: u16, ty: ValType) {
         let (short0, wide) = store_ops(ty);
         if slot <= 3 {
-            self.code.push(short0 + slot as u8);
+            self.emit_op(short0 + slot as u8);
         } else {
-            self.code.push(wide);
+            self.emit_op(wide);
             self.code.push(slot as u8);
         }
         self.pop(ty.width());
     }
 
     fn emit_binop(&mut self, p: ValType, op: BinOp) {
-        self.code.push(binop_op(p.stack(), op));
+        self.emit_op(binop_op(p.stack(), op));
         self.pop(p.width()); // two operands (2w) collapse to one (w)
     }
 
     fn emit_shift(&mut self, result: ValType, op: BinOp) {
-        self.code.push(shift_op(result.stack(), op));
+        self.emit_op(shift_op(result.stack(), op));
         self.pop(1); // value(w) + amount(1) -> value(w)
     }
 
@@ -1383,16 +1402,16 @@ impl<'a> Gen<'a> {
         match p.stack() {
             StackTy::Long => {
                 let idx = self.cp.long(-1);
-                self.code.push(LDC2_W);
+                self.emit_op(LDC2_W);
                 push_u16(&mut self.code, idx);
                 self.push(2);
-                self.code.push(LXOR);
+                self.emit_op(LXOR);
                 self.pop(2);
             }
             _ => {
-                self.code.push(ICONST_M1);
+                self.emit_op(ICONST_M1);
                 self.push(1);
-                self.code.push(IXOR);
+                self.emit_op(IXOR);
                 self.pop(1);
             }
         }
@@ -1407,18 +1426,18 @@ impl<'a> Gen<'a> {
         if matches!(to, ValType::Byte | ValType::Short | ValType::Char) {
             // Bring the value to the `int` computational type first.
             match fs {
-                StackTy::Long => self.code.push(L2I),
-                StackTy::Float => self.code.push(F2I),
-                StackTy::Double => self.code.push(D2I),
+                StackTy::Long => self.emit_op(L2I),
+                StackTy::Float => self.emit_op(F2I),
+                StackTy::Double => self.emit_op(D2I),
                 StackTy::Int => {}
             }
             // Narrow within int-family only when `from` is wider than `to`.
             let cur_ty = if fs == StackTy::Int { from } else { ValType::Int };
             if let Some(op) = subint_narrow_op(cur_ty, to) {
-                self.code.push(op);
+                self.emit_op(op);
             }
         } else if fs != to.stack() {
-            self.code.push(cross_conv_op(fs, to.stack()));
+            self.emit_op(cross_conv_op(fs, to.stack()));
         }
         // Net stack change: one value of `from.width()` becomes one of `to.width()`.
         let delta = to.width() as i32 - from.width() as i32;
@@ -1714,7 +1733,7 @@ fn fold_bool(cond: &Expr) -> Option<bool> {
 /// `final`/constant locals — every `Name` is a non-constant local and `fold`
 /// returns `None` for it — so "contains a `Name`" is exactly "`e` is **not** a
 /// JLS §15.28 constant expression". This is clause (τ2) of the tainted-`!` test in
-/// `taints_materialization`. The match is **wildcard-free on purpose**: a `Name`
+/// `has_tainted_not`. The match is **wildcard-free on purpose**: a `Name`
 /// buried under a future `Expr` variant must force a decision here (a missed arm is
 /// a compile error), because misclassifying a tainted `!` as clean would leave the
 /// boolean-materialization diamond bug live for that shape. (`Println` cannot occur
@@ -1750,9 +1769,10 @@ fn left_drops_right(op: LogOp, left: &Expr) -> bool {
     }
 }
 
-/// Whether a **tainted `!`** lies on `e`'s surviving short-circuit-decision path —
-/// the discriminator for the boolean-materialization diamond bug (DIAMOND-3b). See
-/// the sixth bullet in `gen_bool_value`'s fast-path doc-block for how it is used.
+/// Whether a **tainted `!`** lies on `e`'s surviving short-circuit-decision path.
+/// It is the shared discriminator for two javac behaviors: vetoing the bare-value
+/// shortcut in `gen_bool_value`, and preserving the pending source line of a
+/// code-free static-FALSE `if` in `gen_if`.
 ///
 /// A `!(inner)` is **tainted** iff `fold(inner).is_some()` **and**
 /// `contains_name(inner)`. The two clauses are jointly satisfiable only when `inner`
@@ -1770,18 +1790,17 @@ fn left_drops_right(op: LogOp, left: &Expr) -> bool {
 ///
 /// The walk visits only the **evaluated** region: at a `Logical`, always the left,
 /// and the right unless `left_drops_right` (so a tainting `!` inside a dropped dead
-/// branch stays inert). Its sole oracle is `fold`; it is sound because
-/// `gen_bool_value` reaches it only when `fold(EXPR) == None`.
-fn taints_materialization(e: &Expr) -> bool {
+/// branch stays inert). Its sole decision oracle is `fold`, the same shortcut both
+/// consumers are compensating for; there is no parallel constant model to drift.
+fn has_tainted_not(e: &Expr) -> bool {
     match e {
         Expr::Not(inner) => {
-            (fold(inner).is_some() && contains_name(inner)) || taints_materialization(inner)
+            (fold(inner).is_some() && contains_name(inner)) || has_tainted_not(inner)
         }
         Expr::Logical { op, left, right } => {
-            taints_materialization(left)
-                || (!left_drops_right(*op, left) && taints_materialization(right))
+            has_tainted_not(left) || (!left_drops_right(*op, left) && has_tainted_not(right))
         }
-        Expr::Cast { expr, .. } => taints_materialization(expr),
+        Expr::Cast { expr, .. } => has_tainted_not(expr),
         // Compare / Name / value-boolean `Binary` / literals carry no surviving `!`.
         _ => false,
     }

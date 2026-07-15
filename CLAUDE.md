@@ -24,7 +24,7 @@ can't drift the way a hand-maintained feature list does (it once still listed
 ## Working conventions
 
 **Documentation: one fact, one home — link, don't copy.** Keep the docs in lockstep
-with the code, in the *same* commit as the change. There are four homes, each with a
+with the code, in the *same* commit as the change. There are five homes, each with a
 charter and a boundary; when a doc needs a fact that lives in another, it **points to
 it by section name** instead of restating it. The failure this rule exists to kill is
 a fact written into two files' prose, where one copy later rots (the `&&`/`||` scope
@@ -47,7 +47,12 @@ a pointer.
   down here). **Not here:** the coverage checklist (→ README — do not re-enumerate
   the supported surface; it drifts), infra work not yet built (→ ROADMAP), a lone
   decision's fine detail that belongs in a code doc-comment at its function.
-- **ROADMAP.md — the infrastructure & architecture evolution plan.** *Open, ordered
+- **ARCHITECTURE.md — the target structure.** The intended long-term layer/module
+  boundaries, dependency rules, core contracts, byte-identity invariants, and the
+  concrete triggers for creating those modules. **Update when** the agreed
+  destination architecture changes. **Not here:** current mechanics (→ CLAUDE.md),
+  ordered implementation work or bugs (→ ROADMAP), language order (→ README).
+- **ROADMAP.md — the active infrastructure evolution plan.** *Open, ordered
   infra/refactor work* and the *open bug backlog* — a to-do list, **not a changelog**.
   **When an item is done, delete its entry** (shrink a landed infra phase to a
   one-line ✅ + pointer at most); never accumulate "✅ FIXED — here is the full story"
@@ -121,7 +126,7 @@ is the cautionary tale) and the rework that follows.
 
 **No concessions: match javac for every reachable case.** The default is to
 reproduce javac's exact bytes for everything a construct can reach — even when that
-means reverse-engineering a hidden model (javac's `CondItem` jump-chains, the
+means reverse-engineering a hidden behavior model (boolean jump chains, the
 `switch` density heuristic, the concat recipe). *"This is bigger than I expected"
 is never a reason to scope a case out.* Refuse **only** what genuinely needs a
 class-file subsystem this emitter does not yet have (non-empty-stack boolean
@@ -129,8 +134,18 @@ materialization → `full_frame`; string concat → `invokedynamic`) — a princ
 subset edge, and even then say so and get agreement rather than silently narrowing
 the rung. (The `&&`/`||` cycle is the cautionary tale: the first instinct was to
 refuse the constant-operand cases as "too big"; the right move was to model javac's
-`genCond` exactly — build the ground-truth corpus and reverse-engineer it, per the
+observable jump-chain behavior exactly — build the ground-truth corpus and
+reverse-engineer it, per the
 `byte-identity-rung` skill §1/§6.)
+
+**The reference compiler is a black box.** Derive implementation rules only from
+the pinned javac's observable outputs through repository probes, diffs, fixtures,
+and fuzzing. Do not inspect, copy, decompile, or base a design on javac/OpenJDK
+source code or internal implementation details. Names in existing njavac comments
+that compare a local abstraction to javac are descriptions of already-inferred
+behavior, not permission to use javac internals as an implementation authority.
+Build a complete probe corpus, infer the smallest model that explains it, and test
+that model's predictions before changing code.
 
 **Every bug fix lands with a documented regression fixture.** A fix — especially a
 fuzzer-found one — is not done until a **committed** `fixtures/` case pins the exact
@@ -463,7 +478,7 @@ materializes to 0/1 in one of three shapes: a bare value already on the stack
 (`value_on_stack`, no diamond — **unless a tainted `!` vetoes it**: a `!` of a
 left-constant short-circuit fold over a live local, `(!(true||v1)) || v1`, which
 `fold`'s shortcut erases before `negate()` can clear `value_on_stack`, so
-`taints_materialization` re-derives the taint from the AST to force the diamond
+`has_tainted_not` re-derives the taint from the AST to force the diamond
 javac emits), a statically-decided item with a residual branch (resolve it, then
 `iconst_0`/`iconst_1`), or the general true-first
 `iconst_1`/`goto`/`iconst_0` diamond — still asserting an **empty base stack**, so
@@ -490,6 +505,16 @@ locals in this subset, so the snapshot only ever grows (no `chop`). `negate_op` 
 12-opcode branch involution) is debug-asserted against `int_icmp_branch`/
 `int_zero_branch` in `assert_negate_op_consistent` since a drift there would
 silently break every comparison.
+
+Line numbers follow javac's pending-stat-position model. `mark_line` replaces the
+source line waiting to attach; the next instruction opcode emitted through
+`emit_op` consumes it, so a code-free statement's line can be overwritten by a
+later statement before any `LineNumberTable` entry exists. A code-free static-false
+`if` marks its line only when `has_tainted_not` finds a surviving `!` over a
+left-deciding short-circuit fold: this makes `if (!(true || local))` attach to a
+following live skip-else `goto`, while `if (false && local)`, every static-true
+verdict, and a genuine `if (false)` leave no position. If `compact_gotos` removes a
+goto, it removes an entry attached to that instruction as well.
 
 ## Determinism / Docker
 

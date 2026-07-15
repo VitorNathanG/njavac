@@ -89,7 +89,7 @@ pub enum StmtKind {
     /// `if (cond) <then> [else <else>]`. Each branch is the block (or single
     /// statement) it guards. `else if` is just an `If` nested as the sole
     /// statement of `else_branch`. The enclosing `Stmt`'s line is the condition's
-    /// line (where javac places the condition's LineNumberTable entry).
+    /// source position; codegen marks it pending for the next emitted instruction.
     If {
         cond: Expr,
         then_branch: Vec<Stmt>,
