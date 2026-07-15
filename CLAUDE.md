@@ -468,6 +468,10 @@ except directly around `NegatedShortcut`, where it sets `DiamondRequired` withou
 emitting code. Thus `!(true||p) || q` leaves `q` bare, while `(!(true||p)) || q`
 diamonds `q`. A boolean cast is stronger: it materializes its operand once and
 returns a fresh reusable stack test, so repeated casts add no duplicate diamond.
+When an evaluated shortcut prefix reaches a code-free static right operand, that
+logical node carries latent `CodeFreePosition` provenance regardless of the right
+operand's verdict. A later `!` promotes it to line preservation without changing
+`CondOrigin` or value materialization.
 
 A **chain is an `Option<usize>` label id**; `None` is empty and places no frame.
 `jump_false`/`jump_true` are total over tests and static verdicts. `&&`/`||`

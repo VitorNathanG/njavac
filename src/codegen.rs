@@ -350,6 +350,7 @@ enum Materialization {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum CodeFreePosition {
     None,
+    ShortcutAwaitingNegation,
     PreserveFalseIfLine,
     PreserveThroughLogicalLeft,
 }
@@ -396,7 +397,9 @@ impl CondItem {
             stack_reuse: false,
             origin,
             materialization: self.materialization,
-            position: if origin == CondOrigin::NegatedShortcut {
+            position: if origin == CondOrigin::NegatedShortcut
+                || self.position == CodeFreePosition::ShortcutAwaitingNegation
+            {
                 CodeFreePosition::PreserveFalseIfLine
             } else {
                 self.position
@@ -410,9 +413,9 @@ impl CondItem {
     fn parenthesize(mut self) -> CondItem {
         if self.origin == CondOrigin::NegatedShortcut {
             self.materialization = Materialization::DiamondRequired;
-            if self.position == CodeFreePosition::PreserveFalseIfLine {
-                self.position = CodeFreePosition::PreserveThroughLogicalLeft;
-            }
+        }
+        if self.position == CodeFreePosition::PreserveFalseIfLine {
+            self.position = CodeFreePosition::PreserveThroughLogicalLeft;
         }
         self
     }
@@ -435,6 +438,15 @@ impl CondItem {
     }
 
     fn carry_prefix(&mut self, prefix: &CondItem, crossed_join: bool) {
+        if prefix.origin == CondOrigin::Shortcut
+            && (self.is_true() || self.is_false())
+            && self.position == CodeFreePosition::None
+        {
+            // A static right operand keeps shortcut ancestry only for a later
+            // negation's source-position behavior. It must not taint origin or
+            // value materialization.
+            self.position = CodeFreePosition::ShortcutAwaitingNegation;
+        }
         if prefix.materialization == Materialization::DiamondRequired || crossed_join {
             self.materialization = Materialization::DiamondRequired;
         }
@@ -564,7 +576,11 @@ impl<'a> Gen<'a> {
                 unreachable!("code-free condition without a static verdict")
             };
             let preserve_false_line = !taken
-                && c.position != CodeFreePosition::None
+                && matches!(
+                    c.position,
+                    CodeFreePosition::PreserveFalseIfLine
+                        | CodeFreePosition::PreserveThroughLogicalLeft
+                )
                 && !entered_by_branch;
             if !preserve_false_line {
                 self.pending_line = previous_line;
