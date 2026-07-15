@@ -151,8 +151,8 @@ still *open*.
 ## Commands
 
 The `Makefile` is the command surface — run `make help` to list it (`verify`,
-`record`, `bench`, `fuzz`, `fuzz-selftest`, `probe`, `src-diff`, `diff`, `image`,
-`check`).
+`record`, `bench`, `fuzz`, `fuzz-verify`, `fuzz-selftest`, `probe`, `src-diff`,
+`diff`, `image`, `check`).
 Building and running the compiler itself:
 
 ```bash
@@ -215,11 +215,13 @@ debugging only and is **not** a sanctioned way to validate byte-identity.
 *through Docker* per the policy above:
 
 - **Differential fuzzer (0.1).** `make fuzz [SEED=n COUNT=n BATCH=n]` generates
-  random *in-scope* Java (`src/bin/fuzz.rs`), compiles each with the pinned javac and
-  njavac (in-process), and byte-compares. **A bare `make fuzz` uses a fresh random
+  random *in-scope* Java (`src/bin/fuzz.rs`), compiles each with njavac (in-process)
+  and the pinned javac (via a **persistent in-memory worker** — see Performance
+  below), and byte-compares. **A bare `make fuzz` uses a fresh random
   seed each run** (explores new programs every time) and prints it, so any finding
   reproduces with `make fuzz SEED=<n>`; pass `SEED=n` to pin it. `make fuzz-selftest`
-  exercises the finding→minimize→report machinery (fixed seed, deterministic).
+  exercises the finding→minimize→report machinery (fixed seed, deterministic);
+  `make fuzz-verify` runs the worker's byte-identity gate (see Performance).
   Findings land in `fuzz-out/` (git-ignored) as a minimized `.java` + a `.diff`. Key
   facts a future rung's generator MUST preserve:
   - **The oracle contract — one sentence.** *Both compilers accept and the bytes
@@ -230,28 +232,42 @@ debugging only and is **not** a sanctioned way to validate byte-identity.
     never a soundness lever — generator over-reach can't manufacture a false finding.
   - **Three invariants that keep it sound.** (1) the `ident()` chokepoint: class name
     == filename == `source_file` arg (the `.class` couples to all three via the class
-    name, `SourceFile`, and `LineNumberTable`), reused by generation, the batch
-    writer, the in-process `compile()`, AND every minimizer candidate; (2) `reset_dir`
-    per batch + an exact-file-set assertion (no stale `.class`, no `$`-aux class a
-    future concat/switch generator might over-reach into); (3) generate-all-IR-before-
-    any-IO, so a transient hiccup changes tallies but never the seed-determined program
-    sequence.
+    name, `SourceFile`, and `LineNumberTable`), reused by generation, the worker
+    request, the in-process `compile()`, AND every minimizer candidate; (2)
+    `assert_batch_classes` — the worker returns exactly the batch's class set, so a
+    stale or `$`-aux class (a future concat/switch generator over-reaching) is a hard
+    error; (3) generate-all-IR-before-any-compile, so a transient hiccup changes
+    tallies but never the seed-determined program sequence.
   - **The generator scope boundary.** Declarations only at method-body top level (sema
     allocates slots for top-level decls only). A *branch-boolean* (`< <= > >= == != &&
     || !`) may only be materialized on an empty base stack — an `if` cond or a boolean
     decl/assign RHS; a *value-boolean* (literal, local, `&|^`) is used everywhere else.
     This is the `BoolMode`/`ScopeCaps` split; getting it wrong only lowers yield.
-  - **Performance.** njavac runs in-process; ONE `javac -d <dir> @argfile` per batch
-    (default 1000) amortizes JVM startup — `@argfile` is required (a big argv blows
-    `ARG_MAX`), and scratch lives on the normal FS (`/dev/shm` is only 64 MB). `--jobs`
-    is deferred (asserts `==1`). `--keep-going` enumerates distinct finding signatures
-    (normalized structural divergence paths); `--no-min` skips minimization for a fast
-    census; `--dump-sources` prints generated sources (no compile) for a determinism
-    check. **A new rung grows the fuzzer by a 5-touch list** (add an `FExpr`/`FStmt`
-    variant, a gen arm, a render arm, a minimize pass, a `ScopeCaps` flag) — run
-    `make fuzz` as part of landing it. The open fuzzer-found bug backlog lives in
-    ROADMAP.md §"Fuzzer-found bug backlog" (kept there and not re-characterized here,
-    so this pointer can't go stale).
+  - **Performance.** Both compilers now run without a process spawn and without
+    touching disk. njavac is in-process; the pinned javac runs in a **persistent
+    in-memory worker** (`tools/FuzzJavac.java`, driven by `JavacWorker` in
+    `fuzz.rs`) — ONE hot JVM for the whole run, sources handed over a pipe and
+    `.class` bytes captured in memory (no source files, no class files, no dir
+    scans). A whole batch (default 1000) compiles in one worker `getTask`, which
+    amortizes javac's compiler `Context` exactly as the old `@argfile` batch did —
+    a *fresh* `Context` per program was far slower than the CLI it replaced. This
+    cut a 6000-case run ~12s → ~5s (a 200k run does ~5000 programs/s, fully
+    in-memory). The summary prints per-compiler **compile time** (javac vs njavac)
+    and total **lines compiled**. Byte-identity of the worker to the `javac` CLI is
+    an *empirical* invariant (it rests on the `JavaCompiler` API defaulting to the
+    CLI's options and the in-memory `JavaFileManager` reproducing the file-derived
+    bytes), so **`make fuzz-verify` is the gate** — it compiles N programs through
+    the worker AND a real CLI spawn and byte-compares; the CLI stays authoritative,
+    so **run it after any JDK bump or worker edit** (a divergence means the worker
+    is invalid). `--jobs` is deferred (asserts `==1`). `--keep-going` enumerates
+    distinct finding signatures (normalized structural divergence paths); `--no-min`
+    skips minimization for a fast census; `--dump-sources` prints generated sources
+    (no compile) for a determinism check. **A new rung grows the fuzzer by a 5-touch
+    list** (add an `FExpr`/`FStmt` variant, a gen arm, a render arm, a minimize
+    pass, a `ScopeCaps` flag) — run `make fuzz` as part of landing it, and
+    `make fuzz-verify` if the rung reaches new class-file territory. The open
+    fuzzer-found bug backlog lives in ROADMAP.md §"Fuzzer-found bug backlog" (kept
+    there and not re-characterized here, so this pointer can't go stale).
 
 - **Single-fixture verify (0.2).** `make verify FILE=<File.java>` (fast, cached
   goldens) or `make bench FILE=<File.java>` (online) compiles just that fixture

@@ -24,20 +24,31 @@
 //! out-of-scope code and bytes differ, that's a real bug; if it *rejects*, it's
 //! telemetry. So the generator's in-subset discipline is a **yield** lever, not a
 //! soundness lever. Three harness invariants make the equivalence airtight — the
-//! `ident()` naming chokepoint, `reset_dir` (no stale `.class`) + the exact-file-set
-//! assertion, and generate-all-IR-before-any-IO determinism.
+//! `ident()` naming chokepoint (class name == source name == the `source_file`
+//! arg), the exact-single-class guard (`expect_single_class`: javac emitted exactly
+//! the one expected class, never a stale or `$`-aux one), and seed-determinism (the
+//! generator is driven purely by the program index, so the sequence is a pure
+//! function of the seed regardless of any I/O outcome).
 //!
 //! ## Performance
 //!
-//! njavac runs in-process (µs); javac's ~0.4s JVM startup is the wall, so we batch
-//! N independent single-class programs into ONE `javac -d <dir> @argfile`
-//! invocation (proven byte-identical by the bench). `@argfile` is required: a large
-//! batch as argv would blow `ARG_MAX`. Scratch lives on the normal FS (container
-//! `/dev/shm` is only 64 MB).
+//! njavac runs in-process (µs). Spawning `javac` used to be the wall: each spawn
+//! paid ~0.3s JVM launch AND — the bigger cost — re-JIT-warmed javac's whole
+//! front-end from cold. So javac now runs in a **persistent in-memory worker**
+//! (`tools/FuzzJavac.java`, driven by `JavacWorker`): ONE hot JVM for the entire
+//! run, sources handed over a pipe, `.class` bytes captured in memory — so **nothing
+//! touches disk** (no source files, no class files, no dir scans). The worker's
+//! bytes are proven identical to the `javac` CLI by `--verify-worker`
+//! (`verify_worker`), which stays the ground truth — a divergence means the worker
+//! is invalid (e.g. a JDK bump changed a default). The old batch-to-disk CLI path
+//! survives only inside `--verify-worker` (one `javac -d <dir> @argfile` spawn per
+//! batch; `@argfile` dodges `ARG_MAX`).
 
 use std::collections::{HashMap, HashSet};
+use std::io::{BufReader, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::time::{Duration, Instant};
 
 // ===========================================================================
 // §1  PRNG — SplitMix64 (deterministic, seeded, dependency-free). RUNG-INVARIANT.
@@ -881,6 +892,7 @@ struct Config {
     no_min: bool,
     dump_sources: bool,
     selftest: bool,
+    verify_worker: bool,
 }
 
 impl Config {
@@ -898,6 +910,7 @@ impl Config {
             no_min: false,
             dump_sources: false,
             selftest: false,
+            verify_worker: false,
         };
         let mut positional = 0;
         let mut args = std::env::args().skip(1);
@@ -919,15 +932,18 @@ impl Config {
                 "--no-min" => cfg.no_min = true,
                 "--dump-sources" => cfg.dump_sources = true,
                 "--selftest" => cfg.selftest = true,
+                "--verify-worker" => cfg.verify_worker = true,
                 "-h" | "--help" => {
                     println!(
                         "usage: fuzz [<seed>] [<count>] [--seed N] [--count N] [--batch N] \
                          [--keep-going] [--no-min] [--out-dir DIR] [--jobs 1] [--dump-sources] \
-                         [--selftest] [--javac PATH]\n\
+                         [--selftest] [--verify-worker] [--javac PATH]\n\
                          \n  <seed> / --seed  pin the seed; OMIT for a fresh random seed each run\
                          \n                   (printed so a finding reproduces with `make fuzz SEED=<n>`)\
                          \n  --keep-going     don't stop at the first finding; enumerate distinct ones\
-                         \n  --no-min         skip minimization (fast enumeration; emits raw repros)"
+                         \n  --no-min         skip minimization (fast enumeration; emits raw repros)\
+                         \n  --verify-worker  prove the in-memory javac worker == the javac CLI byte-for-byte\
+                         \n                   over <count> generated programs (run after any JDK bump)"
                     );
                     std::process::exit(0);
                 }
@@ -992,12 +1008,148 @@ fn run_javac_one(javac: &str, out: &Path, src: &Path) -> bool {
         .unwrap_or(false)
 }
 
+/// The `java` launcher next to a `.../bin/javac` (they share a `bin/`); falls back
+/// to a bare `java` on `PATH`. Overridable with the `JAVA` env var.
+fn derive_java(javac: &str) -> String {
+    std::env::var("JAVA").unwrap_or_else(|_| {
+        javac
+            .strip_suffix("javac")
+            .map(|prefix| format!("{prefix}java"))
+            .unwrap_or_else(|| "java".to_string())
+    })
+}
+
+/// A persistent in-memory `javac` worker (`tools/FuzzJavac.java`, source-launched
+/// once). It replaces the per-batch `javac` process spawn: the JVM stays hot for
+/// the whole run (no re-launch, no re-JIT-warm of javac's front-end) and javac
+/// compiles from an in-memory source straight into an in-memory byte buffer — so
+/// NO source/class files ever touch disk. Its output is proven byte-identical to
+/// the `javac` CLI by `--verify-worker` (see `verify_worker`); if that ever fails
+/// (e.g. a JDK bump changes a default), the worker is invalid and the CLI stays
+/// the ground truth. Protocol: §"PROTOCOL" in `tools/FuzzJavac.java`; both ends
+/// use big-endian length-prefixed frames in lock-step request→response. Each
+/// request is a whole BATCH of units compiled in one `getTask` (one javac Context,
+/// amortized like the CLI's `@argfile`) — a fresh Context per program was far
+/// slower than the CLI it replaces (see `tools/FuzzJavac.java` §BATCHING).
+struct JavacWorker {
+    child: Child,
+    /// `Option` so `Drop` can `take()` it to close the pipe (EOF -> worker exits)
+    /// BEFORE reaping — otherwise `wait()` deadlocks on a worker still reading.
+    stdin: Option<ChildStdin>,
+    stdout: BufReader<ChildStdout>,
+}
+
+impl JavacWorker {
+    /// Source-launch the worker (`java tools/FuzzJavac.java`). The first `compile`
+    /// call absorbs its startup + self-compile; no handshake is needed because the
+    /// protocol is strictly request→response.
+    fn spawn(java: &str, worker_src: &Path) -> JavacWorker {
+        let mut child = Command::new(java)
+            .arg(worker_src)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap_or_else(|e| panic!("fuzz: cannot spawn javac worker `{java} {}`: {e}", worker_src.display()));
+        let stdin = child.stdin.take().expect("worker stdin");
+        let stdout = BufReader::new(child.stdout.take().expect("worker stdout"));
+        JavacWorker { child, stdin: Some(stdin), stdout }
+    }
+
+    /// Compile a whole batch in one javac task. Each unit is `(class_name, src)`;
+    /// `class_name` names the in-memory source `<name>.java`, so the emitted
+    /// `SourceFile`/`LineNumberTable` match a real file (the byte-identity linchpin).
+    /// Returns every emitted class keyed by binary name — a unit whose class is
+    /// absent was rejected by javac (generator-invalid), exactly as a missing
+    /// `.class` meant on the disk path. A protocol error means the worker died —
+    /// fatal, never a silent pass.
+    fn compile_batch(&mut self, units: &[(&str, &str)]) -> HashMap<String, Vec<u8>> {
+        self.request_batch(units)
+            .unwrap_or_else(|e| panic!("fuzz: javac worker protocol error ({e}) — worker crashed?"))
+    }
+
+    fn request_batch(&mut self, units: &[(&str, &str)]) -> std::io::Result<HashMap<String, Vec<u8>>> {
+        let stdin = self.stdin.as_mut().expect("worker stdin already closed");
+        stdin.write_all(&(units.len() as u32).to_be_bytes())?;
+        for (name, src) in units {
+            write_frame(stdin, name.as_bytes())?;
+            write_frame(stdin, src.as_bytes())?;
+        }
+        stdin.flush()?;
+        let n = read_i32(&mut self.stdout)?; // class count (>= 0, no reject sentinel)
+        let mut classes = HashMap::with_capacity(n.max(0) as usize);
+        for _ in 0..n {
+            let name = String::from_utf8(read_frame(&mut self.stdout)?)
+                .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidData, "non-utf8 class name"))?;
+            let bytes = read_frame(&mut self.stdout)?;
+            classes.insert(name, bytes);
+        }
+        Ok(classes)
+    }
+}
+
+impl Drop for JavacWorker {
+    fn drop(&mut self) {
+        // Close stdin FIRST (drop the write end -> worker reads EOF and exits), THEN
+        // reap — reversing the order deadlocks `wait()` on a worker still blocked in
+        // `readInt()`. (`std::process::exit` paths skip Drop entirely; there the OS
+        // closes the pipe on exit, so the worker still sees EOF and dies — no zombie.)
+        self.stdin.take();
+        let _ = self.child.wait();
+    }
+}
+
+fn write_frame(w: &mut impl Write, bytes: &[u8]) -> std::io::Result<()> {
+    w.write_all(&(bytes.len() as u32).to_be_bytes())?;
+    w.write_all(bytes)
+}
+
+fn read_i32(r: &mut impl Read) -> std::io::Result<i32> {
+    let mut b = [0u8; 4];
+    r.read_exact(&mut b)?;
+    Ok(i32::from_be_bytes(b))
+}
+
+fn read_frame(r: &mut impl Read) -> std::io::Result<Vec<u8>> {
+    let len = read_i32(r)?;
+    if len < 0 {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "negative frame length"));
+    }
+    let mut buf = vec![0u8; len as usize];
+    r.read_exact(&mut buf)?;
+    Ok(buf)
+}
+
+/// The worker's analogue of `assert_no_unexpected_classes`: every class javac
+/// emitted for the batch must belong to an expected unit. A stray/`$`-aux name (a
+/// future concat/switch generator over-reaching) means we'd compare half a program
+/// — a hard error, matching the disk path's file-set guard.
+fn assert_batch_classes(classes: &HashMap<String, Vec<u8>>, progs: &[Prog]) {
+    let expected: HashSet<&str> = progs.iter().map(|p| p.name.class.as_str()).collect();
+    for name in classes.keys() {
+        assert!(
+            expected.contains(name.as_str()),
+            "fuzz: javac worker emitted unexpected class {name} — generator over-reached into \
+             auxiliary classes (this would compare half a program)"
+        );
+    }
+}
+
 #[derive(Default)]
 struct Tally {
     pass: u64,
     generator_invalid: u64,
     njavac_reject: u64,
     findings: u64,
+    /// Total source lines fed through both compilers — a throughput/coverage gauge
+    /// (a big run compiles millions of lines of generated Java).
+    lines: u64,
+    /// Wall time each compiler spent. `javac_time` is measured around the whole
+    /// batch worker call, so it includes IPC and the one-time JVM startup/JIT-warmup
+    /// (mostly the first batch); `njavac_time` is the pure in-process `compile()`.
+    /// Not a CPU-pinned benchmark (that's `make bench`) — a rough field gauge.
+    javac_time: Duration,
+    njavac_time: Duration,
 }
 
 /// A fresh seed for a bare `make fuzz` (no external RNG crate): mix the wall-clock
@@ -1035,69 +1187,54 @@ fn main() {
         cfg.seed = random_seed();
     }
 
-    let scratch = std::env::temp_dir().join(format!("njavac-fuzz-{}", cfg.seed));
-    let src_dir = scratch.join("src");
-    let javac_out = scratch.join("out");
-    reset_dir(&scratch);
-    std::fs::create_dir_all(&src_dir).expect("create src dir");
+    if cfg.verify_worker {
+        std::process::exit(verify_worker(&cfg));
+    }
 
+    let worker_src = worker_src_path();
+    let mut worker = JavacWorker::spawn(&derive_java(&cfg.javac), &worker_src);
     let mut g = Gen { rng: Rng::new(cfg.seed) };
     let mut tally = Tally::default();
     let mut sigs: HashMap<String, SigInfo> = HashMap::new();
     let mut reject_dumped = 0u32;
 
     println!(
-        "fuzz: seed={} count={} batch={} javac={}\n  reproduce this exact run with: make fuzz SEED={}",
-        cfg.seed, cfg.count, cfg.batch, cfg.javac, cfg.seed
+        "fuzz: seed={} count={} batch={} javac-worker={}\n  reproduce this exact run with: make fuzz SEED={}",
+        cfg.seed, cfg.count, cfg.batch, worker_src.display(), cfg.seed
     );
 
+    // Batch loop. Generate ALL IR + sources for a batch BEFORE compiling — the
+    // program sequence stays a pure function of the seed regardless of I/O
+    // (reproducibility). The whole batch compiles in ONE worker request (one hot-JVM
+    // `getTask`, one javac `Context`, amortized like the CLI's `@argfile`) — no
+    // process spawn, no disk. njavac stays in-process.
     let mut n: u64 = 0;
     while n < cfg.count {
         let this = cfg.batch.min(cfg.count - n);
-
-        // 1. Generate ALL IR + sources for the batch BEFORE any I/O — so a
-        //    transient FS/javac hiccup changes tallies but never the program
-        //    sequence (seed-reproducibility).
         let progs: Vec<Prog> = (0..this).map(|k| g.gen_prog(n + k)).collect();
         let sources: Vec<String> = progs.iter().map(render).collect();
 
-        // 2/3. Fresh output dir + write sources + argfile.
-        reset_dir(&javac_out);
-        let mut argfile_body = String::new();
+        let units: Vec<(&str, &str)> = progs
+            .iter()
+            .zip(&sources)
+            .map(|(p, s)| (p.name.class.as_str(), s.as_str()))
+            .collect();
+        let t_javac = Instant::now();
+        let classes = worker.compile_batch(&units);
+        tally.javac_time += t_javac.elapsed();
+        assert_batch_classes(&classes, &progs);
+
         for (p, s) in progs.iter().zip(&sources) {
-            let path = src_dir.join(&p.name.java_file);
-            std::fs::write(&path, s).expect("write source");
-            argfile_body.push_str(&path.display().to_string());
-            argfile_body.push('\n');
-        }
-        let argfile = scratch.join("files.txt");
-        std::fs::write(&argfile, &argfile_body).expect("write argfile");
-
-        // 4. One javac invocation over the whole batch.
-        run_javac_batch(&cfg.javac, &javac_out, &argfile);
-
-        // 5. Batch integrity: if javac emitted NOTHING for a non-empty batch it
-        //    hard-failed — recompile individually so we never miscount N
-        //    generator-invalids or read a stale pass.
-        let emitted = |p: &Prog| javac_out.join(format!("{}.class", p.name.class)).exists();
-        if this > 0 && !progs.iter().any(emitted) {
-            eprintln!("fuzz: batch emitted 0 classes — recompiling individually to isolate");
-            for p in &progs {
-                let _ = run_javac_one(&cfg.javac, &javac_out, &src_dir.join(&p.name.java_file));
-            }
-        }
-
-        // 6. Exact-file-set guard: no unexpected `.class` (esp. `$`-aux classes a
-        //    future concat/switch generator might over-reach into).
-        assert_no_unexpected_classes(&javac_out, &progs);
-
-        // 7. Compare each program.
-        for (p, s) in progs.iter().zip(&sources) {
-            let want = std::fs::read(javac_out.join(format!("{}.class", p.name.class)));
+            tally.lines += s.lines().count() as u64;
+            // Present in the batch's class map => javac compiled it; absent => javac
+            // rejected it (generator-invalid), exactly as a missing `.class` meant.
+            let want = classes.get(&p.name.class);
+            let t_njavac = Instant::now();
             let got = njavac_compile(s, &p.name.source_arg);
+            tally.njavac_time += t_njavac.elapsed();
             match (want, got) {
-                (Err(_), _) => tally.generator_invalid += 1,
-                (Ok(_), None) => {
+                (None, _) => tally.generator_invalid += 1,
+                (Some(_), None) => {
                     tally.njavac_reject += 1;
                     if reject_dumped < 20 {
                         let rd = cfg.out_dir.join("rejects");
@@ -1106,13 +1243,13 @@ fn main() {
                         reject_dumped += 1;
                     }
                 }
-                (Ok(a), Some(b)) if a == b => tally.pass += 1,
-                (Ok(a), Some(b)) => {
+                (Some(a), Some(b)) if **a == b => tally.pass += 1,
+                (Some(a), Some(b)) => {
                     tally.findings += 1;
-                    let rep = njavac::classdump::diff_report(&a, &b);
+                    let rep = njavac::classdump::diff_report(a, &b);
                     // Dedupe by the NORMALIZED structural divergence path, so the
-                    // same njavac bug in programs of different sizes collapses to
-                    // one signature instead of every program looking "distinct".
+                    // same njavac bug in programs of different sizes collapses to one
+                    // signature instead of every program looking "distinct".
                     let sig = finding_sig(rep.as_deref());
                     let first = !sigs.contains_key(&sig);
                     let info = sigs.entry(sig.clone()).or_insert_with(|| SigInfo {
@@ -1121,10 +1258,7 @@ fn main() {
                     });
                     info.count += 1;
                     if first {
-                        println!(
-                            "\nNEW FINDING [{sig}]: {} ({} vs {} bytes)",
-                            p.name.class, a.len(), b.len()
-                        );
+                        println!("\nNEW FINDING [{sig}]: {} ({} vs {} bytes)", p.name.class, a.len(), b.len());
                         report_finding(&cfg, p, s, rep.as_deref());
                     }
                     if !cfg.keep_going {
@@ -1138,14 +1272,131 @@ fn main() {
 
         n += this;
         println!(
-            "  progress {n}/{}  pass={} gen-invalid={} njavac-reject={} findings={}",
-            cfg.count, tally.pass, tally.generator_invalid, tally.njavac_reject, tally.findings
+            "  progress {n}/{}  pass={} gen-invalid={} njavac-reject={} findings={} lines={}",
+            cfg.count, tally.pass, tally.generator_invalid, tally.njavac_reject, tally.findings, tally.lines
         );
     }
 
     summary(&tally, cfg.count);
     print_sig_breakdown(&sigs);
     std::process::exit(if tally.findings > 0 { 1 } else { 0 });
+}
+
+/// The worker's Java source. Under `make fuzz` the repo is bind-mounted at the
+/// container CWD, so the relative default resolves; `FUZZ_WORKER` overrides it.
+fn worker_src_path() -> PathBuf {
+    std::env::var("FUZZ_WORKER")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("tools/FuzzJavac.java"))
+}
+
+/// Prove the in-memory worker is byte-identical to the `javac` CLI over `count`
+/// generated programs: compile each with BOTH and byte-compare their `.class` (and
+/// agree on accept vs reject). This is the worker's correctness gate — the CLI
+/// stays the ground truth, so a divergence means the worker is invalid (e.g. a JDK
+/// bump changed a default). Reuses the batch CLI-to-disk path purely for speed
+/// (one javac spawn per batch); exits 0 iff every program agreed.
+fn verify_worker(cfg: &Config) -> i32 {
+    let scratch = std::env::temp_dir().join(format!("njavac-fuzz-verify-{}", cfg.seed));
+    let src_dir = scratch.join("src");
+    let cli_out = scratch.join("out");
+    reset_dir(&scratch);
+    std::fs::create_dir_all(&src_dir).expect("create src dir");
+
+    let worker_src = worker_src_path();
+    let mut worker = JavacWorker::spawn(&derive_java(&cfg.javac), &worker_src);
+    let mut g = Gen { rng: Rng::new(cfg.seed) };
+
+    let mut agree = 0u64; // both emitted, bytes identical
+    let mut agree_reject = 0u64; // both rejected
+    let mut diverge = 0u64; // byte mismatch OR accept/reject disagreement
+    let mut dumped = 0u32;
+
+    println!(
+        "verify-worker: seed={} count={} — worker={} vs CLI={}",
+        cfg.seed, cfg.count, worker_src.display(), cfg.javac
+    );
+
+    let mut n = 0u64;
+    while n < cfg.count {
+        let this = cfg.batch.min(cfg.count - n);
+        let progs: Vec<Prog> = (0..this).map(|k| g.gen_prog(n + k)).collect();
+        let sources: Vec<String> = progs.iter().map(render).collect();
+
+        // CLI compile the whole batch to disk (fast: one spawn).
+        reset_dir(&cli_out);
+        let mut argfile_body = String::new();
+        for (p, s) in progs.iter().zip(&sources) {
+            let path = src_dir.join(&p.name.java_file);
+            std::fs::write(&path, s).expect("write source");
+            argfile_body.push_str(&path.display().to_string());
+            argfile_body.push('\n');
+        }
+        let argfile = scratch.join("files.txt");
+        std::fs::write(&argfile, &argfile_body).expect("write argfile");
+        run_javac_batch(&cfg.javac, &cli_out, &argfile);
+        assert_no_unexpected_classes(&cli_out, &progs);
+
+        // Worker compiles the same batch in one hot-JVM task.
+        let units: Vec<(&str, &str)> = progs
+            .iter()
+            .zip(&sources)
+            .map(|(p, s)| (p.name.class.as_str(), s.as_str()))
+            .collect();
+        let wclasses = worker.compile_batch(&units);
+        assert_batch_classes(&wclasses, &progs);
+
+        for (p, s) in progs.iter().zip(&sources) {
+            let cli = std::fs::read(cli_out.join(format!("{}.class", p.name.class))).ok();
+            let wrk = wclasses.get(&p.name.class).cloned();
+            let same = match (&cli, &wrk) {
+                (None, None) => {
+                    agree_reject += 1;
+                    true
+                }
+                (Some(a), Some(b)) if a == b => {
+                    agree += 1;
+                    true
+                }
+                _ => false,
+            };
+            if !same {
+                diverge += 1;
+                if dumped < 20 {
+                    let kind = match (&cli, &wrk) {
+                        (Some(_), None) => "CLI accepted, worker rejected",
+                        (None, Some(_)) => "CLI rejected, worker accepted",
+                        _ => "bytes differ",
+                    };
+                    println!("  DIVERGENCE {}: {kind}", p.name.class);
+                    let dir = cfg.out_dir.join("worker-mismatch");
+                    let _ = std::fs::create_dir_all(&dir);
+                    let _ = std::fs::write(dir.join(&p.name.java_file), s);
+                    if let Some(a) = &cli {
+                        let _ = std::fs::write(dir.join(format!("{}.cli.class", p.name.class)), a);
+                    }
+                    if let Some(b) = &wrk {
+                        let _ = std::fs::write(dir.join(format!("{}.worker.class", p.name.class)), b);
+                    }
+                    dumped += 1;
+                }
+            }
+        }
+        n += this;
+        println!("  verify {n}/{}  agree={agree} agree-reject={agree_reject} diverge={diverge}", cfg.count);
+    }
+
+    println!(
+        "\nverify-worker done: {} programs  agree={agree} agree-reject={agree_reject} diverge={diverge}",
+        cfg.count
+    );
+    if diverge == 0 {
+        println!("  \u{2713} worker is byte-identical to the javac CLI");
+        0
+    } else {
+        println!("  \u{2717} {diverge} divergence(s) — see {}/worker-mismatch/", cfg.out_dir.display());
+        1
+    }
 }
 
 /// One distinct finding class: how many programs hit it, and one example.
@@ -1217,8 +1468,16 @@ fn assert_no_unexpected_classes(javac_out: &Path, progs: &[Prog]) {
 
 fn summary(t: &Tally, count: u64) {
     println!(
-        "\nfuzz done: {count} cases  pass={} gen-invalid={} njavac-reject={} findings={}",
-        t.pass, t.generator_invalid, t.njavac_reject, t.findings
+        "\nfuzz done: {count} cases  pass={} gen-invalid={} njavac-reject={} findings={}  ({} lines compiled)",
+        t.pass, t.generator_invalid, t.njavac_reject, t.findings, t.lines
+    );
+    let (jt, nt, n) = (t.javac_time.as_secs_f64(), t.njavac_time.as_secs_f64(), count.max(1) as f64);
+    let ratio = if nt > 0.0 { jt / nt } else { 0.0 };
+    println!(
+        "  compile time: javac(worker) {jt:.3}s ({:.3} ms/prog, incl. one-time JVM warmup + IPC)  |  \
+         njavac {nt:.3}s ({:.1} µs/prog)  |  njavac ~{ratio:.0}x faster end-to-end",
+        jt * 1e3 / n,
+        nt * 1e6 / n,
     );
     if t.findings > 0 {
         println!("  -> {} byte-mismatch finding(s); see the fuzz-out/ dir", t.findings);
