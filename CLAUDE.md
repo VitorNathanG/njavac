@@ -511,10 +511,13 @@ Line numbers follow javac's pending-stat-position model. `mark_line` replaces th
 source line waiting to attach; the next instruction opcode emitted through
 `emit_op` consumes it, so a code-free statement's line can be overwritten by a
 later statement before any `LineNumberTable` entry exists. `CodeFreePosition` on
-the lowered item preserves the line for a static-false negated shortcut, making
-`if (!(true || local))` attach to a following live skip-else `goto`; plain static
-false/true verdicts restore the prior pending position. If `compact_gotos` removes
-a goto, it removes an entry attached to that instruction as well.
+the lowered item preserves the line for a static-false negated shortcut reached by
+straight-line execution, making `if (!(true || local))` attach to a following live
+skip-else `goto`. A code-free statement beginning at a live branch target suppresses
+that preservation; plain static false/true verdicts also restore the prior pending
+position. `Gen` carries this transient `at_control_entry` fact from `add_frame` until
+the next `emit_op`. If `compact_gotos` removes a goto, it removes an entry attached
+to that instruction as well.
 
 ## Determinism / Docker
 

@@ -222,6 +222,7 @@ fn gen_method(cp: &mut ConstantPool, method: &Method, info: &MethodInfo) -> CfMe
         code: Vec::with_capacity(64),
         line_numbers: Vec::with_capacity(16),
         pending_line: None,
+        at_control_entry: false,
         max_stack: 0,
         cur: 0,
         locals: entry_locals.clone(),
@@ -470,6 +471,9 @@ struct Gen<'a> {
     /// Source line waiting to attach to the next instruction opcode. A later
     /// source position overwrites it if no instruction was emitted in between.
     pending_line: Option<u16>,
+    /// Whether the current pc was just entered by a live branch and no instruction
+    /// has consumed that control-entry state yet.
+    at_control_entry: bool,
     max_stack: u16,
     cur: u16,
     /// The assigned, in-scope locals in slot order (params first), as verifier
@@ -519,13 +523,15 @@ impl<'a> Gen<'a> {
 
     /// `if (cond) then [else els]`, a faithful port of javac's `visitIf`. A code-free
     /// static verdict emits only the taken arm and no frame; a static-false negated
-    /// shortcut still leaves its source line pending. Otherwise `gen_cond` lowers the
-    /// condition to a `CondItem` and its chains are resolved to the then/else/end
+    /// shortcut leaves its source line pending only on straight-line entry. A live
+    /// branch target suppresses it. Otherwise `gen_cond` lowers the condition to a
+    /// `CondItem` and its chains are resolved to the then/else/end
     /// targets. When the condition is statically false only the *then* is dropped
     /// (the else still runs); the trailing `goto`+else block is emitted only when
     /// the else is actually reachable (no spurious `goto`, no dead else).
     fn gen_if(&mut self, line: u16, cond: &Expr, then_b: &[Stmt], else_b: Option<&[Stmt]>) {
         let previous_line = self.pending_line;
+        let entered_by_branch = self.at_control_entry;
         self.mark_line(line);
         let code_before = self.code.len();
         let c = self.gen_cond(cond);
@@ -541,7 +547,10 @@ impl<'a> Gen<'a> {
             } else {
                 unreachable!("code-free condition without a static verdict")
             };
-            if !(!taken && c.position == CodeFreePosition::PreserveFalseIfLine) {
+            let preserve_false_line = !taken
+                && c.position == CodeFreePosition::PreserveFalseIfLine
+                && !entered_by_branch;
+            if !preserve_false_line {
                 self.pending_line = previous_line;
             }
             let arm = if taken { Some(then_b) } else { else_b };
@@ -861,6 +870,7 @@ impl<'a> Gen<'a> {
                 self.line_numbers.push((self.code.len() as u16, line));
             }
         }
+        self.at_control_entry = false;
         self.code.push(opcode);
     }
 
@@ -888,6 +898,7 @@ impl<'a> Gen<'a> {
     /// Request a stack-map frame at the current pc, capturing the live-locals
     /// snapshot and the given operand-stack state.
     fn add_frame(&mut self, stack: Vec<VerificationType>) {
+        self.at_control_entry = true;
         self.frames.push(FrameReq {
             offset: self.code.len() as u16,
             locals: self.locals.clone(),
