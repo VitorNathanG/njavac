@@ -493,7 +493,7 @@ impl Parser {
                 self.bump();
                 let inner = self.expression();
                 self.expect(&TokenKind::RParen);
-                inner
+                Expr::Paren(Box::new(inner))
             }
             // `System.out.println(arg)` — the only call shape in the subset.
             TokenKind::Ident(name) if name == "System" => {

@@ -124,6 +124,9 @@ pub enum Expr {
     BitNot(Box<Expr>),
     /// Logical negation `!x` (boolean).
     Not(Box<Expr>),
+    /// A parenthesized expression. Grouping is semantically transparent, but the
+    /// syntax can affect javac's boolean-item lowering and must survive parsing.
+    Paren(Box<Expr>),
     /// An explicit primitive cast `(Type) expr`.
     Cast {
         ty: Type,

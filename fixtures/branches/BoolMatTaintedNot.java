@@ -1,18 +1,16 @@
-// Regression: a boolean VALUE that short-circuit-reduces to a single live bare leaf
-// through a TAINTED `!` must materialize as the true/false DIAMOND (with its
-// StackMapTable merge frame), not a bare `iload; istore`. njavac used to BARE it.
+// Regression: grouping a negated non-strict shortcut preserves a requirement to
+// materialize a later bare leaf through the true/false DIAMOND (with its
+// StackMapTable merge frame), not a bare `iload; istore`.
 //
-// A `!(inner)` is tainted when njavac's fold() collapses `inner` via a LEFT-constant
-// short-circuit (fold(inner)=Some) while a live local is buried under it
-// (contains_name(inner)) — e.g. `!(true || v1)`. gen_cond's fold-shortcut then
-// erases the `!` before the Expr::Not => negate() arm can clear value_on_stack, and
-// gen_bool_value's bare fast-path reused the loaded leaf — dropping the diamond's
-// bytes + its frame (~13 bytes) that javac emits. Fix: a 6th fast-path conjunct
-// `!taints_materialization(cond)` vetoes the bare reuse (see codegen.rs).
+// `lowering_const` keeps `true || v1` structural because the complete subtree is
+// not an immediate. The resulting Shortcut becomes NegatedShortcut under `!`;
+// grouping upgrades its explicit materialization state before an outer logical
+// expression selects a final leaf. The old fix reconstructed that history from the
+// AST with has_tainted_not; CondItem now carries it directly.
 //
-// The three-way lone-leaf split is the sharp core (a1 BARE / a2 DIAMOND / a3
-// RESIDUAL): the axis is (fold(!-operand)=Some AND buried Name) vs (fold=None) vs
-// (no !). Each row's shape + how it used to diverge is in its trailing comment.
+// The three-way lone-leaf split remains the sharp core (a1 BARE / a2 DIAMOND / a3
+// RESIDUAL). BoolGroupingProvenance adds the decisive grouped/unparenthesized and
+// name-free controls that this older fixture did not distinguish.
 public class BoolMatTaintedNot {
     public static void main(String[] args) {
         int x = 5;
@@ -23,11 +21,11 @@ public class BoolMatTaintedNot {
         boolean a2 = (!(true || v1)) || v1;           // DIAMOND-3b (the bug)                — flips to diamond
         boolean a3 = (!((x > 0) && false)) || v1;     // RESIDUAL is_true (fold(inner)=None) — must not regress
 
-        boolean g4 = ((!(true || v1)) && true) || v1; // DIAMOND: tainted ! on a nested surviving path
-        boolean n3 = (true && (!(true || v1))) || v2; // DIAMOND: tainted ! inside a folding `true &&`
-        boolean p3 = (!!!(true || v1)) || v2;         // DIAMOND: odd !-parity survives
-        boolean p4 = (!!(true || v1)) && v2;          // DIAMOND: even parity, && reduces to v2
-        boolean cc = (!((1 > 0) || v1)) || v1;        // DIAMOND: deciding const is a comparison
+        boolean g4 = ((!(true || v1)) && true) || v1; // DIAMOND: grouped negated shortcut, nested
+        boolean n3 = (true && (!(true || v1))) || v2; // DIAMOND: grouped boundary under `true &&`
+        boolean p3 = (!!!(true || v1)) || v2;         // DIAMOND: grouped triple negation
+        boolean p4 = (!!(true || v1)) && v2;          // DIAMOND: grouped double negation
+        boolean cc = (!((1 > 0) || v1)) || v1;        // DIAMOND: grouped comparison shortcut
         boolean vb = (!(true || v1)) || (v1 & v2);    // DIAMOND: value-boolean & lone leaf
         boolean vx = (!(true || v1)) || (v1 ^ v2);    // DIAMOND: value-boolean ^ lone leaf
 

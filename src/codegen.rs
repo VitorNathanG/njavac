@@ -310,6 +310,7 @@ struct FrameReq {
 /// (`gen_if`, `gen_bool_value`) then resolve those chains to concrete pcs. This is
 /// the one representation that expresses javac's constant short-circuit collapse
 /// (`true || q`, `q && false`, …) — see the `&&`/`||` corpus.
+#[derive(Clone, Copy)]
 struct CondItem {
     /// The pending deciding branch, or a static verdict.
     opcode: CondOp,
@@ -319,13 +320,41 @@ struct CondItem {
     true_chain: Option<usize>,
     false_chain: Option<usize>,
     /// True iff an un-branched boolean 0/1 is currently on the operand stack (the
-    /// bare-value leaf sets it; any emitted branch consumes and clears it). The
-    /// only item whose materialization needs no diamond.
-    value_on_stack: bool,
+    /// bare-value leaf sets it; any emitted branch consumes and clears it). It is
+    /// reusable only when the other item-state dimensions also permit it.
+    stack_reuse: bool,
+    /// How a code-free static verdict arose. A negated shortcut is the one origin
+    /// whose surrounding grouping can affect later value materialization.
+    origin: CondOrigin,
+    /// Whether a final reusable stack value may stay bare or must pass through
+    /// javac's true/false materialization diamond.
+    materialization: Materialization,
+    /// Independent pending-position effect for a code-free static-false `if`.
+    position: CodeFreePosition,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CondOrigin {
+    Ordinary,
+    Shortcut,
+    NegatedShortcut,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Materialization {
+    BareAllowed,
+    DiamondRequired,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CodeFreePosition {
+    None,
+    PreserveFalseIfLine,
 }
 
 /// The deciding branch of a `CondItem`: a real conditional test (taken when the
 /// condition is *true*), or a static verdict mirroring javac's `goto_`/`dontgoto`.
+#[derive(Clone, Copy)]
 enum CondOp {
     Test(u8), // conditional branch opcode taken when TRUE (ifne / if_icmplt / …)
     Goto,     // statically TRUE
@@ -344,6 +373,10 @@ impl CondItem {
     }
     /// `!e`: swap the true/false chains and negate the deciding branch.
     fn negate(self) -> CondItem {
+        let origin = match self.origin {
+            CondOrigin::Ordinary => CondOrigin::Ordinary,
+            CondOrigin::Shortcut | CondOrigin::NegatedShortcut => CondOrigin::NegatedShortcut,
+        };
         CondItem {
             opcode: match self.opcode {
                 CondOp::Goto => CondOp::DontGoto,
@@ -352,24 +385,79 @@ impl CondItem {
             },
             true_chain: self.false_chain,
             false_chain: self.true_chain,
-            // `value_on_stack` asserts the stacked 0/1 equals the boolean result; a
+            // `stack_reuse` asserts the stacked 0/1 equals the boolean result; a
             // negation inverts the result, so the un-touched stack value is now the
             // *opposite* and must NOT be used as-is. Clearing this forces `!p` (and
             // `!!p`, which restores the `IFNE` opcode but stays cleared) through the
             // materialization diamond in `gen_bool_value`, matching javac, which
             // diamonds every negation rather than reusing the loaded value.
-            value_on_stack: false,
+            stack_reuse: false,
+            origin,
+            materialization: self.materialization,
+            position: if origin == CondOrigin::NegatedShortcut {
+                CodeFreePosition::PreserveFalseIfLine
+            } else {
+                self.position
+            },
+        }
+    }
+
+    /// Grouping is transparent except around a negated non-strict shortcut. In
+    /// that one case javac keeps a value-materialization requirement for a later
+    /// logical result, without emitting code for the grouped operand itself.
+    fn parenthesize(mut self) -> CondItem {
+        if self.origin == CondOrigin::NegatedShortcut {
+            self.materialization = Materialization::DiamondRequired;
+        }
+        self
+    }
+
+    fn mark_shortcut(mut self) -> CondItem {
+        self.origin = CondOrigin::Shortcut;
+        self
+    }
+
+    fn carry_prefix(&mut self, prefix: &CondItem, crossed_join: bool) {
+        if prefix.materialization == Materialization::DiamondRequired || crossed_join {
+            self.materialization = Materialization::DiamondRequired;
+        }
+        if prefix.position == CodeFreePosition::PreserveFalseIfLine {
+            self.position = CodeFreePosition::PreserveFalseIfLine;
         }
     }
 }
 
 /// A statically-true `CondItem` (no code emitted); javac's `goto_` verdict.
 fn cond_true() -> CondItem {
-    CondItem { opcode: CondOp::Goto, true_chain: None, false_chain: None, value_on_stack: false }
+    cond_static(true)
 }
 /// A statically-false `CondItem` (no code emitted); javac's `dontgoto` verdict.
 fn cond_false() -> CondItem {
-    CondItem { opcode: CondOp::DontGoto, true_chain: None, false_chain: None, value_on_stack: false }
+    cond_static(false)
+}
+
+fn cond_static(value: bool) -> CondItem {
+    CondItem {
+        opcode: if value { CondOp::Goto } else { CondOp::DontGoto },
+        true_chain: None,
+        false_chain: None,
+        stack_reuse: false,
+        origin: CondOrigin::Ordinary,
+        materialization: Materialization::BareAllowed,
+        position: CodeFreePosition::None,
+    }
+}
+
+fn cond_stack_test() -> CondItem {
+    CondItem {
+        opcode: CondOp::Test(IFNE),
+        true_chain: None,
+        false_chain: None,
+        stack_reuse: true,
+        origin: CondOrigin::Ordinary,
+        materialization: Materialization::BareAllowed,
+        position: CodeFreePosition::None,
+    }
 }
 
 /// Per-method emission state, with a running operand-stack depth (`cur`) tracked
@@ -429,22 +517,32 @@ impl<'a> Gen<'a> {
         }
     }
 
-    /// `if (cond) then [else els]`, a faithful port of javac's `visitIf`. A static
-    /// verdict emits only the taken arm and no frame; a static-false tainted `!`
-    /// still leaves its source line pending. Otherwise `gen_cond` lowers the
+    /// `if (cond) then [else els]`, a faithful port of javac's `visitIf`. A code-free
+    /// static verdict emits only the taken arm and no frame; a static-false negated
+    /// shortcut still leaves its source line pending. Otherwise `gen_cond` lowers the
     /// condition to a `CondItem` and its chains are resolved to the then/else/end
     /// targets. When the condition is statically false only the *then* is dropped
     /// (the else still runs); the trailing `goto`+else block is emitted only when
     /// the else is actually reachable (no spurious `goto`, no dead else).
     fn gen_if(&mut self, line: u16, cond: &Expr, then_b: &[Stmt], else_b: Option<&[Stmt]>) {
-        if let Some(taken) = fold_bool(cond) {
-            // For a static FALSE verdict, javac leaves the `if` line pending only
-            // when a tainted `!` survives on the evaluated short-circuit path.
-            // Plain `false && local`, a genuine constant, and every static TRUE
-            // verdict leave no position. A following source mark may still
-            // overwrite this pending line before any instruction consumes it.
-            if !taken && has_tainted_not(cond) {
-                self.mark_line(line);
+        let previous_line = self.pending_line;
+        self.mark_line(line);
+        let code_before = self.code.len();
+        let c = self.gen_cond(cond);
+
+        // A code-free verdict has no instruction to consume the condition line.
+        // Restore the previous pending position unless this is javac's one
+        // preserving case: a static-false negated shortcut.
+        if self.code.len() == code_before {
+            let taken = if c.is_true() {
+                true
+            } else if c.is_false() {
+                false
+            } else {
+                unreachable!("code-free condition without a static verdict")
+            };
+            if !(!taken && c.position == CodeFreePosition::PreserveFalseIfLine) {
+                self.pending_line = previous_line;
             }
             let arm = if taken { Some(then_b) } else { else_b };
             for s in arm.unwrap_or(&[]) {
@@ -453,11 +551,6 @@ impl<'a> Gen<'a> {
             return;
         }
 
-        // The gen_cond path always emits ≥1 instruction (a non-constant operand is
-        // present), so the condition's line entry never lands on a phantom pc.
-        self.mark_line(line);
-
-        let c = self.gen_cond(cond);
         let is_false = c.is_false();
         let true_chain = c.true_chain;
         let else_chain = self.jump_false(c); // emit the false branch(es); may be None
@@ -490,63 +583,60 @@ impl<'a> Gen<'a> {
 
     /// Lower a boolean expression to a `CondItem` (javac's `genCond`): emit its
     /// operand loads eagerly, leaving only the deciding branch pending. A
-    /// whole-constant subtree collapses to a static verdict with no code (this is
-    /// how `false && q` / `true || q` drop their dead operand). `&&`/`||` short-
-    /// circuit from the *left*: the left's deciding branch is emitted, its non-
-    /// deciding outcome falls through into the right operand, and the two chains
-    /// are merged (`Code.mergeChains`).
+    /// complete lowering-constant subtree collapses to a static verdict with no
+    /// code. Non-strict `false && q` / `true || q` instead walk structurally and
+    /// mark a shortcut verdict while dropping the dead operand. `&&`/`||` short-
+    /// circuit from the *left*: the left's deciding branch is emitted, its
+    /// non-deciding outcome falls through into the right operand, and the two
+    /// chains are merged (`Code.mergeChains`).
     fn gen_cond(&mut self, e: &Expr) -> CondItem {
-        // `fold`'s Logical arm is short-circuit-aware, so this fires only when the
-        // left operand decides or the whole tree is constant — never for a live
-        // left with a constant right (`q && false`), which must still emit `q`.
-        if let Some(c) = fold(e) {
+        // This query requires the complete subtree to be available as a javac
+        // immediate. Non-strict shortcuts (`true || local`) stay structural so
+        // grouping, negation, and casts retain their observable lowering history.
+        if let Some(c) = lowering_const(e) {
             return if to_i32(c) != 0 { cond_true() } else { cond_false() };
         }
         match e {
             Expr::Not(inner) => self.gen_cond(inner).negate(),
+            Expr::Paren(inner) => self.gen_cond(inner).parenthesize(),
+            Expr::Cast { ty: Type::Boolean, expr } => {
+                self.gen_bool_value(expr);
+                cond_stack_test()
+            }
             Expr::Compare { op, left, right } => self.gen_compare_cond(*op, left, right),
             Expr::Logical { op: LogOp::And, left, right } => {
                 let lc = self.gen_cond(left);
                 if lc.is_false() {
-                    return lc; // false && _ : right is dead
+                    return lc.mark_shortcut(); // false && _ : right is dead
                 }
+                let crossed_join = lc.true_chain.is_some();
                 let lt = lc.true_chain;
                 let fj = self.jump_false(lc); // emit the left's false branch
                 self.resolve_chain(lt); // left-true falls through to the right
-                let rc = self.gen_cond(right);
-                CondItem {
-                    opcode: rc.opcode,
-                    value_on_stack: rc.value_on_stack,
-                    true_chain: rc.true_chain,
-                    false_chain: self.merge_chains(fj, rc.false_chain),
-                }
+                let mut rc = self.gen_cond(right);
+                rc.false_chain = self.merge_chains(fj, rc.false_chain);
+                rc.carry_prefix(&lc, crossed_join);
+                rc
             }
             Expr::Logical { op: LogOp::Or, left, right } => {
                 let lc = self.gen_cond(left);
                 if lc.is_true() {
-                    return lc; // true || _ : right is dead
+                    return lc.mark_shortcut(); // true || _ : right is dead
                 }
+                let crossed_join = lc.false_chain.is_some();
                 let lf = lc.false_chain;
                 let tj = self.jump_true(lc);
                 self.resolve_chain(lf);
-                let rc = self.gen_cond(right);
-                CondItem {
-                    opcode: rc.opcode,
-                    value_on_stack: rc.value_on_stack,
-                    true_chain: self.merge_chains(tj, rc.true_chain),
-                    false_chain: rc.false_chain,
-                }
+                let mut rc = self.gen_cond(right);
+                rc.true_chain = self.merge_chains(tj, rc.true_chain);
+                rc.carry_prefix(&lc, crossed_join);
+                rc
             }
             // A bare boolean value (a local, or `&`/`|`/`^` on booleans): load its
             // 0/1 onto the stack, pending an `ifne`(true)/`ifeq`(false) test.
             other => {
                 self.gen_value(other); // pushes 0/1 (cur += 1)
-                CondItem {
-                    opcode: CondOp::Test(IFNE),
-                    true_chain: None,
-                    false_chain: None,
-                    value_on_stack: true,
-                }
+                cond_stack_test()
             }
         }
     }
@@ -592,7 +682,15 @@ impl<'a> Gen<'a> {
                 int_zero_branch(op, true)
             }
         };
-        CondItem { opcode: CondOp::Test(opcode), true_chain: None, false_chain: None, value_on_stack: false }
+        CondItem {
+            opcode: CondOp::Test(opcode),
+            true_chain: None,
+            false_chain: None,
+            stack_reuse: false,
+            origin: CondOrigin::Ordinary,
+            materialization: Materialization::BareAllowed,
+            position: CodeFreePosition::None,
+        }
     }
 
     /// Emit the branch that routes the FALSE outcome of `c` to a chain, returning
@@ -654,38 +752,18 @@ impl<'a> Gen<'a> {
     /// rung; `println(a < b)`/`println(a && b)` stay refused by this assert).
     fn gen_bool_value(&mut self, cond: &Expr) -> ValType {
         assert!(self.cur == 0, "materialized boolean with non-empty operand stack is unsupported");
-        let frames_before = self.frames.len();
         let c = self.gen_cond(cond);
 
         // A bare boolean value already sits on the stack as 0/1, un-branched, so it
-        // needs no materialization diamond (javac leaves `true && p` a bare `iload`).
-        // All six conjuncts matter:
-        //  - `a && b && c` carries value_on_stack up from its last leaf but has a live
-        //    false_chain, so it must NOT take this shortcut.
-        //  - `value_on_stack` holds the invariant "the stacked 0/1 IS the result"; a
-        //    `!` inverts that, so `negate()` clears the flag and `!p`/`!!p` fall through
-        //    to the diamond — matching javac (taking the shortcut for `!p` would
-        //    miscompile `boolean r = !p` to `r = p`).
-        //  - the fast-path holds only when the value reached the stack by STRAIGHT-LINE
-        //    code. If lowering placed a stack-map frame (a control-flow merge), the
-        //    value sits at that merge and javac materializes it with the diamond, not a
-        //    bare load — e.g. `((a || true) && true) && v` resolves `a`'s residual jump
-        //    right before loading `v`. Guard on the frame count being unchanged.
-        //  - `!has_tainted_not`: a `!` of a *left-constant* short-circuit fold
-        //    with a live local buried under it (`(!(true||v1)) || v1`) is erased by
-        //    `gen_cond`'s fold-shortcut before `negate()` can clear value_on_stack, so
-        //    the surviving leaf reaches here looking bare — but javac diamonds it. The
-        //    predicate re-derives that taint from the original AST and vetoes the
-        //    shortcut. This conjunct is the *only* one that fires for that family; every
-        //    other diamond/residual/const family already fails one of the five above (or
-        //    never reaches this function, being `fold`-constant), so the predicate can
-        //    never turn a genuinely-bare case into a diamond. See `has_tainted_not`.
-        if c.value_on_stack
+        // needs no materialization diamond. Every discriminator is carried by the
+        // lowered item itself: negation clears stack reuse, grouping and crossed
+        // joins require a diamond, and live chains exclude straight-line reuse.
+        if c.stack_reuse
             && c.true_chain.is_none()
             && c.false_chain.is_none()
             && matches!(c.opcode, CondOp::Test(_))
-            && self.frames.len() == frames_before
-            && !has_tainted_not(cond)
+            && c.origin == CondOrigin::Ordinary
+            && c.materialization == Materialization::BareAllowed
         {
             return ValType::Boolean;
         }
@@ -1165,6 +1243,10 @@ impl<'a> Gen<'a> {
     /// constant is folded straight to a `target`-typed constant (no conversion
     /// opcode); a non-constant is emitted then widened.
     fn gen_coerced(&mut self, value: &Expr, target: ValType) {
+        if target == ValType::Boolean && sema::type_of(value, self.info) == ValType::Boolean {
+            self.gen_bool_value(value);
+            return;
+        }
         if let Some(c) = fold(value) {
             self.load_const(const_convert(c, target), target);
         } else {
@@ -1224,6 +1306,7 @@ impl<'a> Gen<'a> {
                 self.emit_bitnot(p);
                 p
             }
+            Expr::Paren(e) => self.gen_value(e),
             Expr::Cast { ty, expr } => {
                 let s = self.gen_value(expr);
                 let target = sema::valtype(*ty);
@@ -1679,6 +1762,18 @@ fn subint_narrow_op(cur: ValType, to: ValType) -> Option<u8> {
 /// arithmetic with JLS shift masking, so a folded constant is bit-identical to
 /// what the unfolded bytecode would compute.
 fn fold(expr: &Expr) -> Option<Const> {
+    fold_impl(expr, false)
+}
+
+/// Return a value only when the complete subtree is available to javac lowering as
+/// an immediate. Unlike `fold`, a deciding logical left operand does not hide an
+/// unavailable right operand. This keeps non-strict shortcuts structural while
+/// preserving javac's observed `long >>> long` non-folding exception.
+fn lowering_const(expr: &Expr) -> Option<Const> {
+    fold_impl(expr, true)
+}
+
+fn fold_impl(expr: &Expr, strict_logical: bool) -> Option<Const> {
     Some(match expr {
         Expr::IntLit(v) => Const::Int(*v),
         Expr::LongLit(v) => Const::Long(*v),
@@ -1687,12 +1782,18 @@ fn fold(expr: &Expr) -> Option<Const> {
         Expr::BoolLit(b) => Const::Int(*b as i32),
         Expr::CharLit(v) => Const::Int(*v as i32),
         Expr::StringLit(_) | Expr::Name(_) | Expr::Println(_) => return None,
-        Expr::Neg(e) => neg_const(fold(e)?),
-        Expr::BitNot(e) => bitnot_const(fold(e)?),
-        Expr::Not(e) => Const::Int((to_i32(fold(e)?) == 0) as i32),
-        Expr::Cast { ty, expr } => const_convert(fold(expr)?, sema::valtype(*ty)),
+        Expr::Neg(e) => neg_const(fold_impl(e, strict_logical)?),
+        Expr::BitNot(e) => bitnot_const(fold_impl(e, strict_logical)?),
+        Expr::Not(e) => Const::Int((to_i32(fold_impl(e, strict_logical)?) == 0) as i32),
+        Expr::Paren(e) => fold_impl(e, strict_logical)?,
+        Expr::Cast { ty, expr } => {
+            const_convert(fold_impl(expr, strict_logical)?, sema::valtype(*ty))
+        }
         Expr::Binary { op, left, right } => {
-            let (l, r) = (fold(left)?, fold(right)?);
+            let (l, r) = (
+                fold_impl(left, strict_logical)?,
+                fold_impl(right, strict_logical)?,
+            );
             // javac's ConstFold folds *every* shift except `long >>> long` (unsigned
             // shift, both operands `long`) — a genuine javac quirk. Returning None
             // there forces the runtime `lushr` (with the distance narrowed by
@@ -1704,7 +1805,13 @@ fn fold(expr: &Expr) -> Option<Const> {
             eval_binary(*op, l, r)
         }
         Expr::Compare { op, left, right } => {
-            Const::Int(eval_compare(*op, fold(left)?, fold(right)?) as i32)
+            Const::Int(
+                eval_compare(
+                    *op,
+                    fold_impl(left, strict_logical)?,
+                    fold_impl(right, strict_logical)?,
+                ) as i32,
+            )
         }
         // `&&`/`||` are constant only via short-circuit from the LEFT. A non-constant
         // left means the whole is NOT a compile-time constant even when the tree is
@@ -1712,98 +1819,21 @@ fn fold(expr: &Expr) -> Option<Const> {
         // return `None` and let `gen_cond` emit it. When the left decides, return its
         // verdict WITHOUT folding the right; otherwise the tree reduces to the right.
         Expr::Logical { op, left, right } => {
-            let lb = to_i32(fold(left)?) != 0;
+            let lb = to_i32(fold_impl(left, strict_logical)?) != 0;
+            if strict_logical {
+                let rb = to_i32(fold_impl(right, true)?) != 0;
+                return Some(Const::Int(match op {
+                    LogOp::And => (lb && rb) as i32,
+                    LogOp::Or => (lb || rb) as i32,
+                }));
+            }
             match op {
                 LogOp::And if !lb => Const::Int(0),                  // false && _ -> false
                 LogOp::Or if lb => Const::Int(1),                    // true  || _ -> true
-                _ => Const::Int((to_i32(fold(right)?) != 0) as i32), // reduces to the right
+                _ => Const::Int((to_i32(fold_impl(right, false)?) != 0) as i32),
             }
         }
     })
-}
-
-/// Whether `cond` is a compile-time constant boolean, and its value — javac's
-/// dead-branch predicate. A boolean literal or a comparison/logical expression
-/// over constants folds; anything reading a (non-`final`) local does not.
-fn fold_bool(cond: &Expr) -> Option<bool> {
-    fold(cond).map(|c| to_i32(c) != 0)
-}
-
-/// Whether `e` mentions any local (`Name`). In this subset there are no
-/// `final`/constant locals — every `Name` is a non-constant local and `fold`
-/// returns `None` for it — so "contains a `Name`" is exactly "`e` is **not** a
-/// JLS §15.28 constant expression". This is clause (τ2) of the tainted-`!` test in
-/// `has_tainted_not`. The match is **wildcard-free on purpose**: a `Name`
-/// buried under a future `Expr` variant must force a decision here (a missed arm is
-/// a compile error), because misclassifying a tainted `!` as clean would leave the
-/// boolean-materialization diamond bug live for that shape. (`Println` cannot occur
-/// under a boolean `!`, but is matched to keep exhaustiveness.)
-fn contains_name(e: &Expr) -> bool {
-    match e {
-        Expr::Name(_) => true,
-        Expr::IntLit(_)
-        | Expr::LongLit(_)
-        | Expr::FloatLit(_)
-        | Expr::DoubleLit(_)
-        | Expr::BoolLit(_)
-        | Expr::CharLit(_)
-        | Expr::StringLit(_) => false,
-        Expr::Neg(e) | Expr::BitNot(e) | Expr::Not(e) | Expr::Println(e) => contains_name(e),
-        Expr::Cast { expr, .. } => contains_name(expr),
-        Expr::Binary { left, right, .. }
-        | Expr::Compare { left, right, .. }
-        | Expr::Logical { left, right, .. } => contains_name(left) || contains_name(right),
-    }
-}
-
-/// Whether a `Logical`'s left operand statically short-circuits its right away, per
-/// `fold` of the deciding operand: `false && _` and `true || _` drop the right; a
-/// live or forcing-right left (`fold(left) == None`) keeps it. Uses **only `fold`**
-/// as its oracle — the same one `gen_cond` consults at its fold-shortcut — so there
-/// is no second decision model to drift from lowering.
-fn left_drops_right(op: LogOp, left: &Expr) -> bool {
-    match (op, fold(left)) {
-        (LogOp::And, Some(c)) => to_i32(c) == 0, // false && _  -> right dead
-        (LogOp::Or, Some(c)) => to_i32(c) != 0,  // true  || _  -> right dead
-        _ => false,                              // live / forcing-right left: right evaluated
-    }
-}
-
-/// Whether a **tainted `!`** lies on `e`'s surviving short-circuit-decision path.
-/// It is the shared discriminator for two javac behaviors: vetoing the bare-value
-/// shortcut in `gen_bool_value`, and preserving the pending source line of a
-/// code-free static-FALSE `if` in `gen_if`.
-///
-/// A `!(inner)` is **tainted** iff `fold(inner).is_some()` **and**
-/// `contains_name(inner)`. The two clauses are jointly satisfiable only when `inner`
-/// is a *left-constant* short-circuit fold (`true || v1`, `false && v1`, or a
-/// `!`/`Cast` chain over one) with a live local buried under it: `fold` over-computes
-/// such an `inner` to a clean verdict (via its short-circuit-aware `Logical` arm), so
-/// `gen_cond`'s fold-shortcut collapses the whole `!(…)` node **before** the
-/// `Expr::Not => …negate()` arm can run — the `!` is erased, `value_on_stack` is never
-/// cleared, and the surviving leaf gets bared. javac instead keeps the `!` as a
-/// negated `CondItem` and materializes the surviving leaf through the true/false
-/// diamond. A `Name`-free `!` (`!true`, `!(1>0)`) folds cleanly and stays bare (τ2
-/// fails); a `!` whose operand does not fold (`!((x>0) && false)` — forcing const on
-/// the right, so `fold(left)` is `None`) is not tainted (τ1 fails) and lowers
-/// correctly through `negate()` already.
-///
-/// The walk visits only the **evaluated** region: at a `Logical`, always the left,
-/// and the right unless `left_drops_right` (so a tainting `!` inside a dropped dead
-/// branch stays inert). Its sole decision oracle is `fold`, the same shortcut both
-/// consumers are compensating for; there is no parallel constant model to drift.
-fn has_tainted_not(e: &Expr) -> bool {
-    match e {
-        Expr::Not(inner) => {
-            (fold(inner).is_some() && contains_name(inner)) || has_tainted_not(inner)
-        }
-        Expr::Logical { op, left, right } => {
-            has_tainted_not(left) || (!left_drops_right(*op, left) && has_tainted_not(right))
-        }
-        Expr::Cast { expr, .. } => has_tainted_not(expr),
-        // Compare / Name / value-boolean `Binary` / literals carry no surviving `!`.
-        _ => false,
-    }
 }
 
 /// Evaluate a constant comparison, with binary numeric promotion. Float/double
@@ -2038,6 +2068,7 @@ impl std::fmt::Debug for DebugExpr<'_> {
             Expr::Neg(_) => "Neg",
             Expr::BitNot(_) => "BitNot",
             Expr::Not(_) => "Not",
+            Expr::Paren(_) => "Paren",
             Expr::Cast { .. } => "Cast",
             Expr::Binary { .. } => "Binary",
             Expr::Compare { .. } => "Compare",

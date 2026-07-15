@@ -1,12 +1,12 @@
 // Regression: a materialized boolean value that lands on a control-flow MERGE must
-// use the true/false diamond, not njavac's value_on_stack fast-path.
+// use the true/false diamond, not njavac's reusable-stack fast path.
 // `(a || true) && true` is statically true, but `a` is a real value-boolean whose
 // short-circuit jump gets RESOLVED (a stack-map frame / merge) right before the final
 // `&& v` loads v. So v sits on the stack at a merge point, and javac materializes it
 // with `ifeq/iconst_1/goto/iconst_0` — NOT a bare load, even though the final CondItem
-// is (ifne, value-on-stack, no chains), the same shape `true && p` leaves bare. The
-// discriminator is whether lowering placed a frame: `gen_bool_value` now takes the
-// fast-path only when the frame count is unchanged (the value arrived straight-line).
+// is (ifne, reusable stack value, no chains), the same physical shape `true && p`
+// leaves bare. Resolving the live left chain now marks the right CondItem as
+// DiamondRequired directly; frame creation is only the resulting physical effect.
 // njavac used to emit a bare `istore`, dropping the diamond's bytes. Fuzzer-found
 // (Fuzz0002248). Complements NotLocalMat (the `!p`/`true && p` fast-path boundary).
 public class BoolMatMerge {

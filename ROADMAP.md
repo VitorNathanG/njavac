@@ -75,57 +75,14 @@ making `Unsupported` (skip) genuinely distinct from an njavac invariant violatio
 ### 0.1 Differential fuzzer — ✅ DONE *(the highest-leverage item)*
 `make fuzz`: random in-scope Java vs the pinned javac, in-process, byte-compared;
 auto-minimizes a mismatch into a droppable fixture. The only hard-fail signal is *both
-compilers accept, bytes differ* — by definition an njavac bug. Found a real bug family
-on its first run (backlog below). The mechanics and the 5-touch "grow it for a new
+compilers accept, bytes differ* — by definition an njavac bug. The open finding
+backlog is below. The mechanics and the 5-touch "grow it for a new
 rung" list live in CLAUDE.md §Testing; deferred sub-features are in §"Deferred /
 opportunistic improvements".
 
 ### Fuzzer-found bug backlog
 
-**Open — grouping provenance is erased around a negated shortcut** (`Fuzz0766276`,
-seed `18006986217243057667`, case 766276). Minimal shape:
-`v = (!(true || (1L >>> 1L) > 0L)) || v;`. javac materializes the final `v` through
-an `ifeq`/`iconst_1`/`goto`/`iconst_0` diamond and emits `StackMapTable`; njavac emits
-a bare `iload`/`istore`, so the first structural divergence is the missing
-`"StackMapTable"` pool entry. The pool is only the symptom.
-
-The complete black-box split is syntax-sensitive. An unparenthesized
-`!(true || N) || v` (and its `!!`/`!!!` siblings) reduces to a bare `v`; wrapping
-the complete negated left operand, `(!(true || N)) || v`, forces the final diamond
-without emitting an `iconst`/test for that left operand. Parentheses remain
-transparent for literals, strict comparisons, locals, live `!local`, non-negated
-shortcuts, residual logical items, and bitwise boolean values. njavac currently
-cannot represent that distinction because `parser::primary` erases grouping, while
-`has_tainted_not` reconstructs an over-broad approximation and `contains_name`
-misses the name-free `long >>> long` non-folding quirk.
-
-The fix needs `Expr::Paren`, a strict lowering-constant query separate from
-short-circuit verdicts, and explicit condition-item origin/materialization/position
-state. It must remove the AST reconstruction and frame-count heuristics, preserving
-the existing label/fixup/frame machinery. Cover grouped and ungrouped local,
-`long >>> long`, ordinarily-foldable shift, one/two/three `!`, logical wrapper,
-materialization, merge, and pending-line siblings before changing behavior.
-
-Targeted census confirms both deciding directions, a final bitwise-boolean leaf,
-nested logical wrappers, and arithmetic/cast wrappers around
-`N = long >>> long`. The code-free static-false form independently preserves its
-line when it ends an outer then-arm, for grouped, ungrouped, local, and name-free
-forms; a following statement overwrites that pending line. Controls that already
-match include no surrounding `!`, an evaluated (not dropped) `N`, `long >> long`,
-`long >>> int`, and ordinary `if` branch use. These are one root-cause family, not
-separate pool/frame/line bugs.
-
-**Open — boolean cast loses a left-deciding short-circuit item.** Minimal shapes:
-`r = ((boolean) (true || v)) && v;` and `if ((boolean) (false && v)) ... else ...`.
-javac materializes the cast operand (`iconst_1; ifeq` or `iconst_0; ifne`) before
-the outer logical/statement consumer; njavac's `fold` treats `Cast` transparently,
-so `gen_cond`/`gen_if` collapse it to a verdict and omit the residual branch,
-diamond, frames, and sometimes a whole arm shape. A cast around the tainted-`!`
-family fails for the same reason even when `has_tainted_not` correctly forces the
-final diamond. Direct cast assignment and casts of a literal, local, ordinary
-`!local`, or fully constant expression all match. The fuzzer does not currently
-generate boolean casts, so this family needs a hand-built truth table before its own
-fix cycle; it is related to, but not fixed by, broadening the taint predicate above.
+No open findings.
 
 ### 0.2 Single-fixture verify — ✅ DONE
 `make verify FILE=<f>` (cached) / `make bench FILE=<f>` (online): compile one fixture,
@@ -326,13 +283,12 @@ files its "what would help" items here.
   against stale goldens. A freshness check (re-record when any fixture is newer than
   the volume) would remove the footgun. `make correctness` already sidesteps it by
   always using live javac.
-- **fuzz: expression-level minimization (v1.1).** The minimizer is statement-level
-  only, but the fuzzer's own findings (constant folding) live *inside* a
-  declaration's initializer, so a minimized case stays at ~6 decls with full
-  initializer expressions instead of a one-liner. Add node-level shrinking (replace a
-  `Bin`/`Cmp`/`Logic` node with a child, drop casts/parens, shrink literals toward
+- **fuzz: expression-level minimization (v1.1).** The minimizer can now remove one
+  explicit grouping boundary at a time, but findings inside declaration initializers
+  still retain most of their expression tree. Add type-aware node shrinking (replace
+  a `Bin`/`Cmp`/`Logic` node with a same-typed child, drop casts, shrink literals toward
   0/1), each gated by the existing three-conjunct predicate, so a fixture is directly
-  droppable into `fixtures/`. Wanted before working the fuzzer-found bug backlog.
+  droppable into `fixtures/`.
 - **fuzz: generator-validity smoke gate.** The `v ^= 1.5` generator bug (compound
   bitwise with a float RHS → javac-reject) was caught by eyeballing `--dump-sources`,
   not systematically. A cheap gate asserting `generator-invalid ≈ 0` over a small

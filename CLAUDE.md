@@ -255,9 +255,12 @@ debugging only and is **not** a sanctioned way to validate byte-identity.
     tallies but never the seed-determined program sequence.
   - **The generator scope boundary.** Declarations only at method-body top level (sema
     allocates slots for top-level decls only). A *branch-boolean* (`< <= > >= == != &&
-    || !`) may only be materialized on an empty base stack — an `if` cond or a boolean
-    decl/assign RHS; a *value-boolean* (literal, local, `&|^`) is used everywhere else.
-    This is the `BoolMode`/`ScopeCaps` split; getting it wrong only lowers yield.
+    || !`, including boolean cast/grouping boundaries) may only be materialized on an
+    empty base stack — an `if` cond or a boolean decl/assign RHS; a *value-boolean*
+    (literal, local, `&|^`) is used everywhere else. This is the
+    `BoolMode`/`ScopeCaps` split; getting it wrong only lowers yield. The renderer is
+    precedence-aware: only `FExpr::Paren` emits deliberate grouping, and the
+    minimizer can remove one grouping boundary at a time.
   - **Performance.** Both compilers now run without a process spawn and without
     touching disk. njavac is in-process; the pinned javac runs in a **persistent
     in-memory worker** (`tools/FuzzJavac.java`, driven by `JavacWorker` in
@@ -447,40 +450,38 @@ rule: javac **constant-folds literal subtrees** (`100 % 7` → `iconst_2`,
 shift masking, but emits real bytecode once a local is involved — so a folded
 constant is bit-identical to the unfolded computation.
 
-Comparisons, `if`/`else`, and short-circuit `&&`/`||` share a second lowering
-mode built around **`gen_cond(&Expr) -> CondItem`** — a faithful port of javac's
-`Gen.genCond` + `Items.CondItem` + `Code.mergeChains`, restricted to this
-side-effect-free boolean subset. A `CondItem` is `{ opcode: CondOp, true_chain,
-false_chain, value_on_stack }`: `gen_cond` emits every operand load eagerly but
-leaves only the **deciding branch** pending (`CondOp::Test(op)` = the true-polarity
-branch; `Goto`/`DontGoto` = a static verdict), collecting the not-yet-resolved
-jump sites in the two chains. A **chain is an `Option<usize>` label id**; `None` is
-the empty chain (javac's null — nothing targets it, so it places no frame), and
-`merge_chains` = `Code.mergeChains` (retarget every fixup of one label to another —
-fixup order never affects output). `jump_false`/`jump_true` materialize a
-`CondItem`'s branch to a chain and are **total**: they check `is_true()`/`is_false()`
-first (a static verdict emits nothing) then emit per `CondOp`. `!e` is
-`gen_cond(e).negate()` (swap chains, `negate_op` the opcode). `&&`/`||` short-circuit
-**from the left**: the left's deciding branch is emitted, its non-deciding outcome
-resolves (falls through) into the right, and the chains merge — this is the *only*
-representation that reproduces javac's constant-operand cases (`true || q` drops
-the dead right operand, `q && false` keeps the residual `iload q` then forces
-`iconst_0`). The linchpin for that is **`fold`'s short-circuit-aware `Logical`
-arm**: it folds only when the *left* decides or the whole tree is constant, so a
-live left with a constant right returns `None` (must still be emitted), never a
-whole-constant collapse.
+Comparisons, `if`/`else`, and short-circuit `&&`/`||` share a second lowering mode
+built around **`gen_cond(&Expr) -> CondItem`**. Besides the deciding `CondOp` and
+true/false chains, each item explicitly carries `stack_reuse`, `CondOrigin`,
+`Materialization`, and `CodeFreePosition`. These are independent facts: the final
+value may be an ordinary reusable stack value while a grouped evaluated prefix or
+crossed control-flow join still requires javac's materialization diamond; a
+code-free false verdict may independently preserve an `if` source position.
 
-The three consumers: **`gen_if`** is a faithful `visitIf` port — a whole-constant
-condition (`fold_bool`) drops to the taken arm; otherwise `is_false` skips only the
-*then* (the else still runs), and the trailing `goto`+else is emitted only when the
-else target is reachable (no spurious `goto`, no dead else). **`gen_bool_value`**
-materializes to 0/1 in one of three shapes: a bare value already on the stack
-(`value_on_stack`, no diamond — **unless a tainted `!` vetoes it**: a `!` of a
-left-constant short-circuit fold over a live local, `(!(true||v1)) || v1`, which
-`fold`'s shortcut erases before `negate()` can clear `value_on_stack`, so
-`has_tainted_not` re-derives the taint from the AST to force the diamond
-javac emits), a statically-decided item with a residual branch (resolve it, then
-`iconst_0`/`iconst_1`), or the general true-first
+`lowering_const` is deliberately stricter than the general short-circuit-aware
+`fold`: a logical tree is an immediate only when its **complete** subtree is
+available, including javac's observed `long >>> long` non-folding exception.
+Otherwise `gen_cond` walks it structurally. A deciding `true || q`/`false && q`
+becomes `Shortcut`; `!` turns that into `NegatedShortcut` (and repeated `!` keeps
+that origin). The parser preserves grouping as `Expr::Paren`; grouping is transparent
+except directly around `NegatedShortcut`, where it sets `DiamondRequired` without
+emitting code. Thus `!(true||p) || q` leaves `q` bare, while `(!(true||p)) || q`
+diamonds `q`. A boolean cast is stronger: it materializes its operand once and
+returns a fresh reusable stack test, so repeated casts add no duplicate diamond.
+
+A **chain is an `Option<usize>` label id**; `None` is empty and places no frame.
+`jump_false`/`jump_true` are total over tests and static verdicts. `&&`/`||`
+short-circuit from the left, merge chains, propagate effects only from evaluated
+operands, and mark the right item `DiamondRequired` when resolving a live chain
+crosses a join. Dead operands contribute no origin, materialization, or position
+state.
+
+The consumers use only this explicit state. **`gen_if`** transactionally marks its
+line, lowers the condition, and restores the prior pending line for a code-free
+verdict except `PreserveFalseIfLine`; it drops only the untaken arm and keeps the
+existing reachable-else topology. **`gen_bool_value`** reuses a bare stack value
+only for an ordinary, chain-free, `BareAllowed` test. Other items materialize as a
+residual static `iconst_0`/`iconst_1` or the general true-first
 `iconst_1`/`goto`/`iconst_0` diamond — still asserting an **empty base stack**, so
 `println(a && b)`/`println(a < b)` (non-empty stack → `full_frame`) stay a refused
 later rung. Loops/`?:` will reuse `gen_cond` verbatim.
@@ -509,12 +510,11 @@ silently break every comparison.
 Line numbers follow javac's pending-stat-position model. `mark_line` replaces the
 source line waiting to attach; the next instruction opcode emitted through
 `emit_op` consumes it, so a code-free statement's line can be overwritten by a
-later statement before any `LineNumberTable` entry exists. A code-free static-false
-`if` marks its line only when `has_tainted_not` finds a surviving `!` over a
-left-deciding short-circuit fold: this makes `if (!(true || local))` attach to a
-following live skip-else `goto`, while `if (false && local)`, every static-true
-verdict, and a genuine `if (false)` leave no position. If `compact_gotos` removes a
-goto, it removes an entry attached to that instruction as well.
+later statement before any `LineNumberTable` entry exists. `CodeFreePosition` on
+the lowered item preserves the line for a static-false negated shortcut, making
+`if (!(true || local))` attach to a following live skip-else `goto`; plain static
+false/true verdicts restore the prior pending position. If `compact_gotos` removes
+a goto, it removes an entry attached to that instruction as well.
 
 ## Determinism / Docker
 

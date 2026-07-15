@@ -192,6 +192,7 @@ pub fn type_of(expr: &Expr, info: &MethodInfo) -> ValType {
         Expr::Neg(e) => unary_promote(type_of(e, info)),
         Expr::BitNot(e) => unary_promote(type_of(e, info)),
         Expr::Not(_) => ValType::Boolean,
+        Expr::Paren(e) => type_of(e, info),
         Expr::Compare { .. } => ValType::Boolean,
         Expr::Logical { .. } => ValType::Boolean,
         Expr::Cast { ty, .. } => valtype(*ty),

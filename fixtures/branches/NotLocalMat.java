@@ -1,6 +1,6 @@
 // Regression: materializing the negation of a boolean *local*.
 // A bare boolean local loaded for a condition sits on the stack as 0/1 with a
-// pending `ifne` — njavac's `value_on_stack` fast-path reuses it directly instead
+// pending `ifne` — njavac's `stack_reuse` fast-path reuses it directly instead
 // of building the true/false diamond. But `!p` INVERTS the result while the loaded
 // bits stay `p`, so reusing them miscompiled `boolean r = !p` to `r = p` (a real
 // wrong-answer bug, not just a byte difference). Fix: `negate()` clears the flag, so

@@ -225,6 +225,7 @@ enum FExpr {
     Neg(Box<FExpr>),
     BitNot(Box<FExpr>),
     Not(Box<FExpr>),
+    Paren(Box<FExpr>),
     Cast(Ty, Box<FExpr>),
     Bin(BinOp, Box<FExpr>, Box<FExpr>),
     Cmp(CmpOp, Box<FExpr>, Box<FExpr>),
@@ -299,6 +300,7 @@ enum BoolMode {
 /// bodies (sema allocates slots only for top-level decls); no `?:`, no loops.
 struct ScopeCaps {
     decls_in_branches: bool,
+    boolean_boundaries: bool,
     /// Flipped true by the `?:` and loops rungs respectively — each flip *is* the
     /// statement "booleans may now live in this new context / block scope exists."
     #[allow(dead_code)]
@@ -307,7 +309,12 @@ struct ScopeCaps {
     has_loops: bool,
 }
 
-const CAPS: ScopeCaps = ScopeCaps { decls_in_branches: false, has_ternary: false, has_loops: false };
+const CAPS: ScopeCaps = ScopeCaps {
+    decls_in_branches: false,
+    boolean_boundaries: true,
+    has_ternary: false,
+    has_loops: false,
+};
 
 // ===========================================================================
 //    Boundary literal pools — biased toward the constant-load opcode seams and
@@ -498,10 +505,11 @@ impl Gen {
             }
             return value_leaf(self);
         }
-        // Branch mode: comparisons, &&/||, !, or a value-boolean at the leaf.
+        // Branch mode: comparisons, &&/||, !, boolean casts/grouping, or a
+        // value-boolean at the leaf.
         // Constant boolean operands are up-weighted so the short-circuit
         // constant-operand corners (`true && q`, `q && false`) appear often.
-        match self.rng.below(6) {
+        match self.rng.below(if CAPS.boolean_boundaries { 8 } else { 6 }) {
             0 | 1 => self.cmp_expr(env, budget),
             2 => {
                 let op = *self.rng.pick(&[LogOp::And, LogOp::Or]);
@@ -516,6 +524,12 @@ impl Gen {
                 let a = self.bool_expr(env, BoolMode::Value, budget);
                 let b = self.bool_expr(env, BoolMode::Value, budget);
                 FExpr::Bin(op, Box::new(a), Box::new(b))
+            }
+            5 if CAPS.boolean_boundaries => {
+                FExpr::Cast(Boolean, Box::new(self.bool_expr(env, BoolMode::Branch, budget)))
+            }
+            6 if CAPS.boolean_boundaries => {
+                FExpr::Paren(Box::new(self.bool_expr(env, BoolMode::Branch, budget)))
             }
             _ => value_leaf(self),
         }
@@ -714,9 +728,9 @@ impl Gen {
 }
 
 // ===========================================================================
-// §4  Render — IR → Java source, via `ident()`. Fully parenthesized (so the
-//     parse tree is unambiguous and no tokens paste), one statement per line
-//     (so the LineNumberTable genuinely varies and is exercised).
+// §4  Render — IR → Java source, via `ident()`. Precedence-aware so only
+//     `FExpr::Paren` creates deliberate grouping, and one statement per line so
+//     the LineNumberTable genuinely varies and is exercised.
 // ===========================================================================
 
 fn render(prog: &Prog) -> String {
@@ -778,22 +792,70 @@ fn render_stmt(st: &FStmt, indent: usize, out: &mut String) {
 }
 
 fn render_expr(e: &FExpr) -> String {
-    match e {
+    render_expr_at(e, 0, false)
+}
+
+/// Render only grammar-required parentheses; `FExpr::Paren` is the sole source of
+/// deliberate grouping. This distinction is byte-visible for boolean lowering.
+fn render_expr_at(e: &FExpr, parent_prec: u8, right_child: bool) -> String {
+    let prec = expr_prec(e);
+    let body = match e {
         FExpr::Lit(v) => render_val(v),
         FExpr::Local(i) => format!("v{i}"),
-        FExpr::Neg(x) => format!("(-({}))", render_expr(x)),
-        FExpr::BitNot(x) => format!("(~({}))", render_expr(x)),
-        FExpr::Not(x) => format!("(!({}))", render_expr(x)),
-        FExpr::Cast(ty, x) => format!("(({})({}))", ty.kw(), render_expr(x)),
-        FExpr::Bin(op, l, r) => format!("({} {} {})", render_expr(l), op.sym(), render_expr(r)),
-        FExpr::Cmp(op, l, r) => format!("({} {} {})", render_expr(l), op.sym(), render_expr(r)),
+        FExpr::Neg(x) => format!("- {}", render_expr_at(x, prec, false)),
+        FExpr::BitNot(x) => format!("~{}", render_expr_at(x, prec, false)),
+        FExpr::Not(x) => format!("!{}", render_expr_at(x, prec, false)),
+        FExpr::Paren(x) => format!("({})", render_expr_at(x, 0, false)),
+        FExpr::Cast(ty, x) => format!("({}) {}", ty.kw(), render_expr_at(x, prec, false)),
+        FExpr::Bin(op, l, r) => format!(
+            "{} {} {}",
+            render_expr_at(l, prec, false),
+            op.sym(),
+            render_expr_at(r, prec, true)
+        ),
+        FExpr::Cmp(op, l, r) => format!(
+            "{} {} {}",
+            render_expr_at(l, prec, false),
+            op.sym(),
+            render_expr_at(r, prec, true)
+        ),
         FExpr::Logic(op, l, r) => {
             let s = match op {
                 LogOp::And => "&&",
                 LogOp::Or => "||",
             };
-            format!("({} {} {})", render_expr(l), s, render_expr(r))
+            format!(
+                "{} {} {}",
+                render_expr_at(l, prec, false),
+                s,
+                render_expr_at(r, prec, true)
+            )
         }
+    };
+
+    if !matches!(e, FExpr::Paren(_))
+        && (prec < parent_prec || (right_child && prec == parent_prec))
+    {
+        format!("({body})")
+    } else {
+        body
+    }
+}
+
+fn expr_prec(e: &FExpr) -> u8 {
+    match e {
+        FExpr::Logic(LogOp::Or, ..) => 1,
+        FExpr::Logic(LogOp::And, ..) => 2,
+        FExpr::Bin(BinOp::BOr, ..) => 3,
+        FExpr::Bin(BinOp::BXor, ..) => 4,
+        FExpr::Bin(BinOp::BAnd, ..) => 5,
+        FExpr::Cmp(CmpOp::Eq | CmpOp::Ne, ..) => 6,
+        FExpr::Cmp(..) => 7,
+        FExpr::Bin(BinOp::Shl | BinOp::Shr | BinOp::Ushr, ..) => 8,
+        FExpr::Bin(BinOp::Add | BinOp::Sub, ..) => 9,
+        FExpr::Bin(BinOp::Mul | BinOp::Div | BinOp::Rem, ..) => 10,
+        FExpr::Neg(_) | FExpr::BitNot(_) | FExpr::Not(_) | FExpr::Cast(..) => 11,
+        FExpr::Lit(_) | FExpr::Local(_) | FExpr::Paren(_) => 12,
     }
 }
 
@@ -1525,7 +1587,8 @@ fn report_finding(cfg: &Config, prog: &Prog, src: &str, orig_rep: Option<&str>) 
 }
 
 // ===========================================================================
-// §5  Minimizer — statement-level ddmin, disk-gated on the three-conjunct
+// §5  Minimizer — statement ddmin plus expression grouping reduction, disk-gated
+//     on the three-conjunct
 //     predicate (javac accepts ∧ njavac accepts ∧ bytes differ), spawn-capped,
 //     under a FIXED name via `ident()`. +1 reduction per rung.
 // ===========================================================================
@@ -1570,10 +1633,9 @@ impl MinHarness {
     }
 }
 
-/// Greedy statement-level reduction to a fixpoint (or the spawn cap): remove
-/// top-level non-decl statements, drop `else` branches, and shrink branch bodies,
-/// keeping only reductions that preserve the divergence. Decls are retained (they
-/// define the locals; removing one would shift `Local` indices).
+/// Greedy reduction to a fixpoint (or the spawn cap): simplify statements and
+/// remove explicit grouping nodes, keeping only candidates that preserve the
+/// divergence. Decls are retained because removing one shifts `Local` indices.
 fn minimize(prog: &Prog, h: &mut MinHarness) -> Prog {
     let mut cur = prog.clone();
     loop {
@@ -1628,9 +1690,140 @@ fn minimize(prog: &Prog, h: &mut MinHarness) -> Prog {
             continue;
         }
 
+        // (c) remove one explicit grouping boundary anywhere in an expression.
+        'expressions: for i in 0..cur.body.len() {
+            for reduced in stmt_paren_reductions(&cur.body[i]) {
+                let mut cand = cur.clone();
+                cand.body[i] = reduced;
+                if h.diverges(&cand) {
+                    cur = cand;
+                    improved = true;
+                    break 'expressions;
+                }
+            }
+        }
+        if improved {
+            continue;
+        }
+
         break;
     }
     cur
+}
+
+fn stmt_paren_reductions(stmt: &FStmt) -> Vec<FStmt> {
+    let mut out = Vec::new();
+    match stmt {
+        FStmt::Decl { ty, local, init } => {
+            for e in expr_paren_reductions(init) {
+                out.push(FStmt::Decl { ty: *ty, local: *local, init: e });
+            }
+        }
+        FStmt::Assign { local, value } => {
+            for e in expr_paren_reductions(value) {
+                out.push(FStmt::Assign { local: *local, value: e });
+            }
+        }
+        FStmt::Compound { local, op, value } => {
+            for e in expr_paren_reductions(value) {
+                out.push(FStmt::Compound { local: *local, op: *op, value: e });
+            }
+        }
+        FStmt::Println(PrintArg::Expr(expr)) => {
+            for e in expr_paren_reductions(expr) {
+                out.push(FStmt::Println(PrintArg::Expr(e)));
+            }
+        }
+        FStmt::If { cond, then_b, else_b } => {
+            for e in expr_paren_reductions(cond) {
+                out.push(FStmt::If { cond: e, then_b: then_b.clone(), else_b: else_b.clone() });
+            }
+            for (i, child) in then_b.iter().enumerate() {
+                for reduced in stmt_paren_reductions(child) {
+                    let mut body = then_b.clone();
+                    body[i] = reduced;
+                    out.push(FStmt::If {
+                        cond: cond.clone(),
+                        then_b: body,
+                        else_b: else_b.clone(),
+                    });
+                }
+            }
+            if let Some(else_body) = else_b {
+                for (i, child) in else_body.iter().enumerate() {
+                    for reduced in stmt_paren_reductions(child) {
+                        let mut body = else_body.clone();
+                        body[i] = reduced;
+                        out.push(FStmt::If {
+                            cond: cond.clone(),
+                            then_b: then_b.clone(),
+                            else_b: Some(body),
+                        });
+                    }
+                }
+            }
+        }
+        FStmt::IncDec { .. } | FStmt::Println(PrintArg::Str(_)) => {}
+    }
+    out
+}
+
+fn expr_paren_reductions(expr: &FExpr) -> Vec<FExpr> {
+    let mut out = Vec::new();
+    match expr {
+        FExpr::Paren(inner) => {
+            out.push((**inner).clone());
+            for reduced in expr_paren_reductions(inner) {
+                out.push(FExpr::Paren(Box::new(reduced)));
+            }
+        }
+        FExpr::Neg(inner) => {
+            for e in expr_paren_reductions(inner) {
+                out.push(FExpr::Neg(Box::new(e)));
+            }
+        }
+        FExpr::BitNot(inner) => {
+            for e in expr_paren_reductions(inner) {
+                out.push(FExpr::BitNot(Box::new(e)));
+            }
+        }
+        FExpr::Not(inner) => {
+            for e in expr_paren_reductions(inner) {
+                out.push(FExpr::Not(Box::new(e)));
+            }
+        }
+        FExpr::Cast(ty, inner) => {
+            for e in expr_paren_reductions(inner) {
+                out.push(FExpr::Cast(*ty, Box::new(e)));
+            }
+        }
+        FExpr::Bin(op, left, right) => {
+            for e in expr_paren_reductions(left) {
+                out.push(FExpr::Bin(*op, Box::new(e), right.clone()));
+            }
+            for e in expr_paren_reductions(right) {
+                out.push(FExpr::Bin(*op, left.clone(), Box::new(e)));
+            }
+        }
+        FExpr::Cmp(op, left, right) => {
+            for e in expr_paren_reductions(left) {
+                out.push(FExpr::Cmp(*op, Box::new(e), right.clone()));
+            }
+            for e in expr_paren_reductions(right) {
+                out.push(FExpr::Cmp(*op, left.clone(), Box::new(e)));
+            }
+        }
+        FExpr::Logic(op, left, right) => {
+            for e in expr_paren_reductions(left) {
+                out.push(FExpr::Logic(*op, Box::new(e), right.clone()));
+            }
+            for e in expr_paren_reductions(right) {
+                out.push(FExpr::Logic(*op, left.clone(), Box::new(e)));
+            }
+        }
+        FExpr::Lit(_) | FExpr::Local(_) => {}
+    }
+    out
 }
 
 // ===========================================================================
@@ -1711,6 +1904,21 @@ fn minimize_selftest(prog: &Prog, h: &mut SelftestHarness) -> Prog {
                 cur = cand;
                 improved = true;
                 break;
+            }
+        }
+        if improved {
+            continue;
+        }
+        'expressions: for i in 0..cur.body.len() {
+            for reduced in stmt_paren_reductions(&cur.body[i]) {
+                let mut cand = cur.clone();
+                cand.body[i] = reduced;
+                let (a, b) = h.inner.compile_both(&cand);
+                if a.is_some() && b.is_some() && h.inner.spawns < h.inner.cap {
+                    cur = cand;
+                    improved = true;
+                    break 'expressions;
+                }
             }
         }
     }
