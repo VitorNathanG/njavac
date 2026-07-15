@@ -347,7 +347,9 @@ enum Materialization {
     DiamondRequired,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+/// Pending-line provenance, ordered by merge strength. Logical nodes keep the
+/// strongest state contributed by their evaluated operands.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum CodeFreePosition {
     None,
     ShortcutAwaitingNegation,
@@ -397,12 +399,18 @@ impl CondItem {
             stack_reuse: false,
             origin,
             materialization: self.materialization,
-            position: if origin == CondOrigin::NegatedShortcut
-                || self.position == CodeFreePosition::ShortcutAwaitingNegation
-            {
-                CodeFreePosition::PreserveFalseIfLine
-            } else {
-                self.position
+            position: match self.position {
+                CodeFreePosition::PreserveThroughLogicalLeft => {
+                    CodeFreePosition::PreserveThroughLogicalLeft
+                }
+                CodeFreePosition::ShortcutAwaitingNegation
+                | CodeFreePosition::PreserveFalseIfLine => {
+                    CodeFreePosition::PreserveFalseIfLine
+                }
+                CodeFreePosition::None if origin == CondOrigin::NegatedShortcut => {
+                    CodeFreePosition::PreserveFalseIfLine
+                }
+                CodeFreePosition::None => CodeFreePosition::None,
             },
         }
     }
@@ -420,14 +428,12 @@ impl CondItem {
         self
     }
 
-    /// javac drops a static-false negated shortcut's pending `if` position when
-    /// that item is used ungrouped as the left operand of another logical node.
-    /// A static-true item carries it through the evaluated right operand, while
-    /// explicit grouping preserves either verdict through the wrapper. This is
-    /// independent of grouping's value-materialization effect.
+    /// An ungrouped active position used as a logical left operand becomes latent:
+    /// it cannot preserve a line immediately, but a later `!` can reactivate it.
+    /// Grouping after activation protects the active state through logical use.
     fn as_logical_left(mut self) -> CondItem {
-        if self.is_false() && self.position == CodeFreePosition::PreserveFalseIfLine {
-            self.position = CodeFreePosition::None;
+        if self.position == CodeFreePosition::PreserveFalseIfLine {
+            self.position = CodeFreePosition::ShortcutAwaitingNegation;
         }
         self
     }
@@ -438,21 +444,24 @@ impl CondItem {
     }
 
     fn carry_prefix(&mut self, prefix: &CondItem, crossed_join: bool) {
+        let code_free_static_right = (self.is_true() || self.is_false())
+            && self.true_chain.is_none()
+            && self.false_chain.is_none();
         if prefix.origin == CondOrigin::Shortcut
-            && (self.is_true() || self.is_false())
-            && self.position == CodeFreePosition::None
+            && code_free_static_right
         {
             // A static right operand keeps shortcut ancestry only for a later
             // negation's source-position behavior. It must not taint origin or
             // value materialization.
-            self.position = CodeFreePosition::ShortcutAwaitingNegation;
+            self.position = std::cmp::max(
+                self.position,
+                CodeFreePosition::ShortcutAwaitingNegation,
+            );
         }
         if prefix.materialization == Materialization::DiamondRequired || crossed_join {
             self.materialization = Materialization::DiamondRequired;
         }
-        if prefix.position != CodeFreePosition::None {
-            self.position = prefix.position;
-        }
+        self.position = std::cmp::max(self.position, prefix.position);
     }
 }
 
