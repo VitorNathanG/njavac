@@ -149,7 +149,10 @@ impl<'a> Lexer<'a> {
     }
 
     fn run(mut self) -> Vec<Token> {
-        let mut tokens = Vec::new();
+        // Presize: on this subset there is roughly one token per ~3 source bytes,
+        // so this avoids the token vec reallocating as it grows (the lexer was the
+        // top self-time function and RawVec::grow_one the top allocator path).
+        let mut tokens = Vec::with_capacity(self.bytes.len() / 3 + 8);
         loop {
             self.skip_trivia();
             let line = self.line;

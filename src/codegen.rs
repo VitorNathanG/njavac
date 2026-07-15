@@ -217,8 +217,10 @@ fn gen_method(cp: &mut ConstantPool, method: &Method, info: &MethodInfo) -> CfMe
     let mut g = Gen {
         cp,
         info,
-        code: Vec::new(),
-        line_numbers: Vec::new(),
+        // Presize the bytecode buffer so per-instruction pushes don't repeatedly
+        // realloc (RawVec::grow_one was the top allocator path in profiling).
+        code: Vec::with_capacity(64),
+        line_numbers: Vec::with_capacity(16),
         max_stack: 0,
         cur: 0,
         locals: entry_locals.clone(),

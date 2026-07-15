@@ -146,10 +146,13 @@ pub struct ConstantPool {
 
 impl ConstantPool {
     pub fn new() -> Self {
+        // Presize for a typical class's pool (~15-40 entries) so interning does not
+        // repeatedly realloc these three containers as entries accumulate.
+        const CAP: usize = 48;
         ConstantPool {
-            entries: Vec::new(),
-            slots: Vec::new(),
-            index: HashMap::default(),
+            entries: Vec::with_capacity(CAP),
+            slots: Vec::with_capacity(CAP),
+            index: HashMap::with_capacity_and_hasher(CAP, Default::default()),
             next_index: 1,
         }
     }
@@ -244,9 +247,9 @@ impl ConstantPool {
         // the ordered entries, so writing never reconstructs or clones an `Entry`
         // key. Each table maps the child content a composite entry references to
         // that child's slot.
-        let mut utf8_of: FxHashMap<&str, u16> = HashMap::default();
-        let mut class_of: FxHashMap<&str, u16> = HashMap::default();
-        let mut nat_of: FxHashMap<(&str, &str), u16> = HashMap::default();
+        let mut utf8_of: FxHashMap<&str, u16> = HashMap::with_capacity_and_hasher(self.entries.len(), Default::default());
+        let mut class_of: FxHashMap<&str, u16> = HashMap::with_capacity_and_hasher(16, Default::default());
+        let mut nat_of: FxHashMap<(&str, &str), u16> = HashMap::with_capacity_and_hasher(16, Default::default());
         for (i, e) in self.entries.iter().enumerate() {
             let slot = self.slots[i];
             match e {
@@ -431,7 +434,9 @@ impl ClassFile {
         let sourcefile_val = cp.utf8(&self.source_file);
 
         // ---- serialize ----
-        let mut buf = ByteBuf::new();
+        // Presize to a whole small class file so the output never reallocs mid-write
+        // (fixtures average ~500 bytes; this covers the vast majority in one alloc).
+        let mut buf = ByteBuf::with_capacity(1024);
         buf.u32(0xCAFEBABE);
         buf.u16(0); // minor
         buf.u16(69); // major: Java 25
@@ -631,6 +636,9 @@ pub struct ByteBuf(Vec<u8>);
 impl ByteBuf {
     pub fn new() -> Self {
         ByteBuf(Vec::new())
+    }
+    pub fn with_capacity(n: usize) -> Self {
+        ByteBuf(Vec::with_capacity(n))
     }
     pub fn u8(&mut self, v: u8) {
         self.0.push(v);
