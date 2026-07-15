@@ -10,6 +10,7 @@
 use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::hash::{BuildHasher, Hasher};
+use std::rc::Rc;
 
 /// A fast, dependency-free FxHash-style hasher for the constant-pool dedup map.
 /// The pool interns dozens of short `String` keys per class, and the default
@@ -79,9 +80,15 @@ type FxHashMap<K, V> = HashMap<K, V, FxBuildHasher>;
 /// A logical constant-pool entry, keyed by its owned contents so we can dedup
 /// (intern) identical entries. Child references are stored as keys and resolved
 /// to indices at serialization time via the intern map.
+///
+/// The string fields are `Rc<str>`, not `String`: interning clones entries and
+/// synthesizes children (`children()`) constantly, and with `Rc<str>` every such
+/// clone is a refcount bump instead of a heap copy of the bytes. This is purely a
+/// representation choice — `Rc<str>` hashes and compares by content, so dedup and
+/// therefore the emitted pool are byte-identical.
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub enum Entry {
-    Utf8(String),
+    Utf8(Rc<str>),
     /// A CONSTANT_Integer: a 4-byte `int` value. A leaf (no children).
     Integer(i32),
     /// A CONSTANT_Long: an 8-byte `long`. A leaf; **occupies two pool indices**.
@@ -94,14 +101,14 @@ pub enum Entry {
     /// per `Double.doubleToLongBits`. A leaf; **occupies two pool indices**.
     Double(u64),
     /// Class by internal name, e.g. "java/lang/Object". Child: Utf8(name).
-    Class(String),
+    Class(Rc<str>),
     /// name + descriptor. Children: Utf8(name), Utf8(desc).
-    NameAndType(String, String),
+    NameAndType(Rc<str>, Rc<str>),
     /// owner + name + descriptor. Children: Class(owner), NameAndType(name, desc).
-    Fieldref(String, String, String),
-    Methodref(String, String, String),
+    Fieldref(Rc<str>, Rc<str>, Rc<str>),
+    Methodref(Rc<str>, Rc<str>, Rc<str>),
     /// String constant. Child: Utf8(value).
-    StringConst(String),
+    StringConst(Rc<str>),
 }
 
 impl Entry {
@@ -199,7 +206,7 @@ impl ConstantPool {
 
     // Public interning API, one method per operand kind.
     pub fn utf8(&mut self, s: &str) -> u16 {
-        self.intern(Entry::Utf8(s.to_string()))
+        self.intern(Entry::Utf8(Rc::from(s)))
     }
     pub fn integer(&mut self, v: i32) -> u16 {
         self.intern(Entry::Integer(v))
@@ -220,16 +227,16 @@ impl ConstantPool {
         self.intern(Entry::Double(bits))
     }
     pub fn class(&mut self, internal_name: &str) -> u16 {
-        self.intern(Entry::Class(internal_name.to_string()))
+        self.intern(Entry::Class(Rc::from(internal_name)))
     }
     pub fn string(&mut self, s: &str) -> u16 {
-        self.intern(Entry::StringConst(s.to_string()))
+        self.intern(Entry::StringConst(Rc::from(s)))
     }
     pub fn fieldref(&mut self, owner: &str, name: &str, desc: &str) -> u16 {
-        self.intern(Entry::Fieldref(owner.to_string(), name.to_string(), desc.to_string()))
+        self.intern(Entry::Fieldref(Rc::from(owner), Rc::from(name), Rc::from(desc)))
     }
     pub fn methodref(&mut self, owner: &str, name: &str, desc: &str) -> u16 {
-        self.intern(Entry::Methodref(owner.to_string(), name.to_string(), desc.to_string()))
+        self.intern(Entry::Methodref(Rc::from(owner), Rc::from(name), Rc::from(desc)))
     }
 
     /// The slot of an already-interned `Class`, for resolving a StackMapTable
@@ -238,7 +245,7 @@ impl ConstantPool {
     pub fn class_index(&self, internal_name: &str) -> u16 {
         *self
             .index
-            .get(&Entry::Class(internal_name.to_string()))
+            .get(&Entry::Class(Rc::from(internal_name)))
             .unwrap_or_else(|| panic!("class not interned: {internal_name}"))
     }
 
@@ -254,13 +261,13 @@ impl ConstantPool {
             let slot = self.slots[i];
             match e {
                 Entry::Utf8(s) => {
-                    utf8_of.insert(s.as_str(), slot);
+                    utf8_of.insert(&**s, slot);
                 }
                 Entry::Class(n) => {
-                    class_of.insert(n.as_str(), slot);
+                    class_of.insert(&**n, slot);
                 }
                 Entry::NameAndType(n, d) => {
-                    nat_of.insert((n.as_str(), d.as_str()), slot);
+                    nat_of.insert((&**n, &**d), slot);
                 }
                 _ => {}
             }
@@ -296,26 +303,26 @@ impl ConstantPool {
                 }
                 Entry::Class(n) => {
                     buf.u8(7);
-                    buf.u16(utf8_of[n.as_str()]);
+                    buf.u16(utf8_of[&**n]);
                 }
                 Entry::NameAndType(n, d) => {
                     buf.u8(12);
-                    buf.u16(utf8_of[n.as_str()]);
-                    buf.u16(utf8_of[d.as_str()]);
+                    buf.u16(utf8_of[&**n]);
+                    buf.u16(utf8_of[&**d]);
                 }
                 Entry::Fieldref(o, n, d) => {
                     buf.u8(9);
-                    buf.u16(class_of[o.as_str()]);
-                    buf.u16(nat_of[&(n.as_str(), d.as_str())]);
+                    buf.u16(class_of[&**o]);
+                    buf.u16(nat_of[&(&**n, &**d)]);
                 }
                 Entry::Methodref(o, n, d) => {
                     buf.u8(10);
-                    buf.u16(class_of[o.as_str()]);
-                    buf.u16(nat_of[&(n.as_str(), d.as_str())]);
+                    buf.u16(class_of[&**o]);
+                    buf.u16(nat_of[&(&**n, &**d)]);
                 }
                 Entry::StringConst(s) => {
                     buf.u8(8);
-                    buf.u16(utf8_of[s.as_str()]);
+                    buf.u16(utf8_of[&**s]);
                 }
             }
         }
