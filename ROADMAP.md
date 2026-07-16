@@ -120,18 +120,9 @@ instructions and metadata remain the target described by ARCHITECTURE.md
 
 Landed; see CLAUDE.md §Architecture.
 
-### 2.5 Front-end: parser precedence table (Pratt)
-- **What.** Replace the eight hand-rolled binary-precedence ladder methods
-  (`bit_or`→…→`multiplicative`) with a single precedence-climbing loop driven by a
-  `binding_power(TokenKind) -> Option<(u8, u8)>` table. Keep recursive descent for
-  statements/declarations.
-- **Why.** Java has ~15 binary levels plus `?:`, `instanceof`, assignment-as-
-  expression, lambda, and cast disambiguation. Each new level is currently a new
-  hand-wired method (a silent byte-mismatch risk if wired at the wrong rung); the
-  table makes it a one-row edit. Pays off precisely at "operators grow 5×."
-- **Effort.** Medium. Recovery (sync-to-`;`/`}`) is a *separate, later* concern —
-  only meaningful after Phase 1's diagnostic sink exists.
-- **Key files.** `parser.rs`.
+### 2.5 Front-end: parser precedence table (Pratt) — ✅ DONE
+
+Landed; see CLAUDE.md §Architecture.
 
 ### 2.6 De-hardcode the `main`/println/void/Object shape
 - **What.** Parameterize `gen_init` on the superclass (not hardwired `Object`),
@@ -215,7 +206,7 @@ files its "what would help" items here.
   goto-compaction / materialization tail.
 ## Status
 
-Phases 0–1 and Phase 2.1–2.4 landed; Phase 2.5 is next. All tests run through Docker
+Phases 0–1 and Phase 2.1–2.5 landed; Phase 2.6 is next. All tests run through Docker
 via the `Makefile`.
 
 As items land, mark them ✅ in place and record the mechanics at the fix site / in

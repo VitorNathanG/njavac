@@ -345,140 +345,27 @@ impl Parser {
         &self.tokens[i].kind
     }
 
-    // ---- expressions, loosest precedence first ----
+    // ---- expressions ----
 
     fn expression(&mut self) -> CompileResult<Expr> {
-        self.logical_or()
+        self.expression_bp(0)
     }
 
-    // `||` — the loosest binary level, below `&&`. Left-associative
-    // (`a || b || c` = `Or(Or(a, b), c)`, matching javac's genCond nesting).
-    fn logical_or(&mut self) -> CompileResult<Expr> {
-        let mut left = self.logical_and()?;
-        while matches!(self.peek(), TokenKind::PipePipe) {
-            self.bump();
-            let right = self.logical_and()?;
-            left = logical(LogOp::Or, left, right);
-        }
-        Ok(left)
-    }
-
-    // `&&` — below `||`, above the bitwise `|`.
-    fn logical_and(&mut self) -> CompileResult<Expr> {
-        let mut left = self.bit_or()?;
-        while matches!(self.peek(), TokenKind::AmpAmp) {
-            self.bump();
-            let right = self.bit_or()?;
-            left = logical(LogOp::And, left, right);
-        }
-        Ok(left)
-    }
-
-    fn bit_or(&mut self) -> CompileResult<Expr> {
-        let mut left = self.bit_xor()?;
-        while matches!(self.peek(), TokenKind::Pipe) {
-            self.bump();
-            let right = self.bit_xor()?;
-            left = binary(BinOp::Or, left, right);
-        }
-        Ok(left)
-    }
-
-    fn bit_xor(&mut self) -> CompileResult<Expr> {
-        let mut left = self.bit_and()?;
-        while matches!(self.peek(), TokenKind::Caret) {
-            self.bump();
-            let right = self.bit_and()?;
-            left = binary(BinOp::Xor, left, right);
-        }
-        Ok(left)
-    }
-
-    fn bit_and(&mut self) -> CompileResult<Expr> {
-        let mut left = self.equality()?;
-        while matches!(self.peek(), TokenKind::Amp) {
-            self.bump();
-            let right = self.equality()?;
-            left = binary(BinOp::And, left, right);
-        }
-        Ok(left)
-    }
-
-    fn equality(&mut self) -> CompileResult<Expr> {
-        let mut left = self.relational()?;
-        loop {
-            let op = match self.peek() {
-                TokenKind::EqEq => CmpOp::Eq,
-                TokenKind::NotEq => CmpOp::Ne,
-                _ => break,
-            };
-            self.bump();
-            let right = self.relational()?;
-            left = compare(op, left, right);
-        }
-        Ok(left)
-    }
-
-    fn relational(&mut self) -> CompileResult<Expr> {
-        let mut left = self.shift()?;
-        loop {
-            let op = match self.peek() {
-                TokenKind::Lt => CmpOp::Lt,
-                TokenKind::Le => CmpOp::Le,
-                TokenKind::Gt => CmpOp::Gt,
-                TokenKind::Ge => CmpOp::Ge,
-                _ => break,
-            };
-            self.bump();
-            let right = self.shift()?;
-            left = compare(op, left, right);
-        }
-        Ok(left)
-    }
-
-    fn shift(&mut self) -> CompileResult<Expr> {
-        let mut left = self.additive()?;
-        loop {
-            let op = match self.peek() {
-                TokenKind::Shl => BinOp::Shl,
-                TokenKind::Shr => BinOp::Shr,
-                TokenKind::UShr => BinOp::UShr,
-                _ => break,
-            };
-            self.bump();
-            let right = self.additive()?;
-            left = binary(op, left, right);
-        }
-        Ok(left)
-    }
-
-    fn additive(&mut self) -> CompileResult<Expr> {
-        let mut left = self.multiplicative()?;
-        loop {
-            let op = match self.peek() {
-                TokenKind::Plus => BinOp::Add,
-                TokenKind::Minus => BinOp::Sub,
-                _ => break,
-            };
-            self.bump();
-            let right = self.multiplicative()?;
-            left = binary(op, left, right);
-        }
-        Ok(left)
-    }
-
-    fn multiplicative(&mut self) -> CompileResult<Expr> {
+    /// Parse every binary/logical level from one binding-power table. All current
+    /// operators are left-associative, so the right binding power is one greater
+    /// than the left (`a+b+c` becomes `(a+b)+c`).
+    fn expression_bp(&mut self, min_bp: u8) -> CompileResult<Expr> {
         let mut left = self.unary()?;
         loop {
-            let op = match self.peek() {
-                TokenKind::Star => BinOp::Mul,
-                TokenKind::Slash => BinOp::Div,
-                TokenKind::Percent => BinOp::Rem,
-                _ => break,
+            let Some((op, left_bp, right_bp)) = infix_binding_power(self.peek()) else {
+                break;
             };
+            if left_bp < min_bp {
+                break;
+            }
             self.bump();
-            let right = self.unary()?;
-            left = binary(op, left, right);
+            let right = self.expression_bp(right_bp)?;
+            left = op.apply(left, right);
         }
         Ok(left)
     }
@@ -568,16 +455,49 @@ impl Parser {
     }
 }
 
-fn binary(op: BinOp, left: Expr, right: Expr) -> Expr {
-    Expr::Binary { op, left: Box::new(left), right: Box::new(right) }
+#[derive(Clone, Copy)]
+enum InfixOp {
+    Binary(BinOp),
+    Compare(CmpOp),
+    Logical(LogOp),
 }
 
-fn compare(op: CmpOp, left: Expr, right: Expr) -> Expr {
-    Expr::Compare { op, left: Box::new(left), right: Box::new(right) }
+impl InfixOp {
+    fn apply(self, left: Expr, right: Expr) -> Expr {
+        let left = Box::new(left);
+        let right = Box::new(right);
+        match self {
+            InfixOp::Binary(op) => Expr::Binary { op, left, right },
+            InfixOp::Compare(op) => Expr::Compare { op, left, right },
+            InfixOp::Logical(op) => Expr::Logical { op, left, right },
+        }
+    }
 }
 
-fn logical(op: LogOp, left: Expr, right: Expr) -> Expr {
-    Expr::Logical { op, left: Box::new(left), right: Box::new(right) }
+fn infix_binding_power(kind: &TokenKind) -> Option<(InfixOp, u8, u8)> {
+    let (op, precedence) = match kind {
+        TokenKind::PipePipe => (InfixOp::Logical(LogOp::Or), 1),
+        TokenKind::AmpAmp => (InfixOp::Logical(LogOp::And), 2),
+        TokenKind::Pipe => (InfixOp::Binary(BinOp::Or), 3),
+        TokenKind::Caret => (InfixOp::Binary(BinOp::Xor), 4),
+        TokenKind::Amp => (InfixOp::Binary(BinOp::And), 5),
+        TokenKind::EqEq => (InfixOp::Compare(CmpOp::Eq), 6),
+        TokenKind::NotEq => (InfixOp::Compare(CmpOp::Ne), 6),
+        TokenKind::Lt => (InfixOp::Compare(CmpOp::Lt), 7),
+        TokenKind::Le => (InfixOp::Compare(CmpOp::Le), 7),
+        TokenKind::Gt => (InfixOp::Compare(CmpOp::Gt), 7),
+        TokenKind::Ge => (InfixOp::Compare(CmpOp::Ge), 7),
+        TokenKind::Shl => (InfixOp::Binary(BinOp::Shl), 8),
+        TokenKind::Shr => (InfixOp::Binary(BinOp::Shr), 8),
+        TokenKind::UShr => (InfixOp::Binary(BinOp::UShr), 8),
+        TokenKind::Plus => (InfixOp::Binary(BinOp::Add), 9),
+        TokenKind::Minus => (InfixOp::Binary(BinOp::Sub), 9),
+        TokenKind::Star => (InfixOp::Binary(BinOp::Mul), 10),
+        TokenKind::Slash => (InfixOp::Binary(BinOp::Div), 10),
+        TokenKind::Percent => (InfixOp::Binary(BinOp::Rem), 10),
+        _ => return None,
+    };
+    Some((op, precedence, precedence + 1))
 }
 
 /// The compound-assignment operator a token denotes, if any.

@@ -424,7 +424,9 @@ source → lexer::lex → parser::parse → sema::analyze → codegen::generate 
   leaf drives numeric promotion and opcode selection. `Type` centrally owns slot
   width, recursive descriptor writing, and verifier reference names; there is no
   parallel semantic value-type enum.
-- **`parser`** → recursive descent; precedence unary → `* / %` → `+ -`.
+- **`parser`** → recursive descent for declarations/statements and a single
+  precedence-climbing loop for expressions; `infix_binding_power` is the ordered
+  operator/associativity table.
 - **`sema`** → supported-class-shape validation, operand-family checks, and
   occurrence-based local resolution: each declaration gets a stable `LocalId`,
   every `Name` span maps to it, and definite assignment is tracked by ID. Its
