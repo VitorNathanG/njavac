@@ -205,7 +205,7 @@ fn preflight_stmt(stmt: &Stmt, info: &MethodInfo) -> CompileResult<()> {
     match &stmt.kind {
         StmtKind::LocalDecl { name, init: Some(init), .. }
         | StmtKind::Assign { name, value: init } => {
-            if info.ty(name) == ValType::Boolean {
+            if info.ty(&name.text) == ValType::Boolean {
                 preflight_materialization(init, false, stmt.span, info)?;
             } else {
                 preflight_value(init, false, stmt.span, info)?;
@@ -224,10 +224,10 @@ fn preflight_stmt(stmt: &Stmt, info: &MethodInfo) -> CompileResult<()> {
         StmtKind::Expr(_) => unreachable!("sema accepted a non-println expression statement"),
         StmtKind::If { cond, then_branch, else_branch } => {
             preflight_cond(cond, false, stmt.span, info)?;
-            for nested in then_branch {
+            for nested in &then_branch.stmts {
                 preflight_stmt(nested, info)?;
             }
-            for nested in else_branch.iter().flatten() {
+            for nested in else_branch.iter().flat_map(|body| &body.stmts) {
                 preflight_stmt(nested, info)?;
             }
         }
@@ -677,18 +677,25 @@ impl<'a> Gen<'a> {
     fn gen_stmt(&mut self, stmt: &Stmt) {
         self.cur = 0;
         if let StmtKind::If { cond, then_branch, else_branch } = &stmt.kind {
-            self.gen_if(stmt.line, cond, then_branch, else_branch.as_deref());
+            self.gen_if(
+                stmt.line,
+                cond,
+                &then_branch.stmts,
+                else_branch.as_ref().map(|body| body.stmts.as_slice()),
+            );
             return;
         }
         self.mark_line(stmt.line);
         match &stmt.kind {
             StmtKind::LocalDecl { name, init, .. } => {
                 if let Some(init) = init {
-                    self.store_to(name, init);
+                    self.store_to(&name.text, init);
                 }
             }
-            StmtKind::Assign { name, value } => self.store_to(name, value),
-            StmtKind::CompoundAssign { name, op, value } => self.gen_compound(name, *op, value),
+            StmtKind::Assign { name, value } => self.store_to(&name.text, value),
+            StmtKind::CompoundAssign { name, op, value } => {
+                self.gen_compound(&name.text, *op, value)
+            }
             StmtKind::Expr(expr) => self.gen_expr_stmt(expr),
             StmtKind::If { .. } => unreachable!("handled above"),
         }
@@ -1479,8 +1486,8 @@ impl<'a> Gen<'a> {
     fn gen_nonconst(&mut self, expr: &Expr) -> ValType {
         match expr {
             Expr::Name(n) => {
-                let ty = self.info.ty(n);
-                self.emit_load(self.info.slot(n), ty);
+                let ty = self.info.ty(&n.text);
+                self.emit_load(self.info.slot(&n.text), ty);
                 ty
             }
             Expr::Neg(e) => {

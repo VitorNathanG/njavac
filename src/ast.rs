@@ -15,6 +15,13 @@
 
 use crate::span::Span;
 
+/// One source-level name occurrence.
+#[derive(Debug)]
+pub struct Name {
+    pub text: String,
+    pub span: Span,
+}
+
 /// A whole compilation unit: exactly one top-level class.
 pub struct CompilationUnit {
     pub span: Span,
@@ -48,8 +55,7 @@ pub struct Method {
 /// One formal parameter: a name and its type.
 pub struct Param {
     pub span: Span,
-    pub name: String,
-    pub name_span: Span,
+    pub name: Name,
     pub ty: Type,
 }
 
@@ -76,23 +82,30 @@ pub struct Stmt {
     pub kind: StmtKind,
 }
 
+/// One `if`/`else` arm, preserving whether Java source used braces.
+pub struct BranchBody {
+    pub span: Span,
+    pub braced: bool,
+    pub stmts: Vec<Stmt>,
+}
+
 pub enum StmtKind {
     /// `<ty> name = init;` (initializer optional).
     LocalDecl {
         ty: Type,
-        name: String,
+        name: Name,
         init: Option<Expr>,
     },
     /// `name = value;` — plain assignment to an already-declared local.
     Assign {
-        name: String,
+        name: Name,
         value: Expr,
     },
     /// `name <op>= value;` — compound assignment. `++`/`--` are lowered here with
     /// `op = Add`/`Sub` and `value = IntLit(1)`. Pre/post form is irrelevant in
     /// statement position (the produced value is discarded), so it is not stored.
     CompoundAssign {
-        name: String,
+        name: Name,
         op: BinOp,
         value: Expr,
     },
@@ -102,8 +115,8 @@ pub enum StmtKind {
     /// source position; codegen marks it pending for the next emitted instruction.
     If {
         cond: Expr,
-        then_branch: Vec<Stmt>,
-        else_branch: Option<Vec<Stmt>>,
+        then_branch: BranchBody,
+        else_branch: Option<BranchBody>,
     },
     /// An expression used as a statement (only `System.out.println(...)`).
     Expr(Expr),
@@ -127,7 +140,7 @@ pub enum Expr {
     /// A string literal with escapes already decoded to real characters.
     StringLit(String),
     /// A reference to a local variable by name.
-    Name(String),
+    Name(Name),
     /// Unary minus, e.g. `-x`. A literal operand is constant-folded by codegen.
     Neg(Box<Expr>),
     /// Unary bitwise complement `~x` (int/long).

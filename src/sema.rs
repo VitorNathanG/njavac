@@ -138,10 +138,10 @@ fn validate_class_shape(unit: &CompilationUnit) -> CompileResult<()> {
     for method in methods {
         let mut names = HashSet::new();
         for param in &method.params {
-            if !names.insert(param.name.as_str()) {
+            if !names.insert(param.name.text.as_str()) {
                 return Err(Diagnostic::semantic(
-                    param.name_span,
-                    format!("duplicate parameter `{}`", param.name),
+                    param.name.span,
+                    format!("duplicate parameter `{}`", param.name.text),
                 ));
             }
         }
@@ -193,8 +193,8 @@ fn analyze_method(method: &Method) -> CompileResult<MethodInfo> {
 
     // Parameters take the low slots and are definitely assigned at method entry.
     for param in &method.params {
-        analyzer.declare(&param.name, valtype(param.ty), param.name_span)?;
-        analyzer.assigned.insert(param.name.clone());
+        analyzer.declare(&param.name.text, valtype(param.ty), param.name.span)?;
+        analyzer.assigned.insert(param.name.text.clone());
     }
     for stmt in &method.body {
         analyzer.validate_stmt(stmt, false)?;
@@ -238,24 +238,24 @@ impl MethodAnalyzer {
                     ));
                 }
                 let target = valtype(*ty);
-                self.declare(name, target, stmt.span)?;
+                self.declare(&name.text, target, stmt.span)?;
                 if let Some(init) = init {
                     let source = self.validate_expr(init, stmt.span)?;
                     self.require_assignable(target, source, init, stmt.span)?;
-                    self.assigned.insert(name.clone());
+                    self.assigned.insert(name.text.clone());
                 }
             }
             StmtKind::Assign { name, value } => {
-                let target = self.local_type(name, stmt.span)?;
+                let target = self.local_type(&name.text, stmt.span)?;
                 let source = self.validate_expr(value, stmt.span)?;
                 self.require_assignable(target, source, value, stmt.span)?;
-                self.assigned.insert(name.clone());
+                self.assigned.insert(name.text.clone());
             }
             StmtKind::CompoundAssign { name, op, value } => {
-                let target = self.read_local(name, stmt.span)?;
+                let target = self.read_local(&name.text, stmt.span)?;
                 let source = self.validate_expr(value, stmt.span)?;
                 self.require_compound(*op, target, source, stmt.span)?;
-                self.assigned.insert(name.clone());
+                self.assigned.insert(name.text.clone());
             }
             StmtKind::Expr(expr) => match expr {
                 Expr::Println(arg) => {
@@ -282,14 +282,14 @@ impl MethodAnalyzer {
 
                 let incoming = self.assigned.clone();
                 self.assigned = incoming.clone();
-                for nested in then_branch {
+                for nested in &then_branch.stmts {
                     self.validate_stmt(nested, true)?;
                 }
                 let then_assigned = self.assigned.clone();
 
                 self.assigned = incoming.clone();
                 if let Some(else_branch) = else_branch {
-                    for nested in else_branch {
+                    for nested in &else_branch.stmts {
                         self.validate_stmt(nested, true)?;
                     }
                 }
@@ -313,7 +313,7 @@ impl MethodAnalyzer {
             Expr::CharLit(_) => ValType::Char,
             Expr::StringLit(_) => ValType::String,
             Expr::Name(name) => {
-                let ty = self.read_local(name, span)?;
+                let ty = self.read_local(&name.text, span)?;
                 if ty == ValType::String {
                     return Err(Diagnostic::unsupported_semantic(
                         span,
@@ -827,7 +827,7 @@ pub fn type_of(expr: &Expr, info: &MethodInfo) -> ValType {
         Expr::BoolLit(_) => ValType::Boolean,
         Expr::CharLit(_) => ValType::Char,
         Expr::StringLit(_) => ValType::String,
-        Expr::Name(n) => info.ty(n),
+        Expr::Name(n) => info.ty(&n.text),
         Expr::Neg(e) => unary_promote(type_of(e, info)),
         Expr::BitNot(e) => unary_promote(type_of(e, info)),
         Expr::Not(_) => ValType::Boolean,

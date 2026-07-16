@@ -17,7 +17,8 @@
 //! can rebuild the `LineNumberTable` byte-identically to javac.
 //!
 use crate::ast::{
-    BinOp, Class, CmpOp, CompilationUnit, Expr, LogOp, Method, Param, Stmt, StmtKind, Type,
+    BinOp, BranchBody, Class, CmpOp, CompilationUnit, Expr, LogOp, Method, Name, Param, Stmt,
+    StmtKind, Type,
 };
 use crate::diagnostic::{CompileResult, Diagnostic};
 use crate::lexer::{Token, TokenKind};
@@ -73,9 +74,10 @@ impl Parser {
         }
     }
 
-    /// Consume an identifier, returning its name.
-    fn expect_ident(&mut self) -> CompileResult<String> {
-        Ok(self.expect_ident_spanned()?.0)
+    /// Consume an identifier as a source-level name occurrence.
+    fn expect_name(&mut self) -> CompileResult<Name> {
+        let (text, span) = self.expect_ident_spanned()?;
+        Ok(Name { text, span })
     }
 
     /// Consume an identifier, returning its name and source span.
@@ -158,9 +160,9 @@ impl Parser {
         loop {
             let start = self.span();
             let ty = self.param_type()?;
-            let (name, name_span) = self.expect_ident_spanned()?;
-            let span = start.join(name_span);
-            params.push(Param { span, name, name_span, ty });
+            let name = self.expect_name()?;
+            let span = start.join(name.span);
+            params.push(Param { span, name, ty });
             if matches!(self.peek(), TokenKind::Comma) {
                 self.bump();
             } else {
@@ -218,7 +220,7 @@ impl Parser {
             // discarded, so pre/post is irrelevant.
             let op = if matches!(self.peek(), TokenKind::PlusPlus) { BinOp::Add } else { BinOp::Sub };
             self.bump();
-            let name = self.expect_ident()?;
+            let name = self.expect_name()?;
             self.expect(&TokenKind::Semicolon)?;
             StmtKind::CompoundAssign { name, op, value: Expr::IntLit(1) }
         } else if let TokenKind::Ident(name) = self.peek() {
@@ -257,8 +259,10 @@ impl Parser {
     }
 
     // A brace-delimited block, or a single statement (Java allows both after
-    // `if (...)`/`else`). Returned as a statement list either way.
-    fn block_or_statement(&mut self) -> CompileResult<Vec<Stmt>> {
+    // `if (...)`/`else`). Local declarations are block statements, not statements,
+    // so Java requires braces around them here.
+    fn block_or_statement(&mut self) -> CompileResult<BranchBody> {
+        let start = self.span();
         if matches!(self.peek(), TokenKind::LBrace) {
             self.bump();
             let mut stmts = Vec::new();
@@ -266,16 +270,27 @@ impl Parser {
                 stmts.push(self.statement()?);
             }
             self.expect(&TokenKind::RBrace)?;
-            Ok(stmts)
+            Ok(BranchBody {
+                span: start.join(self.previous_span()),
+                braced: true,
+                stmts,
+            })
         } else {
-            Ok(vec![self.statement()?])
+            let stmt = self.statement()?;
+            if matches!(stmt.kind, StmtKind::LocalDecl { .. }) {
+                return Err(Diagnostic::parse(
+                    stmt.span,
+                    "a local declaration requires a braced if/else body",
+                ));
+            }
+            Ok(BranchBody { span: stmt.span, braced: false, stmts: vec![stmt] })
         }
     }
 
     // `<ty> name = init;` (initializer optional).
     fn local_decl(&mut self) -> CompileResult<StmtKind> {
         let ty = self.primitive_type()?;
-        let name = self.expect_ident()?;
+        let name = self.expect_name()?;
         let init = if matches!(self.peek(), TokenKind::Assign) {
             self.bump();
             Some(self.expression()?)
@@ -293,21 +308,21 @@ impl Parser {
         // identifier followed by `.`, so anything with a `.` next is that form.
         match self.peek_kind(1) {
             TokenKind::Assign => {
-                let name = self.expect_ident()?;
+                let name = self.expect_name()?;
                 self.expect(&TokenKind::Assign)?;
                 let value = self.expression()?;
                 self.expect(&TokenKind::Semicolon)?;
                 Ok(StmtKind::Assign { name, value })
             }
             k if compound_op(k).is_some() => {
-                let name = self.expect_ident()?;
+                let name = self.expect_name()?;
                 let op = compound_op(&self.bump().kind).unwrap();
                 let value = self.expression()?;
                 self.expect(&TokenKind::Semicolon)?;
                 Ok(StmtKind::CompoundAssign { name, op, value })
             }
             TokenKind::PlusPlus | TokenKind::MinusMinus => {
-                let name = self.expect_ident()?;
+                let name = self.expect_name()?;
                 let op = if matches!(self.peek(), TokenKind::PlusPlus) { BinOp::Add } else { BinOp::Sub };
                 self.bump();
                 self.expect(&TokenKind::Semicolon)?;
@@ -564,8 +579,8 @@ impl Parser {
                 Expr::Println(Box::new(arg))
             }
             TokenKind::Ident(name) => {
-                self.bump();
-                Expr::Name(name)
+                let span = self.bump().span;
+                Expr::Name(Name { text: name, span })
             }
             other => {
                 return Err(Diagnostic::parse(
