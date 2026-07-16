@@ -12,8 +12,6 @@
 //! records the verifier-local state at method entry and around every statement;
 //! branch-local declarations remain an explicit unsupported boundary.
 
-use std::rc::Rc;
-
 use crate::ast::{
     BinOp, BranchBody, CmpOp, CompilationUnit, Expr, Method, Name, Stmt, StmtKind, Type,
 };
@@ -119,8 +117,8 @@ pub enum FrameLocal {
 }
 
 struct StmtFrameLocals {
-    entry: Rc<[FrameLocal]>,
-    exit: Rc<[FrameLocal]>,
+    entry: usize,
+    exit: usize,
 }
 
 /// Analysis result for one method: ordered locals and occurrence resolution.
@@ -128,7 +126,8 @@ pub struct MethodInfo {
     /// Parameters followed by locals in declaration order.
     pub locals: Vec<LocalInfo>,
     resolutions: FxHashMap<Span, LocalId>,
-    entry_frame_locals: Rc<[FrameLocal]>,
+    frame_locals: Vec<Vec<FrameLocal>>,
+    entry_frame_locals: usize,
     stmt_frame_locals: FxHashMap<Span, StmtFrameLocals>,
     /// High-water local-slot count, counting `long`/`double` as two.
     pub max_locals: u16,
@@ -154,25 +153,25 @@ impl MethodInfo {
     }
 
     pub fn entry_frame_locals(&self) -> &[FrameLocal] {
-        self.entry_frame_locals.as_ref()
+        &self.frame_locals[self.entry_frame_locals]
     }
 
     pub fn stmt_entry_frame_locals(&self, span: Span) -> &[FrameLocal] {
-        &self
+        let state = self
             .stmt_frame_locals
             .get(&span)
             .unwrap_or_else(|| panic!("sema did not record statement entry at {span:?}"))
-            .entry
-            .as_ref()
+            .entry;
+        &self.frame_locals[state]
     }
 
     pub fn stmt_exit_frame_locals(&self, span: Span) -> &[FrameLocal] {
-        &self
+        let state = self
             .stmt_frame_locals
             .get(&span)
             .unwrap_or_else(|| panic!("sema did not record statement exit at {span:?}"))
-            .exit
-            .as_ref()
+            .exit;
+        &self.frame_locals[state]
     }
 }
 
@@ -245,13 +244,16 @@ fn validate_class_shape(unit: &CompilationUnit) -> CompileResult<()> {
 }
 
 fn analyze_method(method: &Method) -> CompileResult<MethodInfo> {
+    let mut frame_locals = Vec::with_capacity(method.body.len() + 2);
+    frame_locals.push(Vec::new());
     let mut analyzer = MethodAnalyzer {
         locals: Vec::new(),
         resolutions: FxHashMap::default(),
         stmt_frame_locals: FxHashMap::default(),
         scopes: vec![Scope { symbols: FxHashMap::default(), allocator_base: 0 }],
         assigned: FxHashSet::default(),
-        frame_locals: Rc::from([]),
+        frame_locals,
+        current_frame_locals: 0,
         next_slot: 0,
         max_locals: 0,
     };
@@ -262,7 +264,7 @@ fn analyze_method(method: &Method) -> CompileResult<MethodInfo> {
         analyzer.assigned.insert(id);
     }
     analyzer.refresh_frame_locals();
-    let entry_frame_locals = Rc::clone(&analyzer.frame_locals);
+    let entry_frame_locals = analyzer.current_frame_locals;
     for stmt in &method.body {
         analyzer.validate_stmt(stmt, false)?;
     }
@@ -270,6 +272,7 @@ fn analyze_method(method: &Method) -> CompileResult<MethodInfo> {
     Ok(MethodInfo {
         locals: analyzer.locals,
         resolutions: analyzer.resolutions,
+        frame_locals: analyzer.frame_locals,
         entry_frame_locals,
         stmt_frame_locals: analyzer.stmt_frame_locals,
         max_locals: analyzer.max_locals,
@@ -287,8 +290,9 @@ struct MethodAnalyzer {
     stmt_frame_locals: FxHashMap<Span, StmtFrameLocals>,
     scopes: Vec<Scope>,
     assigned: FxHashSet<LocalId>,
-    /// Shared current snapshot, rebuilt only when `assigned` changes.
-    frame_locals: Rc<[FrameLocal]>,
+    /// Arena of immutable snapshots, extended only when `assigned` changes.
+    frame_locals: Vec<Vec<FrameLocal>>,
+    current_frame_locals: usize,
     next_slot: u16,
     max_locals: u16,
 }
@@ -411,7 +415,8 @@ impl MethodAnalyzer {
     }
 
     fn refresh_frame_locals(&mut self) {
-        self.frame_locals = self.build_frame_locals().into();
+        self.frame_locals.push(self.build_frame_locals());
+        self.current_frame_locals = self.frame_locals.len() - 1;
     }
 
     fn mark_assigned(&mut self, id: LocalId) {
@@ -432,7 +437,7 @@ impl MethodAnalyzer {
     }
 
     fn validate_stmt(&mut self, stmt: &Stmt, in_branch: bool) -> CompileResult<()> {
-        let entry = Rc::clone(&self.frame_locals);
+        let entry = self.current_frame_locals;
         match &stmt.kind {
             StmtKind::LocalDecl { ty, name, init } => {
                 if in_branch {
@@ -486,23 +491,23 @@ impl MethodAnalyzer {
                 }
 
                 let incoming = self.assigned.clone();
-                let incoming_frame = Rc::clone(&self.frame_locals);
+                let incoming_frame = self.current_frame_locals;
                 self.validate_branch(then_branch)?;
                 let then_assigned = self.assigned.clone();
-                let then_frame = Rc::clone(&self.frame_locals);
+                let then_frame = self.current_frame_locals;
 
                 self.assigned = incoming;
-                self.frame_locals = incoming_frame;
+                self.current_frame_locals = incoming_frame;
                 if let Some(else_branch) = else_branch {
                     self.validate_branch(else_branch)?;
                 }
                 let else_assigned = self.assigned.clone();
-                let else_frame = Rc::clone(&self.frame_locals);
+                let else_frame = self.current_frame_locals;
                 self.assigned = then_assigned.intersection(&else_assigned).cloned().collect();
                 if self.assigned == then_assigned {
-                    self.frame_locals = then_frame;
+                    self.current_frame_locals = then_frame;
                 } else if self.assigned == else_assigned {
-                    self.frame_locals = else_frame;
+                    self.current_frame_locals = else_frame;
                 } else {
                     self.refresh_frame_locals();
                 }
@@ -510,7 +515,7 @@ impl MethodAnalyzer {
         }
         let previous = self.stmt_frame_locals.insert(
             stmt.span,
-            StmtFrameLocals { entry, exit: Rc::clone(&self.frame_locals) },
+            StmtFrameLocals { entry, exit: self.current_frame_locals },
         );
         assert!(previous.is_none(), "duplicate statement span recorded at {:?}", stmt.span);
         Ok(())
