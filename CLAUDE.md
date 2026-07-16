@@ -406,9 +406,10 @@ source → lexer::lex → parser::parse → sema::analyze → codegen::generate 
 - **`ast`** → plain enums, `Box` for recursion; declarations/statements carry
   source spans while statements/braces retain their byte-visible line facts.
 - **`parser`** → recursive descent; precedence unary → `* / %` → `+ -`.
-- **`sema`** → local-slot allocation (two-slot `long`/`double` model), per-local
-  typing, and `type_of` implementing unary/binary numeric promotion (enough to
-  drive descriptor, conversion-opcode, and constant-load selection).
+- **`sema`** → supported-class-shape validation, definite assignment and operand
+  family checks, plus local-slot allocation (two-slot `long`/`double` model) and
+  `type_of` implementing unary/binary numeric promotion. Branch-local declarations
+  remain an explicit unsupported boundary until scoped allocation lands.
 - **`codegen`** → typed bytecode + `max_stack`/`max_locals` + `LineNumberTable`,
   via the `classfile` backend.
 - **`main`** is a thin javac-like CLI (`njavac [-d <dir>] <file.java> …`): it
@@ -478,6 +479,12 @@ rule: javac **constant-folds literal subtrees** (`100 % 7` → `iconst_2`,
 `1 + 2L` → `ldc2_w 3L`) with wrapping integer / exact IEEE-754 arithmetic and JLS
 shift masking, but emits real bytecode once a local is involved — so a folded
 constant is bit-identical to the unfolded computation.
+
+Before interning or emission, codegen preflights value evaluation for the one
+valid-Java shape its current frames cannot represent: branch-boolean materialization
+while another operand-stack value is live (`println(a < b)`, or a branch-valued
+right operand of boolean `&`/`|`/`^`). It returns `NJC1001`; the corresponding
+empty-stack assert in `gen_bool_value` remains an internal post-validation invariant.
 
 Comparisons, `if`/`else`, and short-circuit `&&`/`||` share a second lowering mode
 built around **`gen_cond(&Expr) -> CondItem`**. Besides the deciding `CondOp` and

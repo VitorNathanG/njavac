@@ -89,8 +89,20 @@ impl Diagnostic {
         Self::error(DiagnosticCode::ParseError, span, message)
     }
 
+    pub fn semantic(span: Span, message: impl Into<String>) -> Self {
+        Self::error(DiagnosticCode::SemanticError, span, message)
+    }
+
     pub fn unsupported_syntax(span: Span, message: impl Into<String>) -> Self {
         Self::error(DiagnosticCode::UnsupportedSyntax, span, message)
+    }
+
+    pub fn unsupported_semantic(span: Span, message: impl Into<String>) -> Self {
+        Self::error(DiagnosticCode::UnsupportedSemantic, span, message)
+    }
+
+    pub fn unsupported_codegen(span: Span, message: impl Into<String>) -> Self {
+        Self::error(DiagnosticCode::UnsupportedCodegen, span, message)
     }
 
     pub const fn kind(&self) -> ErrorKind {

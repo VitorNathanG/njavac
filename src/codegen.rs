@@ -26,7 +26,7 @@
 
 use crate::ast::{BinOp, Class, CmpOp, Expr, LogOp, Method, Stmt, StmtKind, Type};
 use crate::classfile::{ClassFile, ConstantPool, Method as CfMethod, StackFrame, VerificationType};
-use crate::diagnostic::CompileResult;
+use crate::diagnostic::{CompileResult, Diagnostic};
 use crate::sema::{self, Analysis, MethodInfo, StackTy, ValType};
 
 // ---- opcodes ----
@@ -166,6 +166,7 @@ enum Const {
 
 /// Compile one parsed+analyzed class into `.class` bytes.
 pub fn generate(class: &Class, analysis: &Analysis, source_file: &str) -> CompileResult<Vec<u8>> {
+    preflight_codegen(class, analysis)?;
     #[cfg(debug_assertions)]
     assert_negate_op_consistent();
     let mut cp = ConstantPool::new();
@@ -185,6 +186,140 @@ pub fn generate(class: &Class, analysis: &Analysis, source_file: &str) -> Compil
         methods,
     };
     Ok(class_file.to_bytes(cp))
+}
+
+/// Reject the one valid-Java value shape that needs verifier frames the emitter
+/// cannot yet represent: materializing a branch boolean over a live base stack.
+/// This runs before constant-pool interning or byte emission; the corresponding
+/// emitter assert remains a post-preflight invariant.
+fn preflight_codegen(class: &Class, analysis: &Analysis) -> CompileResult<()> {
+    for (method, info) in class.methods.iter().zip(&analysis.methods) {
+        for stmt in &method.body {
+            preflight_stmt(stmt, info)?;
+        }
+    }
+    Ok(())
+}
+
+fn preflight_stmt(stmt: &Stmt, info: &MethodInfo) -> CompileResult<()> {
+    match &stmt.kind {
+        StmtKind::LocalDecl { name, init: Some(init), .. }
+        | StmtKind::Assign { name, value: init } => {
+            if info.ty(name) == ValType::Boolean {
+                preflight_materialization(init, false, stmt.span, info)?;
+            } else {
+                preflight_value(init, false, stmt.span, info)?;
+            }
+        }
+        StmtKind::LocalDecl { init: None, .. } => {}
+        StmtKind::CompoundAssign { value, .. } => {
+            // The target value is loaded before the RHS except when folding makes
+            // the RHS code-free; `preflight_value` applies that same fold first.
+            preflight_value(value, true, stmt.span, info)?;
+        }
+        StmtKind::Expr(Expr::Println(arg)) => {
+            // `getstatic System.out` leaves the receiver live while evaluating arg.
+            preflight_value(arg, true, stmt.span, info)?;
+        }
+        StmtKind::Expr(_) => unreachable!("sema accepted a non-println expression statement"),
+        StmtKind::If { cond, then_branch, else_branch } => {
+            preflight_cond(cond, false, stmt.span, info)?;
+            for nested in then_branch {
+                preflight_stmt(nested, info)?;
+            }
+            for nested in else_branch.iter().flatten() {
+                preflight_stmt(nested, info)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Mirror `gen_value`'s left-to-right evaluation enough to track whether a
+/// branch-valued boolean reaches `gen_bool_value` with another value live.
+fn preflight_value(
+    expr: &Expr,
+    base_live: bool,
+    span: crate::span::Span,
+    info: &MethodInfo,
+) -> CompileResult<()> {
+    if matches!(expr, Expr::StringLit(_)) || fold(expr).is_some() {
+        return Ok(());
+    }
+    match expr {
+        Expr::Name(_) => Ok(()),
+        Expr::Neg(inner) | Expr::BitNot(inner) | Expr::Paren(inner) => {
+            preflight_value(inner, base_live, span, info)
+        }
+        Expr::Cast { expr, .. } => preflight_value(expr, base_live, span, info),
+        Expr::Binary { left, right, .. } => {
+            preflight_value(left, base_live, span, info)?;
+            preflight_value(right, true, span, info)
+        }
+        Expr::Compare { .. } | Expr::Not(_) | Expr::Logical { .. } => {
+            preflight_materialization(expr, base_live, span, info)
+        }
+        Expr::IntLit(_)
+        | Expr::LongLit(_)
+        | Expr::FloatLit(_)
+        | Expr::DoubleLit(_)
+        | Expr::BoolLit(_)
+        | Expr::CharLit(_) => Ok(()),
+        Expr::Println(_) => unreachable!("sema accepted println as a value"),
+        Expr::StringLit(_) => unreachable!("handled above"),
+    }
+}
+
+fn preflight_materialization(
+    expr: &Expr,
+    base_live: bool,
+    span: crate::span::Span,
+    info: &MethodInfo,
+) -> CompileResult<()> {
+    if base_live {
+        return Err(Diagnostic::unsupported_codegen(
+            span,
+            "boolean value materialization with a live operand-stack value is unsupported",
+        ));
+    }
+    preflight_cond(expr, false, span, info)
+}
+
+/// Mirror condition lowering: comparisons evaluate operands as values, logical
+/// operators consume the left test before evaluating the right, and a boolean
+/// cast explicitly materializes its operand.
+fn preflight_cond(
+    expr: &Expr,
+    base_live: bool,
+    span: crate::span::Span,
+    info: &MethodInfo,
+) -> CompileResult<()> {
+    if lowering_const(expr).is_some() {
+        return Ok(());
+    }
+    match expr {
+        Expr::Not(inner) | Expr::Paren(inner) => preflight_cond(inner, base_live, span, info),
+        Expr::Cast { ty: Type::Boolean, expr } => {
+            preflight_materialization(expr, base_live, span, info)
+        }
+        Expr::Compare { left, right, .. } => {
+            preflight_value(left, base_live, span, info)?;
+            preflight_value(right, true, span, info)
+        }
+        Expr::Logical { op, left, right } => {
+            preflight_cond(left, base_live, span, info)?;
+            let left_decides = fold(left).is_some_and(|value| match op {
+                LogOp::And => to_i32(value) == 0,
+                LogOp::Or => to_i32(value) != 0,
+            });
+            if left_decides {
+                Ok(())
+            } else {
+                preflight_cond(right, base_live, span, info)
+            }
+        }
+        other => preflight_value(other, base_live, span, info),
+    }
 }
 
 /// The implicit default constructor: `aload_0; invokespecial Object.<init>; return`.
@@ -800,7 +935,8 @@ impl<'a> Gen<'a> {
     /// diamond); a statically-decided item with a residual branch resolves that
     /// branch then loads the constant `iconst_0`/`iconst_1`. Only supported with an
     /// empty base operand stack (the non-empty case needs full_frames — a later
-    /// rung; `println(a < b)`/`println(a && b)` stay refused by this assert).
+    /// rung). Codegen preflight rejects that shape, leaving this assert as an
+    /// invariant guard.
     fn gen_bool_value(&mut self, cond: &Expr) -> ValType {
         assert!(self.cur == 0, "materialized boolean with non-empty operand stack is unsupported");
         let c = self.gen_cond(cond);
