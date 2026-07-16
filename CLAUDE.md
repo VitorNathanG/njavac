@@ -523,11 +523,13 @@ for compound assignment (decided on the *effective* delta); `~` lowered to
 `… ixor`; the trailing `return` mapped to the closing-brace line. Every initial
 instruction, including the implicit constructor, passes through
 `Emitter::emit(Instruction)`: lowering selects the exact physical form, then this
-single chokepoint encodes its contiguous opcode/operands, consumes the pending
-line, derives its pop/push effect, and updates the category-2-aware running stack
-and `max_stack`. Branch emission returns an instruction anchor for its fixup;
-later branch backpatching and goto compaction remain finalization passes over the
-encoded bytes. The load-bearing rule: javac **constant-folds literal subtrees**
+single chokepoint appends it to a flat symbolic instruction stream, consumes the
+pending line into an instruction anchor, derives its pop/push effect, and updates
+the category-2-aware running stack and `max_stack`. Branches carry symbolic labels;
+labels and frame requests bind to instruction boundaries (including method end).
+`Emitter::finish` performs goto compaction, one final PC layout, metadata
+resolution, and encoding for both ordinary methods and the implicit constructor.
+The load-bearing rule: javac **constant-folds literal subtrees**
 (`100 % 7` → `iconst_2`,
 `1 + 2L` → `ldc2_w 3L`) with wrapping integer / exact IEEE-754 arithmetic and JLS
 shift masking, but emits real bytecode once a local is involved — so a folded
@@ -562,7 +564,7 @@ logical node carries latent `CodeFreePosition` provenance regardless of the righ
 operand's verdict. A later `!` promotes it to line preservation without changing
 `CondOrigin` or value materialization.
 
-A **chain is an `Option<usize>` label id**; `None` is empty and places no frame.
+A **chain is an `Option<Label>`**; `None` is empty and places no frame.
 `jump_false`/`jump_true` are total over tests and static verdicts. `&&`/`||`
 short-circuit from the left, merge chains, propagate effects only from evaluated
 operands, and mark the right item `DiamondRequired` when resolving a live chain
@@ -579,19 +581,21 @@ residual static `iconst_0`/`iconst_1` or the general true-first
 `println(a && b)`/`println(a < b)` (non-empty stack → `full_frame`) stay a refused
 later rung. Loops/`?:` will reuse `gen_cond` verbatim.
 
-The physical machinery is unchanged and reused: forward branches use the
-label/fixup table backpatched in `resolve_branches` (which **threads jumps through
-unconditional `goto`s**), and `build_frames` emits a frame only at pcs that survive
-as real jump targets — `gen_cond` only decides *at which pcs* `resolve_chain` calls
-`add_frame`. Because njavac emits branches eagerly, a nested constant-operand
+The physical machinery is symbolic until finalization: forward branches carry
+labels, line events carry instruction anchors, and frame requests carry instruction
+boundaries. `Emitter::finish` **threads jumps through unconditional `goto`s** and
+emits a frame only at final PCs that survive as real jump targets — `gen_cond` only
+decides *at which symbolic boundaries* `resolve_chain` calls `add_frame`. Because
+njavac emits branches eagerly, a nested constant-operand
 short-circuit (`(!(x>k || false)) || false`) leaves behind `goto`s javac's aliveness
-model never keeps, so **`compact_gotos` runs before `resolve_branches`** — a
-post-emission fixpoint that deletes exactly the `goto`s that are unreachable or jump
-to the next instruction (javac's `Code.resolve` compaction), remapping every
-pc-bearing table (`fixups`, `labels` — *threaded* to the goto's ultimate
-non-goto destination, not collapsed onto the next byte — `line_numbers`, frame
-offsets). It is a no-op on any program javac already matches (empty death set → no
-bytes move). Codegen selects sema's statement-entry snapshot before emission and
+model never keeps, so symbolic goto compaction runs to a fixpoint before layout. It
+tombstones exactly the `goto`s that are unreachable or jump to the next live
+instruction, while labels targeting a removed goto are threaded to its ultimate
+non-goto destination rather than collapsed onto the following instruction. Stable
+anchors mean lines and frames need no intermediate PC remapping; final layout drops
+a line attached to a removed goto and resolves surviving metadata once. It is a
+no-op on any program javac already matches (empty death set means no instruction is
+tombstoned). Codegen selects sema's statement-entry snapshot before emission and
 its exit snapshot afterward; initializer-internal frames therefore exclude the
 declared local, branch-entry chains use the enclosing `if` entry, and final joins
 use its definite-assignment intersection. Codegen never grows a parallel local-state
@@ -615,8 +619,8 @@ active < grouped), independently of origin and materialization. A code-free
 statement beginning at a live branch target also suppresses preservation; plain
 static false/true verdicts restore the prior pending position. `Gen` carries the
 transient `at_control_entry` fact from `add_frame` until the next `emit_op`. If
-`compact_gotos` removes a goto, it removes an entry attached to that instruction as
-well.
+goto compaction removes a goto, final line resolution removes an event attached to
+that instruction as well.
 
 ## Determinism / Docker
 

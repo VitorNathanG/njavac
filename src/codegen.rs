@@ -25,8 +25,8 @@
 //! method whose branches all fold stays byte-identical to its straight-line form.
 
 use crate::ast::{
-    BinOp, CmpOp, CompilationUnit, ExprArena, ExprId, ExprKind, LogOp, Method, Name,
-    PrimitiveType, Stmt, StmtKind, Type,
+    BinOp, CmpOp, CompilationUnit, ExprArena, ExprId, ExprKind, LogOp, Method, Name, PrimitiveType,
+    Stmt, StmtKind, Type,
 };
 use crate::classfile::{
     ClassFile, CodeAttribute, ConstantPool, Method as CfMethod, StackFrame, VerificationType,
@@ -182,24 +182,53 @@ impl StackEffect {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+struct InstructionAnchor(usize);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+struct CodePosition(usize);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+struct Label(usize);
+
 /// One already-selected physical JVM instruction form. Lowering chooses exact
 /// forms (`ldc` vs `ldc_w`, short local forms, narrow vs wide `iinc`); the emitter
-/// only encodes that choice and derives its stack effect.
+/// records that choice and derives its stack effect. Finalization only lays out
+/// and encodes it; it never substitutes an equivalent form.
 #[derive(Clone, Copy)]
 enum Instruction {
     Simple(u8),
-    U8 { opcode: u8, operand: u8 },
-    U16 { opcode: u8, operand: u16 },
-    Iinc { slot: u8, delta: i8 },
-    WideIinc { slot: u16, delta: i16 },
-    Field { opcode: u8, index: u16, push_words: u16 },
+    U8 {
+        opcode: u8,
+        operand: u8,
+    },
+    U16 {
+        opcode: u8,
+        operand: u16,
+    },
+    Iinc {
+        slot: u8,
+        delta: i8,
+    },
+    WideIinc {
+        slot: u16,
+        delta: i16,
+    },
+    Field {
+        opcode: u8,
+        index: u16,
+        push_words: u16,
+    },
     Invoke {
         opcode: u8,
         index: u16,
         argument_words: u16,
         return_words: u16,
     },
-    Branch(u8),
+    Branch {
+        opcode: u8,
+        target: Label,
+    },
 }
 
 impl Instruction {
@@ -209,35 +238,93 @@ impl Instruction {
             | Instruction::U8 { opcode, .. }
             | Instruction::U16 { opcode, .. } => fixed_stack_effect(opcode),
             Instruction::Iinc { .. } | Instruction::WideIinc { .. } => StackEffect::new(0, 0),
-            Instruction::Field { opcode: GETSTATIC, push_words, .. } => {
-                StackEffect::new(0, push_words)
-            }
+            Instruction::Field {
+                opcode: GETSTATIC,
+                push_words,
+                ..
+            } => StackEffect::new(0, push_words),
             Instruction::Field { opcode, .. } => panic!("unsupported field opcode: {opcode:#x}"),
-            Instruction::Invoke { argument_words, return_words, .. } => {
-                StackEffect::new(1 + argument_words, return_words)
-            }
-            Instruction::Branch(opcode) if (IF_ICMPEQ..=IF_ICMPLE).contains(&opcode) => {
+            Instruction::Invoke {
+                argument_words,
+                return_words,
+                ..
+            } => StackEffect::new(1 + argument_words, return_words),
+            Instruction::Branch { opcode, .. } if (IF_ICMPEQ..=IF_ICMPLE).contains(&opcode) => {
                 StackEffect::new(2, 0)
             }
-            Instruction::Branch(opcode) if (IFEQ..=IFLE).contains(&opcode) => {
+            Instruction::Branch { opcode, .. } if (IFEQ..=IFLE).contains(&opcode) => {
                 StackEffect::new(1, 0)
             }
-            Instruction::Branch(GOTO) => StackEffect::new(0, 0),
-            Instruction::Branch(opcode) => panic!("unsupported branch opcode: {opcode:#x}"),
+            Instruction::Branch { opcode: GOTO, .. } => StackEffect::new(0, 0),
+            Instruction::Branch { opcode, .. } => {
+                panic!("unsupported branch opcode: {opcode:#x}")
+            }
         }
+    }
+
+    fn encoded_len(self) -> usize {
+        match self {
+            Instruction::Simple(_) => 1,
+            Instruction::U8 { .. } => 2,
+            Instruction::U16 { .. }
+            | Instruction::Iinc { .. }
+            | Instruction::Field { .. }
+            | Instruction::Invoke { .. }
+            | Instruction::Branch { .. } => 3,
+            Instruction::WideIinc { .. } => 6,
+        }
+    }
+
+    fn is_goto(self) -> bool {
+        matches!(self, Instruction::Branch { opcode: GOTO, .. })
+    }
+
+    fn is_cond_branch(self) -> bool {
+        matches!(self, Instruction::Branch { opcode, .. } if (IFEQ..=IF_ICMPLE).contains(&opcode))
+    }
+
+    fn is_return(self) -> bool {
+        matches!(self, Instruction::Simple(RETURN))
     }
 }
 
 #[derive(Clone, Copy)]
-struct InstructionAnchor {
-    pc: u32,
+struct InstructionEntry {
+    instruction: Instruction,
+    live: bool,
 }
 
-/// Physical per-method bytecode state. This is the single path for initial
-/// instruction encoding, pending-line consumption, and stack accounting.
-struct Emitter {
+#[derive(Clone, Copy)]
+struct LabelBinding {
+    position: Option<CodePosition>,
+}
+
+struct LineEvent {
+    instruction: InstructionAnchor,
+    line: u16,
+}
+
+struct FrameReq {
+    position: CodePosition,
+    locals: Vec<VerificationType>,
+    stack: Vec<VerificationType>,
+}
+
+struct AssembledCode {
     code: Vec<u8>,
     line_numbers: Vec<(u16, u16)>,
+    stack_frames: Vec<StackFrame>,
+    max_stack: u16,
+}
+
+/// Symbolic per-method bytecode state. This is the single path for instruction
+/// recording, pending-line consumption, and stack accounting; `finish` owns the
+/// one final layout and encoding pass.
+struct Emitter {
+    instructions: Vec<InstructionEntry>,
+    labels: Vec<LabelBinding>,
+    line_events: Vec<LineEvent>,
+    frames: Vec<FrameReq>,
     pending_line: Option<u16>,
     at_control_entry: bool,
     max_stack: u16,
@@ -247,8 +334,10 @@ struct Emitter {
 impl Emitter {
     fn new() -> Self {
         Emitter {
-            code: Vec::with_capacity(64),
-            line_numbers: Vec::with_capacity(16),
+            instructions: Vec::with_capacity(32),
+            labels: Vec::new(),
+            line_events: Vec::with_capacity(16),
+            frames: Vec::new(),
             pending_line: None,
             at_control_entry: false,
             max_stack: 0,
@@ -257,59 +346,339 @@ impl Emitter {
     }
 
     fn emit(&mut self, instruction: Instruction) -> InstructionAnchor {
-        let pc = self.code.len() as u32;
+        let anchor = InstructionAnchor(self.instructions.len());
         if let Some(line) = self.pending_line.take() {
-            if self.line_numbers.last().map(|&(_, l)| l) != Some(line) {
-                self.line_numbers.push((pc as u16, line));
+            if self.line_events.last().map(|event| event.line) != Some(line) {
+                self.line_events.push(LineEvent {
+                    instruction: anchor,
+                    line,
+                });
             }
         }
         self.at_control_entry = false;
-
-        match instruction {
-            Instruction::Simple(opcode) => self.code.push(opcode),
-            Instruction::U8 { opcode, operand } => {
-                self.code.push(opcode);
-                self.code.push(operand);
-            }
-            Instruction::U16 { opcode, operand }
-            | Instruction::Field { opcode, index: operand, .. }
-            | Instruction::Invoke { opcode, index: operand, .. } => {
-                self.code.push(opcode);
-                push_u16(&mut self.code, operand);
-            }
-            Instruction::Iinc { slot, delta } => {
-                self.code.push(IINC);
-                self.code.push(slot);
-                self.code.push(delta as u8);
-            }
-            Instruction::WideIinc { slot, delta } => {
-                self.code.push(WIDE);
-                self.code.push(IINC);
-                push_u16(&mut self.code, slot);
-                push_u16(&mut self.code, delta as u16);
-            }
-            Instruction::Branch(opcode) => {
-                self.code.push(opcode);
-                self.code.extend_from_slice(&[0, 0]);
-            }
-        }
+        self.instructions.push(InstructionEntry {
+            instruction,
+            live: true,
+        });
 
         let effect = instruction.stack_effect();
         self.cur = self
             .cur
             .checked_sub(effect.pop)
-            .unwrap_or_else(|| panic!("operand-stack underflow at pc {pc}"));
+            .unwrap_or_else(|| panic!("operand-stack underflow at instruction {}", anchor.0));
         self.cur = self
             .cur
             .checked_add(effect.push)
-            .unwrap_or_else(|| panic!("operand-stack overflow at pc {pc}"));
+            .unwrap_or_else(|| panic!("operand-stack overflow at instruction {}", anchor.0));
         self.max_stack = self.max_stack.max(self.cur);
-        InstructionAnchor { pc }
+        anchor
+    }
+
+    fn position(&self) -> CodePosition {
+        CodePosition(self.instructions.len())
+    }
+
+    fn new_label(&mut self) -> Label {
+        let label = Label(self.labels.len());
+        self.labels.push(LabelBinding { position: None });
+        label
+    }
+
+    fn place_label(&mut self, label: Label) {
+        let position = self.position();
+        let binding = &mut self.labels[label.0];
+        debug_assert!(binding.position.is_none(), "branch label placed twice");
+        binding.position = Some(position);
+    }
+
+    fn emit_branch(&mut self, opcode: u8, target: Label) -> InstructionAnchor {
+        self.emit(Instruction::Branch { opcode, target })
+    }
+
+    fn label_position(&self, label: Label) -> CodePosition {
+        self.labels[label.0]
+            .position
+            .unwrap_or_else(|| panic!("unplaced branch label {}", label.0))
+    }
+
+    fn next_live_position(&self, position: CodePosition) -> CodePosition {
+        let mut index = position.0;
+        while index < self.instructions.len() && !self.instructions[index].live {
+            index += 1;
+        }
+        CodePosition(index)
+    }
+
+    /// Follow unconditional gotos from a symbolic boundary to the final live
+    /// non-goto boundary. The bound also guards malformed goto cycles.
+    fn thread_from_position(&self, start: CodePosition) -> CodePosition {
+        let mut position = self.next_live_position(start);
+        for _ in 0..=self.instructions.len() {
+            let Some(entry) = self.instructions.get(position.0).filter(|entry| entry.live) else {
+                break;
+            };
+            let Instruction::Branch {
+                opcode: GOTO,
+                target,
+            } = entry.instruction
+            else {
+                break;
+            };
+            let next = self.next_live_position(self.label_position(target));
+            if next == position {
+                break;
+            }
+            position = next;
+        }
+        position
+    }
+
+    fn thread_target(&self, label: Label) -> CodePosition {
+        self.thread_from_position(self.label_position(label))
+    }
+
+    /// Delete only unreachable and goto-to-next gotos, preserving javac's
+    /// observed fixpoint behavior. Tombstones keep every symbolic anchor stable.
+    fn compact_gotos(&mut self) {
+        if !self
+            .instructions
+            .iter()
+            .any(|entry| entry.live && entry.instruction.is_goto())
+        {
+            return;
+        }
+
+        #[cfg(debug_assertions)]
+        self.assert_compaction_preconditions();
+
+        loop {
+            let n = self.instructions.len();
+            let mut reachable = vec![false; n];
+            let mut work = vec![self.next_live_position(CodePosition(0))];
+            while let Some(position) = work.pop() {
+                let index = position.0;
+                if index >= n || reachable[index] || !self.instructions[index].live {
+                    continue;
+                }
+                reachable[index] = true;
+                let instruction = self.instructions[index].instruction;
+                match instruction {
+                    Instruction::Branch { target, .. } if instruction.is_goto() => {
+                        work.push(self.thread_target(target));
+                    }
+                    Instruction::Branch { target, .. } if instruction.is_cond_branch() => {
+                        work.push(self.thread_target(target));
+                        work.push(self.next_live_position(CodePosition(index + 1)));
+                    }
+                    _ if instruction.is_return() => {}
+                    _ => work.push(self.next_live_position(CodePosition(index + 1))),
+                }
+            }
+
+            let mut dead = Vec::new();
+            for (index, entry) in self.instructions.iter().enumerate() {
+                if !entry.live || !entry.instruction.is_goto() {
+                    continue;
+                }
+                let Instruction::Branch { target, .. } = entry.instruction else {
+                    unreachable!()
+                };
+                if !reachable[index]
+                    || self.thread_target(target)
+                        == self.next_live_position(CodePosition(index + 1))
+                {
+                    dead.push(index);
+                }
+            }
+            if dead.is_empty() {
+                break;
+            }
+
+            let threaded_labels: Vec<Option<CodePosition>> = self
+                .labels
+                .iter()
+                .map(|binding| {
+                    binding
+                        .position
+                        .map(|position| self.thread_from_position(position))
+                })
+                .collect();
+
+            for &index in &dead {
+                debug_assert!(
+                    self.frames.iter().all(|frame| frame.position.0 != index),
+                    "frame at a deleted goto"
+                );
+                self.instructions[index].live = false;
+            }
+
+            let normalized_labels: Vec<Option<CodePosition>> = threaded_labels
+                .into_iter()
+                .map(|position| position.map(|position| self.next_live_position(position)))
+                .collect();
+            for (binding, position) in self.labels.iter_mut().zip(normalized_labels) {
+                binding.position = position;
+            }
+        }
+    }
+
+    #[cfg(debug_assertions)]
+    fn assert_compaction_preconditions(&self) {
+        for frame in &self.frames {
+            debug_assert!(
+                self.instructions
+                    .get(frame.position.0)
+                    .is_none_or(|entry| !entry.instruction.is_goto()),
+                "frame requested at a goto"
+            );
+        }
+    }
+
+    fn layout(&self) -> Vec<u32> {
+        let mut pcs = Vec::with_capacity(self.instructions.len() + 1);
+        let mut pc = 0u32;
+        for entry in &self.instructions {
+            pcs.push(pc);
+            if entry.live {
+                pc = pc
+                    .checked_add(entry.instruction.encoded_len() as u32)
+                    .expect("method code length overflow");
+            }
+        }
+        pcs.push(pc);
+        assert!(
+            pc <= u16::MAX as u32,
+            "method code exceeds JVM Code attribute limit"
+        );
+        pcs
+    }
+
+    fn resolve_lines(&self, pcs: &[u32]) -> Vec<(u16, u16)> {
+        let mut out = Vec::with_capacity(self.line_events.len());
+        for event in &self.line_events {
+            if !self.instructions[event.instruction.0].live {
+                continue;
+            }
+            if out.last().map(|&(_, line)| line) != Some(event.line) {
+                out.push((pcs[event.instruction.0] as u16, event.line));
+            }
+        }
+        out
+    }
+
+    fn live_target_pcs(&self, pcs: &[u32]) -> std::collections::HashSet<u32> {
+        self.instructions
+            .iter()
+            .filter(|entry| entry.live)
+            .filter_map(|entry| match entry.instruction {
+                Instruction::Branch { target, .. } => Some(pcs[self.thread_target(target).0]),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn resolve_frames(
+        &mut self,
+        pcs: &[u32],
+        live_targets: &std::collections::HashSet<u32>,
+    ) -> Vec<StackFrame> {
+        self.frames.sort_by_key(|frame| pcs[frame.position.0]);
+        let mut out: Vec<StackFrame> = Vec::new();
+        for frame in &self.frames {
+            let offset = pcs[frame.position.0];
+            if !live_targets.contains(&offset) {
+                continue;
+            }
+            let offset = offset as u16;
+            if let Some(previous) = out.last().filter(|previous| previous.offset == offset) {
+                debug_assert_eq!(
+                    (&previous.locals, &previous.stack),
+                    (&frame.locals, &frame.stack),
+                    "conflicting frame states requested at pc {offset}"
+                );
+                continue;
+            }
+            out.push(StackFrame {
+                offset,
+                locals: frame.locals.clone(),
+                stack: frame.stack.clone(),
+            });
+        }
+        out
+    }
+
+    fn encode(&self, pcs: &[u32]) -> Vec<u8> {
+        let mut code = Vec::with_capacity(*pcs.last().unwrap() as usize);
+        for (index, entry) in self.instructions.iter().enumerate() {
+            if !entry.live {
+                continue;
+            }
+            debug_assert_eq!(code.len(), pcs[index] as usize);
+            let before = code.len();
+            match entry.instruction {
+                Instruction::Simple(opcode) => code.push(opcode),
+                Instruction::U8 { opcode, operand } => {
+                    code.push(opcode);
+                    code.push(operand);
+                }
+                Instruction::U16 { opcode, operand }
+                | Instruction::Field {
+                    opcode,
+                    index: operand,
+                    ..
+                }
+                | Instruction::Invoke {
+                    opcode,
+                    index: operand,
+                    ..
+                } => {
+                    code.push(opcode);
+                    push_u16(&mut code, operand);
+                }
+                Instruction::Iinc { slot, delta } => {
+                    code.push(IINC);
+                    code.push(slot);
+                    code.push(delta as u8);
+                }
+                Instruction::WideIinc { slot, delta } => {
+                    code.push(WIDE);
+                    code.push(IINC);
+                    push_u16(&mut code, slot);
+                    push_u16(&mut code, delta as u16);
+                }
+                Instruction::Branch { opcode, target } => {
+                    let target_pc = pcs[self.thread_target(target).0] as i64;
+                    let branch_pc = pcs[index] as i64;
+                    let offset = i16::try_from(target_pc - branch_pc)
+                        .expect("branch offset exceeds selected narrow form");
+                    code.push(opcode);
+                    code.extend_from_slice(&offset.to_be_bytes());
+                }
+            }
+            debug_assert_eq!(code.len() - before, entry.instruction.encoded_len());
+        }
+        debug_assert_eq!(code.len(), *pcs.last().unwrap() as usize);
+        code
+    }
+
+    fn finish(mut self) -> AssembledCode {
+        self.compact_gotos();
+        let pcs = self.layout();
+        let live_targets = self.live_target_pcs(&pcs);
+        let line_numbers = self.resolve_lines(&pcs);
+        let stack_frames = self.resolve_frames(&pcs, &live_targets);
+        let code = self.encode(&pcs);
+        AssembledCode {
+            code,
+            line_numbers,
+            stack_frames,
+            max_stack: self.max_stack,
+        }
     }
 }
 
-/// A complete class-file plan plus the phase-1 constant pool built while emitting
-/// bytecode. Serialization owns phase-2 structural interning and final byte layout.
+/// A complete class-file plan plus the phase-1 constant pool built while lowering
+/// bytecode. Serialization owns phase-2 structural interning and class-file layout.
 pub struct ClassPlan {
     class_file: ClassFile,
     constant_pool: ConstantPool,
@@ -357,7 +726,10 @@ pub fn plan(
         methods,
         source_file,
     );
-    Ok(ClassPlan { class_file, constant_pool: cp })
+    Ok(ClassPlan {
+        class_file,
+        constant_pool: cp,
+    })
 }
 
 /// Compile one parsed+analyzed class into `.class` bytes.
@@ -384,7 +756,11 @@ fn preflight_codegen(unit: &CompilationUnit, analysis: &Analysis) -> CompileResu
 
 fn preflight_stmt(stmt: &Stmt, info: &MethodInfo, exprs: &ExprArena) -> CompileResult<()> {
     match &stmt.kind {
-        StmtKind::LocalDecl { name, init: Some(init), .. }
+        StmtKind::LocalDecl {
+            name,
+            init: Some(init),
+            ..
+        }
         | StmtKind::Assign { name, value: init } => {
             if info.ty(name) == PrimitiveType::Boolean {
                 preflight_materialization(*init, false, stmt.span, info, exprs)?;
@@ -405,7 +781,11 @@ fn preflight_stmt(stmt: &Stmt, info: &MethodInfo, exprs: &ExprArena) -> CompileR
             }
             _ => unreachable!("sema accepted a non-println expression statement"),
         },
-        StmtKind::If { cond, then_branch, else_branch } => {
+        StmtKind::If {
+            cond,
+            then_branch,
+            else_branch,
+        } => {
             preflight_cond(*cond, false, stmt.span, info, exprs)?;
             for nested in &then_branch.stmts {
                 preflight_stmt(nested, info, exprs)?;
@@ -523,18 +903,19 @@ fn gen_init(cp: &mut ConstantPool, class_line: u16) -> CfMethod {
         return_words: 0,
     });
     emitter.emit(Instruction::Simple(RETURN));
+    let assembled = emitter.finish();
 
     CfMethod::with_code(
         0x0001, // ACC_PUBLIC
         "<init>",
         "()V",
         CodeAttribute::new(
-            emitter.max_stack,
+            assembled.max_stack,
             1,
-            emitter.code,
-            emitter.line_numbers,
+            assembled.code,
+            assembled.line_numbers,
             Vec::new(),
-            Vec::new(),
+            assembled.stack_frames,
         ),
     )
 }
@@ -554,9 +935,6 @@ fn gen_method(
         exprs,
         emitter: Emitter::new(),
         semantic_locals: info.entry_frame_locals(),
-        labels: Vec::new(),
-        fixups: Vec::new(),
-        frames: Vec::new(),
     };
 
     for stmt in &method.body {
@@ -566,23 +944,19 @@ fn gen_method(
     // Every void method ends with an appended `return`, mapped to the closing brace.
     g.mark_line(method.close_line);
     g.emit_op(RETURN);
-
-    g.compact_gotos(); // delete dead / goto-to-next gotos (javac's Code.resolve)
-    let live_targets = g.resolve_branches();
-    let stack_frames = g.build_frames(&live_targets);
-    let Emitter { code, line_numbers, max_stack, .. } = g.emitter;
+    let assembled = g.emitter.finish();
 
     CfMethod::with_code(
         0x0009, // ACC_PUBLIC | ACC_STATIC
         method.name.clone(),
         descriptor_of(method),
         CodeAttribute::new(
-            max_stack,
+            assembled.max_stack,
             info.max_locals,
-            code,
-            line_numbers,
+            assembled.code,
+            assembled.line_numbers,
             entry_locals,
-            stack_frames,
+            assembled.stack_frames,
         ),
     )
 }
@@ -595,24 +969,6 @@ fn descriptor_of(method: &Method) -> String {
     }
     d.push_str(")V");
     d
-}
-
-/// A pending branch: its operand's byte position in `code` (a 2-byte s16 offset,
-/// relative to the branch opcode) and the label it targets. Resolved once every
-/// label's pc is known.
-struct Fixup {
-    branch_pc: u32,
-    operand_pos: usize,
-    label: usize,
-}
-
-/// A requested stack-map frame: the verifier state (locals + operand stack) at a
-/// branch target, keyed by absolute bytecode offset. The serializer turns these
-/// into the minimal frame encodings.
-struct FrameReq {
-    offset: u16,
-    locals: Vec<VerificationType>,
-    stack: Vec<VerificationType>,
 }
 
 /// javac's `Items.CondItem`, restricted to njavac's side-effect-free boolean
@@ -628,9 +984,9 @@ struct CondItem {
     opcode: CondOp,
     /// Chains as label ids collecting pending jump sites. `None` = the empty chain
     /// (javac's null): nothing targets it, so resolving it places no frame. A
-    /// `Some` chain always has ≥1 live fixup.
-    true_chain: Option<usize>,
-    false_chain: Option<usize>,
+    /// `Some` chain always has at least one live symbolic branch.
+    true_chain: Option<Label>,
+    false_chain: Option<Label>,
     /// True iff an un-branched boolean 0/1 is currently on the operand stack (the
     /// bare-value leaf sets it; any emitted branch consumes and clears it). It is
     /// reusable only when the other item-state dimensions also permit it.
@@ -715,9 +1071,7 @@ impl CondItem {
                     CodeFreePosition::PreserveThroughLogicalLeft
                 }
                 CodeFreePosition::ShortcutAwaitingNegation
-                | CodeFreePosition::PreserveFalseIfLine => {
-                    CodeFreePosition::PreserveFalseIfLine
-                }
+                | CodeFreePosition::PreserveFalseIfLine => CodeFreePosition::PreserveFalseIfLine,
                 CodeFreePosition::None if origin == CondOrigin::NegatedShortcut => {
                     CodeFreePosition::PreserveFalseIfLine
                 }
@@ -758,16 +1112,12 @@ impl CondItem {
         let code_free_static_right = (self.is_true() || self.is_false())
             && self.true_chain.is_none()
             && self.false_chain.is_none();
-        if prefix.origin == CondOrigin::Shortcut
-            && code_free_static_right
-        {
+        if prefix.origin == CondOrigin::Shortcut && code_free_static_right {
             // A static right operand keeps shortcut ancestry only for a later
             // negation's source-position behavior. It must not taint origin or
             // value materialization.
-            self.position = std::cmp::max(
-                self.position,
-                CodeFreePosition::ShortcutAwaitingNegation,
-            );
+            self.position =
+                std::cmp::max(self.position, CodeFreePosition::ShortcutAwaitingNegation);
         }
         if prefix.materialization == Materialization::DiamondRequired || crossed_join {
             self.materialization = Materialization::DiamondRequired;
@@ -787,7 +1137,11 @@ fn cond_false() -> CondItem {
 
 fn cond_static(value: bool) -> CondItem {
     CondItem {
-        opcode: if value { CondOp::Goto } else { CondOp::DontGoto },
+        opcode: if value {
+            CondOp::Goto
+        } else {
+            CondOp::DontGoto
+        },
         true_chain: None,
         false_chain: None,
         stack_reuse: false,
@@ -819,10 +1173,6 @@ struct Gen<'a> {
     /// The current sema-owned verifier-local snapshot. Statement generation only
     /// selects an entry or exit state; it never mutates local state independently.
     semantic_locals: &'a [FrameLocal],
-    /// pc where each label is placed (`u32::MAX` until placed).
-    labels: Vec<u32>,
-    fixups: Vec<Fixup>,
-    frames: Vec<FrameReq>,
 }
 
 impl std::ops::Deref for Gen<'_> {
@@ -848,7 +1198,12 @@ impl<'a> Gen<'a> {
     fn gen_stmt(&mut self, stmt: &Stmt) {
         self.cur = 0;
         self.install_stmt_entry(stmt.span);
-        if let StmtKind::If { cond, then_branch, else_branch } = &stmt.kind {
+        if let StmtKind::If {
+            cond,
+            then_branch,
+            else_branch,
+        } = &stmt.kind
+        {
             self.gen_if(
                 stmt.span,
                 stmt.line,
@@ -894,13 +1249,13 @@ impl<'a> Gen<'a> {
         let previous_line = self.pending_line;
         let entered_by_branch = self.at_control_entry;
         self.mark_line(line);
-        let code_before = self.code.len();
+        let code_before = self.instructions.len();
         let c = self.gen_cond(cond);
 
         // A code-free verdict has no instruction to consume the condition line.
         // Restore the previous pending position unless the lowered item carries
         // javac's preserving provenance for a static-false negated shortcut.
-        if self.code.len() == code_before {
+        if self.instructions.len() == code_before {
             let taken = if c.is_true() {
                 true
             } else if c.is_false() {
@@ -943,7 +1298,11 @@ impl<'a> Gen<'a> {
         match else_b {
             Some(els) if else_chain.is_some() || is_false => {
                 // Skip the else after a live then-body with a trailing goto.
-                let end = if !is_false { Some(self.branch_to_new(GOTO)) } else { None };
+                let end = if !is_false {
+                    Some(self.branch_to_new(GOTO))
+                } else {
+                    None
+                };
                 self.install_stmt_entry(stmt_span);
                 self.resolve_chain(else_chain);
                 for s in els {
@@ -974,7 +1333,11 @@ impl<'a> Gen<'a> {
         // immediate. Non-strict shortcuts (`true || local`) stay structural so
         // grouping, negation, and casts retain their observable lowering history.
         if let Some(c) = lowering_const(self.exprs, e) {
-            return if to_i32(c) != 0 { cond_true() } else { cond_false() };
+            return if to_i32(c) != 0 {
+                cond_true()
+            } else {
+                cond_false()
+            };
         }
         let exprs = self.exprs;
         match &exprs[e] {
@@ -984,10 +1347,12 @@ impl<'a> Gen<'a> {
                 self.gen_bool_value(*expr);
                 cond_stack_test()
             }
-            ExprKind::Compare { op, left, right } => {
-                self.gen_compare_cond(*op, *left, *right)
-            }
-            ExprKind::Logical { op: LogOp::And, left, right } => {
+            ExprKind::Compare { op, left, right } => self.gen_compare_cond(*op, *left, *right),
+            ExprKind::Logical {
+                op: LogOp::And,
+                left,
+                right,
+            } => {
                 let lc = self.gen_cond(*left).as_logical_left();
                 if lc.is_false() {
                     return lc.mark_shortcut(); // false && _ : right is dead
@@ -1001,7 +1366,11 @@ impl<'a> Gen<'a> {
                 rc.carry_prefix(&lc, crossed_join);
                 rc
             }
-            ExprKind::Logical { op: LogOp::Or, left, right } => {
+            ExprKind::Logical {
+                op: LogOp::Or,
+                left,
+                right,
+            } => {
                 let lc = self.gen_cond(*left).as_logical_left();
                 if lc.is_true() {
                     return lc.mark_shortcut(); // true || _ : right is dead
@@ -1055,13 +1424,21 @@ impl<'a> Gen<'a> {
             StackTy::Float => {
                 self.gen_promoted_operand(left, PrimitiveType::Float);
                 self.gen_promoted_operand(right, PrimitiveType::Float);
-                self.emit_op(if matches!(op, CmpOp::Lt | CmpOp::Le) { FCMPG } else { FCMPL });
+                self.emit_op(if matches!(op, CmpOp::Lt | CmpOp::Le) {
+                    FCMPG
+                } else {
+                    FCMPL
+                });
                 int_zero_branch(op, true)
             }
             StackTy::Double => {
                 self.gen_promoted_operand(left, PrimitiveType::Double);
                 self.gen_promoted_operand(right, PrimitiveType::Double);
-                self.emit_op(if matches!(op, CmpOp::Lt | CmpOp::Le) { DCMPG } else { DCMPL });
+                self.emit_op(if matches!(op, CmpOp::Lt | CmpOp::Le) {
+                    DCMPG
+                } else {
+                    DCMPL
+                });
                 int_zero_branch(op, true)
             }
         };
@@ -1078,7 +1455,7 @@ impl<'a> Gen<'a> {
 
     /// Emit the branch that routes the FALSE outcome of `c` to a chain, returning
     /// it (javac's `CondItem.jumpFalse`). Total: a static verdict emits nothing.
-    fn jump_false(&mut self, c: CondItem) -> Option<usize> {
+    fn jump_false(&mut self, c: CondItem) -> Option<Label> {
         if c.is_true() {
             return None; // never false
         }
@@ -1105,7 +1482,7 @@ impl<'a> Gen<'a> {
 
     /// Emit the branch that routes the TRUE outcome of `c` to a chain, returning
     /// it (javac's `CondItem.jumpTrue`). Total: a static verdict emits nothing.
-    fn jump_true(&mut self, c: CondItem) -> Option<usize> {
+    fn jump_true(&mut self, c: CondItem) -> Option<Label> {
         if c.is_false() {
             return None; // never true
         }
@@ -1135,7 +1512,10 @@ impl<'a> Gen<'a> {
     /// rung). Codegen preflight rejects that shape, leaving this assert as an
     /// invariant guard.
     fn gen_bool_value(&mut self, cond: ExprId) -> PrimitiveType {
-        assert!(self.cur == 0, "materialized boolean with non-empty operand stack is unsupported");
+        assert!(
+            self.cur == 0,
+            "materialized boolean with non-empty operand stack is unsupported"
+        );
         let c = self.gen_cond(cond);
 
         // A bare boolean value already sits on the stack as 0/1, un-branched, so it
@@ -1182,7 +1562,7 @@ impl<'a> Gen<'a> {
     }
 
     /// Emit branch opcode `op` to a fresh label and return it as a one-site chain.
-    fn branch_to_new(&mut self, op: u8) -> usize {
+    fn branch_to_new(&mut self, op: u8) -> Label {
         let l = self.new_label();
         self.emit_branch_op(op, l);
         l
@@ -1191,20 +1571,22 @@ impl<'a> Gen<'a> {
     /// Emit a conditional *test* branch to a fresh chain and pop its operands (2
     /// for `if_icmp<cond>`, 1 for `if<cond>`/`ifne`/`ifeq`). `GOTO` must NOT route
     /// through here (it pops nothing).
-    fn emit_test_branch(&mut self, op: u8) -> usize {
+    fn emit_test_branch(&mut self, op: u8) -> Label {
         self.branch_to_new(op)
     }
 
     /// Merge chain `b` into chain `a` (javac's `Code.mergeChains`): retarget every
-    /// pending fixup of `b` to `a`. Fixup order never affects output — all sites of
-    /// a merged chain resolve to one pc, frames key by pc, threading keys by target.
-    fn merge_chains(&mut self, a: Option<usize>, b: Option<usize>) -> Option<usize> {
+    /// pending branch of `b` to `a`. Instruction order never affects output — all
+    /// sites of a merged chain resolve to one position, and frames key by layout pc.
+    fn merge_chains(&mut self, a: Option<Label>, b: Option<Label>) -> Option<Label> {
         match (a, b) {
             (None, x) | (x, None) => x,
             (Some(a), Some(b)) => {
-                for fx in &mut self.fixups {
-                    if fx.label == b {
-                        fx.label = a;
+                for entry in &mut self.instructions {
+                    if let Instruction::Branch { target, .. } = &mut entry.instruction {
+                        if *target == b {
+                            *target = a;
+                        }
                     }
                 }
                 Some(a)
@@ -1212,10 +1594,11 @@ impl<'a> Gen<'a> {
         }
     }
 
-    /// Resolve a chain at the current pc: place its label and request a stack-map
+    /// Resolve a chain at the current instruction boundary: place its label and
+    /// request a stack-map
     /// frame — but only when a branch actually targets it (a `Some` chain always
-    /// has ≥1 live fixup; `None` resolves to nothing, no frame).
-    fn resolve_chain(&mut self, chain: Option<usize>) {
+    /// has at least one live branch; `None` resolves to nothing, no frame).
+    fn resolve_chain(&mut self, chain: Option<Label>) {
         debug_assert_eq!(self.cur, 0, "chain resolved with non-empty operand stack");
         if let Some(l) = chain {
             self.place_label(l);
@@ -1236,30 +1619,26 @@ impl<'a> Gen<'a> {
     }
 
     /// Reserve a fresh, not-yet-placed label.
-    fn new_label(&mut self) -> usize {
-        self.labels.push(u32::MAX);
-        self.labels.len() - 1
+    fn new_label(&mut self) -> Label {
+        self.emitter.new_label()
     }
 
-    /// Bind a label to the current pc.
-    fn place_label(&mut self, label: usize) {
-        self.labels[label] = self.code.len() as u32;
+    /// Bind a label to the current symbolic instruction boundary.
+    fn place_label(&mut self, label: Label) {
+        self.emitter.place_label(label);
     }
 
-    /// Emit a branch opcode with a placeholder 2-byte offset, recording a fixup.
-    fn emit_branch_op(&mut self, opcode: u8, label: usize) {
-        let anchor = self.emitter.emit(Instruction::Branch(opcode));
-        let branch_pc = anchor.pc;
-        let operand_pos = branch_pc as usize + 1;
-        self.fixups.push(Fixup { branch_pc, operand_pos, label });
+    /// Emit a branch whose target remains symbolic until final layout.
+    fn emit_branch_op(&mut self, opcode: u8, label: Label) {
+        self.emitter.emit_branch(opcode, label);
     }
 
-    /// Request a stack-map frame at the current pc, capturing the live-locals
-    /// snapshot and the given operand-stack state.
+    /// Request a stack-map frame at the current instruction boundary, capturing
+    /// the live-locals snapshot and the given operand-stack state.
     fn add_frame(&mut self, stack: Vec<VerificationType>) {
         self.at_control_entry = true;
-        self.frames.push(FrameReq {
-            offset: self.code.len() as u16,
+        self.emitter.frames.push(FrameReq {
+            position: self.emitter.position(),
             locals: verification_locals(self.semantic_locals),
             stack,
         });
@@ -1273,245 +1652,6 @@ impl<'a> Gen<'a> {
         self.semantic_locals = self.info.stmt_exit_frame_locals(span);
     }
 
-    /// Backpatch every branch's 2-byte offset now that all labels are placed, and
-    /// return the set of pcs that remain live jump targets. javac threads a jump
-    /// whose target is an unconditional `goto` straight to that goto's ultimate
-    /// destination — so `goto L; L: goto M` becomes a jump to `M`, and `L` (now
-    /// reached only by fall-through) no longer carries a stack-map frame.
-    fn resolve_branches(&mut self) -> Vec<u16> {
-        let targets: Vec<u16> =
-            self.fixups.iter().map(|fx| self.thread_target(fx.label) as u16).collect();
-        for (fx_i, &target) in targets.iter().enumerate() {
-            let (operand_pos, branch_pc) = {
-                let fx = &self.fixups[fx_i];
-                (fx.operand_pos, fx.branch_pc)
-            };
-            let offset = (target as i32 - branch_pc as i32) as i16;
-            let [hi, lo] = offset.to_be_bytes();
-            self.code[operand_pos] = hi;
-            self.code[operand_pos + 1] = lo;
-        }
-        targets
-    }
-
-    /// Follow a chain of unconditional `goto`s from `label` to the final pc.
-    fn thread_target(&self, label: usize) -> u32 {
-        let pc = self.labels[label];
-        debug_assert!(pc != u32::MAX, "unplaced branch label");
-        self.thread_from_pc(pc)
-    }
-
-    /// Follow a chain of unconditional `goto`s from byte pc `start` to the final
-    /// non-`goto` pc (the ultimate destination). Bounded by the fixup count to guard
-    /// against a `goto` cycle.
-    fn thread_from_pc(&self, start: u32) -> u32 {
-        let mut pc = start;
-        for _ in 0..=self.fixups.len() {
-            if self.code.get(pc as usize) != Some(&GOTO) {
-                break;
-            }
-            // The goto at `pc` is itself a fixup; follow the label it targets.
-            match self.fixups.iter().find(|fx| fx.branch_pc == pc) {
-                Some(fx) => {
-                    let next = self.labels[fx.label];
-                    if next == pc {
-                        break; // self-loop guard
-                    }
-                    pc = next;
-                }
-                None => break,
-            }
-        }
-        pc
-    }
-
-    /// javac's `Code.resolve` dead/redundant-`goto` elimination, as a post-emission
-    /// fixpoint (njavac emits branches eagerly, so this is a byte pass rather than the
-    /// inline `alive`-flag pruning javac does at emit time). It deletes **only** `goto`
-    /// (0xa7) instructions that are either
-    ///   (a) **unreachable** — nothing reaches them once every jump threads *past*
-    ///       them (`if (!(x>k || false)) || false` leaves such a dead goto), or
-    ///   (b) **goto-to-next** — the (threaded) target is the very next instruction, so
-    ///       the jump is a no-op (exposed only after (a)'s deletion shifts the pcs).
-    /// Everything else — a conditional branch, a real skip-else `goto`, a value
-    /// diamond's `goto` — is preserved. Deletion cascades (removing one goto can turn
-    /// another into goto-to-next), so it iterates to a fixpoint; each working round
-    /// strictly drops the goto-byte count, so it terminates. The pass is a **no-op on
-    /// any program javac already matches** (javac never emits a dead/goto-to-next goto,
-    /// so the death set is empty and no bytes move). Stack-neutral: `max_stack`,
-    /// `entry_locals`, and locals are never read or written. The subsequent (unchanged)
-    /// `resolve_branches` bakes every final offset over the compacted code.
-    fn compact_gotos(&mut self) {
-        // This pass can only delete `goto`. Most methods are straight-line or have
-        // conditional branches only, so avoid building a CFG for a guaranteed no-op.
-        if !self.fixups.iter().any(|fx| self.code[fx.branch_pc as usize] == GOTO) {
-            return;
-        }
-
-        #[cfg(debug_assertions)]
-        self.assert_compaction_preconditions();
-
-        loop {
-            // Threaded target pc of each fixup (parallel to `self.fixups`). Reachability
-            // and the goto-to-next test both read THESE, never raw `labels`: a goto that
-            // every jump threads past gets no inbound edge and dies.
-            let targets: Vec<u32> =
-                self.fixups.iter().map(|fx| self.thread_target(fx.label)).collect();
-            let fixup_at: std::collections::HashMap<u32, usize> =
-                self.fixups.iter().enumerate().map(|(i, fx)| (fx.branch_pc, i)).collect();
-
-            // Reachability worklist seeded only at method entry (pc 0). A branch's
-            // target is enqueued only when the branch itself is reached — never as a
-            // blanket seed, so a dead branch can't keep its target alive.
-            let n = self.code.len();
-            let mut reachable = vec![false; n + 1];
-            let mut work = vec![0usize];
-            while let Some(p) = work.pop() {
-                if p >= n || reachable[p] {
-                    continue;
-                }
-                reachable[p] = true;
-                let op = self.code[p];
-                let len = insn_len(&self.code, p);
-                if op == GOTO {
-                    work.push(targets[fixup_at[&(p as u32)]] as usize); // no fall-through
-                } else if is_cond_branch(op) {
-                    work.push(targets[fixup_at[&(p as u32)]] as usize);
-                    work.push(p + len);
-                } else if op != RETURN {
-                    work.push(p + len); // RETURN is terminal
-                }
-            }
-
-            // Death set: a `goto` that is unreachable, or that jumps to the instruction
-            // that will immediately follow it (goto-to-next, compared in pc space).
-            let mut dead: Vec<u32> = Vec::new();
-            for (i, fx) in self.fixups.iter().enumerate() {
-                if self.code[fx.branch_pc as usize] != GOTO {
-                    continue;
-                }
-                let alive = reachable[fx.branch_pc as usize];
-                if !alive || targets[i] == fx.branch_pc + 3 {
-                    dead.push(fx.branch_pc);
-                }
-            }
-            if dead.is_empty() {
-                break; // fixpoint
-            }
-            dead.sort_unstable();
-            let dead_set: std::collections::HashSet<u32> = dead.iter().copied().collect();
-
-            // Rebuild the byte stream skipping each dead goto's 3 bytes, recording a
-            // monotone old-pc -> new-pc map (a byte inside a deleted goto maps to the
-            // new pc of the following surviving byte).
-            let mut remap = vec![0u32; n + 1];
-            let mut new_code: Vec<u8> = Vec::with_capacity(n);
-            let mut di = 0usize;
-            let mut old = 0usize;
-            while old <= n {
-                remap[old] = new_code.len() as u32;
-                if old == n {
-                    break;
-                }
-                if di < dead.len() && dead[di] as usize == old {
-                    old += 3; // drop the whole goto
-                    di += 1;
-                } else {
-                    new_code.push(self.code[old]);
-                    old += 1;
-                }
-            }
-
-            // Compute each label's new pc FIRST, while `code`/`fixups`/`labels` are
-            // still original: a label pointing at a deleted goto must follow that
-            // goto's chain to its ultimate non-goto destination (never deleted), not
-            // collapse onto the byte after the goto. `remap[thread_from_pc(l)]` gets
-            // both cases right (a non-goto threads to itself). Assigned below.
-            let new_labels: Vec<u32> = self
-                .labels
-                .clone()
-                .iter()
-                .map(|&l| if l == u32::MAX { u32::MAX } else { remap[self.thread_from_pc(l) as usize] })
-                .collect();
-
-            // Remap every remaining pc-bearing structure onto the compacted code.
-            self.fixups.retain(|fx| !dead_set.contains(&fx.branch_pc));
-            for fx in &mut self.fixups {
-                fx.branch_pc = remap[fx.branch_pc as usize];
-                fx.operand_pos = fx.branch_pc as usize + 1; // opcode, then 2-byte operand
-            }
-            self.labels = new_labels;
-            for f in &mut self.frames {
-                debug_assert!(!dead_set.contains(&(f.offset as u32)), "frame at a deleted goto");
-                f.offset = remap[f.offset as usize] as u16;
-            }
-            let mut new_lines: Vec<(u16, u16)> = Vec::with_capacity(self.line_numbers.len());
-            for &(pc, line) in &self.line_numbers {
-                // javac may attach a pending line to a goto that Code.resolve then
-                // removes. The instruction and its line entry disappear together.
-                if dead_set.contains(&(pc as u32)) {
-                    continue;
-                }
-                let np = remap[pc as usize] as u16;
-                // Preserve emit_op's rule: an entry only when the line changes.
-                if new_lines.last().map(|&(_, l)| l) != Some(line) {
-                    new_lines.push((np, line));
-                }
-            }
-            self.line_numbers = new_lines;
-            self.code = new_code;
-        }
-    }
-
-    /// Debug tripwires for `compact_gotos`'s assumptions — they hold for the current
-    /// emitter but must be revisited when loops/switch/exceptions add opcodes: every
-    /// fixup sits on a branch opcode and no StackMapTable entry sits on a `goto` pc.
-    /// A LineNumberTable entry may sit on a goto via javac's pending-line model;
-    /// compaction drops it if that goto is deleted.
-    #[cfg(debug_assertions)]
-    fn assert_compaction_preconditions(&self) {
-        for fx in &self.fixups {
-            debug_assert!(
-                is_branch(self.code[fx.branch_pc as usize]),
-                "fixup not on a branch opcode at pc {}",
-                fx.branch_pc
-            );
-        }
-        let goto_pcs: std::collections::HashSet<u32> = self
-            .fixups
-            .iter()
-            .filter(|fx| self.code[fx.branch_pc as usize] == GOTO)
-            .map(|fx| fx.branch_pc)
-            .collect();
-        for f in &self.frames {
-            debug_assert!(!goto_pcs.contains(&(f.offset as u32)), "frame requested at a goto");
-        }
-    }
-
-    /// Collect the requested frames into serializer-ready form: one per distinct
-    /// pc that survives as a real jump target (post-threading), in offset order.
-    fn build_frames(&mut self, live_targets: &[u16]) -> Vec<StackFrame> {
-        let live: std::collections::HashSet<u16> = live_targets.iter().copied().collect();
-        self.frames.sort_by_key(|f| f.offset);
-        let mut out: Vec<StackFrame> = Vec::new();
-        for f in &self.frames {
-            if !live.contains(&f.offset) {
-                continue; // a merge that threading turned into pure fall-through
-            }
-            if let Some(previous) = out.last().filter(|p| p.offset == f.offset) {
-                debug_assert_eq!(
-                    (&previous.locals, &previous.stack),
-                    (&f.locals, &f.stack),
-                    "conflicting frame states requested at pc {}",
-                    f.offset
-                );
-                continue; // multiple branches merge at one pc
-            }
-            out.push(StackFrame { offset: f.offset, locals: f.locals.clone(), stack: f.stack.clone() });
-        }
-        out
-    }
-
     // -------- statements --------
 
     /// `System.out.println(arg)`.
@@ -1523,7 +1663,9 @@ impl<'a> Gen<'a> {
     }
 
     fn gen_println(&mut self, arg: ExprId) {
-        let field = self.cp.fieldref("java/lang/System", "out", "Ljava/io/PrintStream;");
+        let field = self
+            .cp
+            .fieldref("java/lang/System", "out", "Ljava/io/PrintStream;");
         self.emitter.emit(Instruction::Field {
             opcode: GETSTATIC,
             index: field,
@@ -1580,7 +1722,11 @@ impl<'a> Gen<'a> {
         {
             if let Some(c) = fold(self.exprs, value) {
                 let k = to_i32(c);
-                let delta = if op == BinOp::Add { k } else { k.wrapping_neg() };
+                let delta = if op == BinOp::Add {
+                    k
+                } else {
+                    k.wrapping_neg()
+                };
                 if slot <= 0xff && (-128..=127).contains(&delta) {
                     self.emitter.emit(Instruction::Iinc {
                         slot: slot as u8,
@@ -1792,10 +1938,16 @@ impl<'a> Gen<'a> {
             -1 => self.emit_op(ICONST_M1),
             0..=5 => self.emit_op(ICONST_0 + v as u8),
             -128..=127 => {
-                self.emitter.emit(Instruction::U8 { opcode: BIPUSH, operand: v as u8 });
+                self.emitter.emit(Instruction::U8 {
+                    opcode: BIPUSH,
+                    operand: v as u8,
+                });
             }
             -32768..=32767 => {
-                self.emitter.emit(Instruction::U16 { opcode: SIPUSH, operand: v as u16 });
+                self.emitter.emit(Instruction::U16 {
+                    opcode: SIPUSH,
+                    operand: v as u16,
+                });
             }
             _ => {
                 let idx = self.cp.integer(v);
@@ -1810,7 +1962,10 @@ impl<'a> Gen<'a> {
             1 => self.emit_op(LCONST_1),
             _ => {
                 let idx = self.cp.long(v);
-                self.emitter.emit(Instruction::U16 { opcode: LDC2_W, operand: idx });
+                self.emitter.emit(Instruction::U16 {
+                    opcode: LDC2_W,
+                    operand: idx,
+                });
             }
         }
     }
@@ -1835,7 +1990,10 @@ impl<'a> Gen<'a> {
             b if b == 1.0f64.to_bits() => self.emit_op(DCONST_1),
             _ => {
                 let idx = self.cp.double(v);
-                self.emitter.emit(Instruction::U16 { opcode: LDC2_W, operand: idx });
+                self.emitter.emit(Instruction::U16 {
+                    opcode: LDC2_W,
+                    operand: idx,
+                });
             }
         }
     }
@@ -1843,9 +2001,15 @@ impl<'a> Gen<'a> {
     /// `ldc`/`ldc_w` of a single-word pool entry (Integer/Float/String).
     fn emit_ldc(&mut self, idx: u16) {
         if idx <= 0xff {
-            self.emitter.emit(Instruction::U8 { opcode: LDC, operand: idx as u8 });
+            self.emitter.emit(Instruction::U8 {
+                opcode: LDC,
+                operand: idx as u8,
+            });
         } else {
-            self.emitter.emit(Instruction::U16 { opcode: LDC_W, operand: idx });
+            self.emitter.emit(Instruction::U16 {
+                opcode: LDC_W,
+                operand: idx,
+            });
         }
     }
 
@@ -1854,7 +2018,10 @@ impl<'a> Gen<'a> {
         if slot <= 3 {
             self.emit_op(short0 + slot as u8);
         } else {
-            self.emitter.emit(Instruction::U8 { opcode: wide, operand: slot as u8 });
+            self.emitter.emit(Instruction::U8 {
+                opcode: wide,
+                operand: slot as u8,
+            });
         }
     }
 
@@ -1863,7 +2030,10 @@ impl<'a> Gen<'a> {
         if slot <= 3 {
             self.emit_op(short0 + slot as u8);
         } else {
-            self.emitter.emit(Instruction::U8 { opcode: wide, operand: slot as u8 });
+            self.emitter.emit(Instruction::U8 {
+                opcode: wide,
+                operand: slot as u8,
+            });
         }
     }
 
@@ -1880,7 +2050,10 @@ impl<'a> Gen<'a> {
         match p.stack() {
             StackTy::Long => {
                 let idx = self.cp.long(-1);
-                self.emitter.emit(Instruction::U16 { opcode: LDC2_W, operand: idx });
+                self.emitter.emit(Instruction::U16 {
+                    opcode: LDC2_W,
+                    operand: idx,
+                });
                 self.emit_op(LXOR);
             }
             _ => {
@@ -1896,7 +2069,10 @@ impl<'a> Gen<'a> {
             return;
         }
         let fs = from.stack();
-        if matches!(to, PrimitiveType::Byte | PrimitiveType::Short | PrimitiveType::Char) {
+        if matches!(
+            to,
+            PrimitiveType::Byte | PrimitiveType::Short | PrimitiveType::Char
+        ) {
             // Bring the value to the `int` computational type first.
             match fs {
                 StackTy::Long => self.emit_op(L2I),
@@ -1905,7 +2081,11 @@ impl<'a> Gen<'a> {
                 StackTy::Int => {}
             }
             // Narrow within int-family only when `from` is wider than `to`.
-            let cur_ty = if fs == StackTy::Int { from } else { PrimitiveType::Int };
+            let cur_ty = if fs == StackTy::Int {
+                from
+            } else {
+                PrimitiveType::Int
+            };
             if let Some(op) = subint_narrow_op(cur_ty, to) {
                 self.emit_op(op);
             }
@@ -1932,10 +2112,12 @@ fn fixed_stack_effect(opcode: u8) -> StackEffect {
         ISTORE | FSTORE => StackEffect::new(1, 0),
         LSTORE | DSTORE => StackEffect::new(2, 0),
 
-        IADD | ISUB | IMUL | IDIV | IREM | IAND | IOR | IXOR
-        | FADD | FSUB | FMUL | FDIV | FREM => StackEffect::new(2, 1),
-        LADD | LSUB | LMUL | LDIV | LREM | LAND | LOR | LXOR
-        | DADD | DSUB | DMUL | DDIV | DREM => StackEffect::new(4, 2),
+        IADD | ISUB | IMUL | IDIV | IREM | IAND | IOR | IXOR | FADD | FSUB | FMUL | FDIV | FREM => {
+            StackEffect::new(2, 1)
+        }
+        LADD | LSUB | LMUL | LDIV | LREM | LAND | LOR | LXOR | DADD | DSUB | DMUL | DDIV | DREM => {
+            StackEffect::new(4, 2)
+        }
         INEG | FNEG => StackEffect::new(1, 1),
         LNEG | DNEG => StackEffect::new(2, 2),
         ISHL | ISHR | IUSHR => StackEffect::new(2, 1),
@@ -1956,33 +2138,6 @@ fn fixed_stack_effect(opcode: u8) -> StackEffect {
         _ if short(LSTORE_0) || short(DSTORE_0) => StackEffect::new(2, 0),
         _ => panic!("opcode has no fixed stack effect: {opcode:#x}"),
     }
-}
-
-/// Byte length of the instruction at `code[pc]`, over exactly the opcodes this
-/// emitter produces — the compaction pass walks the code with it. Branches are
-/// always the 2-byte-signed-offset form (never `goto_w`), and the only `wide`
-/// prefix is on `iinc`.
-fn insn_len(code: &[u8], pc: usize) -> usize {
-    match code[pc] {
-        WIDE => 6, // wide iinc: WIDE, IINC, u16 slot, u16 delta
-        SIPUSH | LDC_W | LDC2_W | IINC | IFEQ | IFNE | IFLT | IFGE | IFGT | IFLE | IF_ICMPEQ
-        | IF_ICMPNE | IF_ICMPLT | IF_ICMPGE | IF_ICMPGT | IF_ICMPLE | GOTO | GETSTATIC
-        | INVOKEVIRTUAL | INVOKESPECIAL => 3,
-        BIPUSH | LDC | ILOAD | LLOAD | FLOAD | DLOAD | ISTORE | LSTORE | FSTORE | DSTORE => 2,
-        _ => 1,
-    }
-}
-
-/// A conditional branch opcode (`ifeq`…`if_icmple`): falls through *and* may jump.
-fn is_cond_branch(op: u8) -> bool {
-    (IFEQ..=IF_ICMPLE).contains(&op)
-}
-
-/// Any branch opcode this emitter produces — a conditional or an unconditional `goto`.
-/// Only the debug-build compaction preconditions consult it.
-#[cfg(debug_assertions)]
-fn is_branch(op: u8) -> bool {
-    is_cond_branch(op) || op == GOTO
 }
 
 /// (slot-0 short opcode, wide opcode) for a load of type `ty`.
@@ -2083,12 +2238,18 @@ fn cross_conv_op(from: StackTy, to: StackTy) -> u8 {
 fn int_icmp_branch(op: CmpOp, jump_when: bool) -> u8 {
     use CmpOp::*;
     match (op, jump_when) {
-        (Lt, false) => IF_ICMPGE, (Lt, true) => IF_ICMPLT,
-        (Le, false) => IF_ICMPGT, (Le, true) => IF_ICMPLE,
-        (Gt, false) => IF_ICMPLE, (Gt, true) => IF_ICMPGT,
-        (Ge, false) => IF_ICMPLT, (Ge, true) => IF_ICMPGE,
-        (Eq, false) => IF_ICMPNE, (Eq, true) => IF_ICMPEQ,
-        (Ne, false) => IF_ICMPEQ, (Ne, true) => IF_ICMPNE,
+        (Lt, false) => IF_ICMPGE,
+        (Lt, true) => IF_ICMPLT,
+        (Le, false) => IF_ICMPGT,
+        (Le, true) => IF_ICMPLE,
+        (Gt, false) => IF_ICMPLE,
+        (Gt, true) => IF_ICMPGT,
+        (Ge, false) => IF_ICMPLT,
+        (Ge, true) => IF_ICMPGE,
+        (Eq, false) => IF_ICMPNE,
+        (Eq, true) => IF_ICMPEQ,
+        (Ne, false) => IF_ICMPEQ,
+        (Ne, true) => IF_ICMPNE,
     }
 }
 
@@ -2098,12 +2259,18 @@ fn int_icmp_branch(op: CmpOp, jump_when: bool) -> u8 {
 fn int_zero_branch(op: CmpOp, jump_when: bool) -> u8 {
     use CmpOp::*;
     match (op, jump_when) {
-        (Lt, false) => IFGE, (Lt, true) => IFLT,
-        (Le, false) => IFGT, (Le, true) => IFLE,
-        (Gt, false) => IFLE, (Gt, true) => IFGT,
-        (Ge, false) => IFLT, (Ge, true) => IFGE,
-        (Eq, false) => IFNE, (Eq, true) => IFEQ,
-        (Ne, false) => IFEQ, (Ne, true) => IFNE,
+        (Lt, false) => IFGE,
+        (Lt, true) => IFLT,
+        (Le, false) => IFGT,
+        (Le, true) => IFLE,
+        (Gt, false) => IFLE,
+        (Gt, true) => IFGT,
+        (Ge, false) => IFLT,
+        (Ge, true) => IFGE,
+        (Eq, false) => IFNE,
+        (Eq, true) => IFEQ,
+        (Ne, false) => IFEQ,
+        (Ne, true) => IFNE,
     }
 }
 
@@ -2114,12 +2281,18 @@ fn int_zero_branch(op: CmpOp, jump_when: bool) -> u8 {
 /// derived and debug-checked rather than trusted.
 fn negate_op(op: u8) -> u8 {
     match op {
-        IFEQ => IFNE, IFNE => IFEQ,
-        IFLT => IFGE, IFGE => IFLT,
-        IFGT => IFLE, IFLE => IFGT,
-        IF_ICMPEQ => IF_ICMPNE, IF_ICMPNE => IF_ICMPEQ,
-        IF_ICMPLT => IF_ICMPGE, IF_ICMPGE => IF_ICMPLT,
-        IF_ICMPGT => IF_ICMPLE, IF_ICMPLE => IF_ICMPGT,
+        IFEQ => IFNE,
+        IFNE => IFEQ,
+        IFLT => IFGE,
+        IFGE => IFLT,
+        IFGT => IFLE,
+        IFLE => IFGT,
+        IF_ICMPEQ => IF_ICMPNE,
+        IF_ICMPNE => IF_ICMPEQ,
+        IF_ICMPLT => IF_ICMPGE,
+        IF_ICMPGE => IF_ICMPLT,
+        IF_ICMPGT => IF_ICMPLE,
+        IF_ICMPLE => IF_ICMPGT,
         other => panic!("negate_op: not a conditional branch opcode {other:#x}"),
     }
 }
@@ -2131,10 +2304,22 @@ fn negate_op(op: u8) -> u8 {
 fn assert_negate_op_consistent() {
     use CmpOp::*;
     for op in [Lt, Le, Gt, Ge, Eq, Ne] {
-        debug_assert_eq!(negate_op(int_icmp_branch(op, true)), int_icmp_branch(op, false));
-        debug_assert_eq!(negate_op(int_zero_branch(op, true)), int_zero_branch(op, false));
-        debug_assert_eq!(negate_op(negate_op(int_icmp_branch(op, true))), int_icmp_branch(op, true));
-        debug_assert_eq!(negate_op(negate_op(int_zero_branch(op, true))), int_zero_branch(op, true));
+        debug_assert_eq!(
+            negate_op(int_icmp_branch(op, true)),
+            int_icmp_branch(op, false)
+        );
+        debug_assert_eq!(
+            negate_op(int_zero_branch(op, true)),
+            int_zero_branch(op, false)
+        );
+        debug_assert_eq!(
+            negate_op(negate_op(int_icmp_branch(op, true))),
+            int_icmp_branch(op, true)
+        );
+        debug_assert_eq!(
+            negate_op(negate_op(int_zero_branch(op, true))),
+            int_zero_branch(op, true)
+        );
     }
 }
 
@@ -2201,9 +2386,7 @@ fn fold_impl(exprs: &ExprArena, expr: ExprId, strict_logical: bool) -> Option<Co
         ExprKind::StringLit(_) | ExprKind::Name(_) | ExprKind::Println(_) => return None,
         ExprKind::Neg(e) => neg_const(fold_impl(exprs, *e, strict_logical)?),
         ExprKind::BitNot(e) => bitnot_const(fold_impl(exprs, *e, strict_logical)?),
-        ExprKind::Not(e) => {
-            Const::Int((to_i32(fold_impl(exprs, *e, strict_logical)?) == 0) as i32)
-        }
+        ExprKind::Not(e) => Const::Int((to_i32(fold_impl(exprs, *e, strict_logical)?) == 0) as i32),
         ExprKind::Paren(e) => fold_impl(exprs, *e, strict_logical)?,
         ExprKind::Cast { ty, expr } => {
             const_convert(fold_impl(exprs, *expr, strict_logical)?, ty.primitive())
@@ -2217,21 +2400,16 @@ fn fold_impl(exprs: &ExprArena, expr: ExprId, strict_logical: bool) -> Option<Co
             // shift, both operands `long`) — a genuine javac quirk. Returning None
             // there forces the runtime `lushr` (with the distance narrowed by
             // `gen_shift_distance`), matching javac byte-for-byte.
-            if *op == BinOp::UShr && matches!(l, Const::Long(_)) && matches!(r, Const::Long(_))
-            {
+            if *op == BinOp::UShr && matches!(l, Const::Long(_)) && matches!(r, Const::Long(_)) {
                 return None;
             }
             eval_binary(*op, l, r)
         }
-        ExprKind::Compare { op, left, right } => {
-            Const::Int(
-                eval_compare(
-                    *op,
-                    fold_impl(exprs, *left, strict_logical)?,
-                    fold_impl(exprs, *right, strict_logical)?,
-                ) as i32,
-            )
-        }
+        ExprKind::Compare { op, left, right } => Const::Int(eval_compare(
+            *op,
+            fold_impl(exprs, *left, strict_logical)?,
+            fold_impl(exprs, *right, strict_logical)?,
+        ) as i32),
         // `&&`/`||` are constant only via short-circuit from the LEFT. A non-constant
         // left means the whole is NOT a compile-time constant even when the tree is
         // statically decided (`q && false`) — the left must still be evaluated, so we
@@ -2247,8 +2425,8 @@ fn fold_impl(exprs: &ExprArena, expr: ExprId, strict_logical: bool) -> Option<Co
                 }));
             }
             match op {
-                LogOp::And if !lb => Const::Int(0),                  // false && _ -> false
-                LogOp::Or if lb => Const::Int(1),                    // true  || _ -> true
+                LogOp::And if !lb => Const::Int(0), // false && _ -> false
+                LogOp::Or if lb => Const::Int(1),   // true  || _ -> true
                 _ => Const::Int((to_i32(fold_impl(exprs, *right, false)?) != 0) as i32),
             }
         }
@@ -2422,7 +2600,11 @@ fn int_additive_const_delta(
         return None;
     }
     let k = to_i32(fold(exprs, value)?);
-    Some(if op == BinOp::Add { k } else { k.wrapping_neg() })
+    Some(if op == BinOp::Add {
+        k
+    } else {
+        k.wrapping_neg()
+    })
 }
 
 /// javac loads an int increment as a non-negative magnitude and picks the operator by

@@ -110,10 +110,9 @@ language-coverage work tracked by README.md §D, not part of this byte-preservin
 Landed; see CLAUDE.md §"Where byte-identity is won or lost" for the ordered
 attribute model and the remaining phase-1 constant-pool ordering boundary.
 
-### 2.3 Backend: single `emit(opcode, operands)` chokepoint — ✅ DONE
+### 2.3 Backend: symbolic instruction assembler — ✅ DONE
 
-Landed; see CLAUDE.md §"Where byte-identity is won or lost". Full symbolic
-instructions and metadata remain the target described by ARCHITECTURE.md
+Landed; see CLAUDE.md §"Where byte-identity is won or lost" and ARCHITECTURE.md
 §"Symbolic bytecode".
 
 ### 2.4 Front-end: recursive unified `Type` — ✅ DONE
