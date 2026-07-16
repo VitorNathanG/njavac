@@ -195,6 +195,10 @@ files its "what would help" items here.
   not systematically. A cheap gate asserting `generator-invalid ≈ 0` over a small
   probe corpus would catch a new rung's generation code emitting invalid Java the
   moment it regresses (today it silently lowers yield).
+- **fuzz: group String print arguments.** String arguments are generated as a
+  separate direct `PrintArg::Str`, so expression grouping never reaches them. Add
+  grouped String literals to the generator/minimizer; `ParenString.java` now guards
+  the compiler path, but fuzzing should exercise it compositionally.
 - **fuzz: "replay case N of seed S".** A mode to re-run/re-minimize one specific
   finding (e.g. `Fuzz0000264`) without sweeping from the seed — a triage convenience
   for working the backlog.
