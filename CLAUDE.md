@@ -426,8 +426,10 @@ source → lexer::lex → parser::parse → sema::analyze → codegen::generate 
   their enclosing scope. From definite-assigned `LocalId`s and physical slots it
   records method-entry plus per-statement entry/exit verifier-local snapshots;
   interior unassigned holes are `Top`, category-2 locals occupy one verifier entry
-  but two slots, and trailing `Top` is trimmed. Branch-local declarations remain an
-  explicit unsupported boundary. `type_of` implements unary/binary numeric
+  but two slots, and trailing `Top` is trimmed. Snapshots are shared immutable
+  slices and rebuilt only when definite assignment changes, so statements whose
+  verifier state is unchanged reuse one snapshot. Branch-local declarations remain
+  an explicit unsupported boundary. `type_of` implements unary/binary numeric
   promotion from the resolved records.
 - **`codegen`** → typed bytecode + `max_stack`/`max_locals` + `LineNumberTable`,
   via the `classfile` backend.
