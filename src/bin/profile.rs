@@ -6,22 +6,40 @@
 //! reports ns/compile plus a per-phase breakdown (lex / parse / sema / codegen),
 //! so we can see where the compiler's own time actually goes.
 //!
-//!   cargo run --release --bin profile [rounds]
+//!   cargo run --release --bin profile [rounds] [trials]
 //!
 //! Phase times are measured cumulatively (each phase re-runs the prior ones),
 //! then differenced, so every phase figure is non-negative by construction.
 
 use std::hint::black_box;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use njavac::{codegen, lexer, parser, sema};
+
+const DEFAULT_ROUNDS: usize = 1_000;
+const DEFAULT_TRIALS: usize = 5;
 
 fn main() {
     // rounds per trial; trials taken and min-reduced (min rejects OS/thermal
     // noise, which can only ever add time — critical on a noisy host).
     let mut a = std::env::args().skip(1);
-    let rounds: usize = a.next().and_then(|s| s.parse().ok()).unwrap_or(30_000);
-    let trials: usize = a.next().and_then(|s| s.parse().ok()).unwrap_or(5);
+    let first = a.next();
+    if first
+        .as_deref()
+        .is_some_and(|arg| matches!(arg, "-h" | "--help"))
+    {
+        println!(
+            "usage: profile [rounds] [trials]\n\n\
+             Hot-loop the full fixture corpus through cumulative compiler phases.\n\
+             Defaults: {DEFAULT_ROUNDS} rounds, {DEFAULT_TRIALS} trials."
+        );
+        return;
+    }
+    let rounds = positive_arg(first.as_deref(), DEFAULT_ROUNDS, "rounds");
+    let trials = positive_arg(a.next().as_deref(), DEFAULT_TRIALS, "trials");
+    if a.next().is_some() {
+        usage_error("too many arguments");
+    }
 
     let mut paths = Vec::new();
     collect_java(std::path::Path::new("fixtures"), &mut paths);
@@ -50,20 +68,20 @@ fn main() {
     }
 
     // Cumulative timings over growing prefixes of the pipeline (min of trials).
-    let t_lex = time(rounds, trials, &fixtures, |src, _| {
+    let t_lex = time("lex", rounds, trials, &fixtures, |src, _| {
         black_box(lexer::lex(src).expect("valid fixture"));
     });
-    let t_parse = time(rounds, trials, &fixtures, |src, _| {
+    let t_parse = time("parse", rounds, trials, &fixtures, |src, _| {
         let tokens = lexer::lex(src).expect("valid fixture");
         black_box(parser::parse(tokens).expect("valid fixture"));
     });
-    let t_sema = time(rounds, trials, &fixtures, |src, _| {
+    let t_sema = time("sema", rounds, trials, &fixtures, |src, _| {
         let tokens = lexer::lex(src).expect("valid fixture");
         let unit = parser::parse(tokens).expect("valid fixture");
         let analysis = sema::analyze(&unit).expect("valid fixture");
         black_box((unit, analysis));
     });
-    let t_full = time(rounds, trials, &fixtures, |src, name| {
+    let t_full = time("full", rounds, trials, &fixtures, |src, name| {
         // Full pipeline including codegen + class-file serialization.
         let tokens = lexer::lex(src).expect("valid fixture");
         let unit = parser::parse(tokens).expect("valid fixture");
@@ -97,6 +115,21 @@ fn main() {
     );
 }
 
+fn positive_arg(arg: Option<&str>, default: usize, name: &str) -> usize {
+    match arg {
+        None => default,
+        Some(value) => match value.parse() {
+            Ok(value) if value > 0 => value,
+            _ => usage_error(&format!("{name} must be a positive integer")),
+        },
+    }
+}
+
+fn usage_error(message: &str) -> ! {
+    eprintln!("profile: {message}\nusage: profile [rounds] [trials]");
+    std::process::exit(2);
+}
+
 /// Recurse into `dir`, appending every `*.java` file (fixtures are grouped into
 /// topical subfolders).
 fn collect_java(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
@@ -113,20 +146,34 @@ fn collect_java(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
 /// Minimum (over `trials`) nanoseconds to run `f` over every fixture `rounds`
 /// times. Min is the robust estimator: noise only ever adds time.
 fn time<F: Fn(&str, &str)>(
+    phase: &str,
     rounds: usize,
     trials: usize,
     fixtures: &[(String, String)],
     f: F,
 ) -> f64 {
     let mut best = f64::INFINITY;
-    for _ in 0..trials {
-        let t0 = Instant::now();
-        for _ in 0..rounds {
-            for (src, name) in fixtures {
-                f(src, name);
+    let chunk_rounds = rounds.div_ceil(10).max(1);
+    for trial in 1..=trials {
+        let mut elapsed = Duration::ZERO;
+        let mut completed = 0;
+        while completed < rounds {
+            let end = (completed + chunk_rounds).min(rounds);
+            let t0 = Instant::now();
+            for _ in completed..end {
+                for (src, name) in fixtures {
+                    f(src, name);
+                }
             }
+            elapsed += t0.elapsed();
+            completed = end;
+            println!(
+                "  {phase:<5} trial {trial}/{trials}: {completed}/{rounds} rounds ({:>3}%)  measured {:.3}s",
+                completed * 100 / rounds,
+                elapsed.as_secs_f64(),
+            );
         }
-        best = best.min(t0.elapsed().as_nanos() as f64);
+        best = best.min(elapsed.as_nanos() as f64);
     }
     best
 }

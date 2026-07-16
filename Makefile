@@ -16,6 +16,7 @@
 #   make fuzz-observe-verify                   # exercise the persistent execution observer
 #   make image                                 # build the pinned image
 #   make check                                 # LOCAL release build (debugging only; NOT a test)
+#   make profile     [ROUNDS=n] [TRIALS=n]      # LOCAL in-process compiler throughput profile
 
 IMAGE     := njavac-bench
 VOLUME    := njavac-goldens
@@ -33,8 +34,10 @@ SEED      ?=
 COUNT     ?= 5000
 BATCH     ?=
 FUZZFLAGS ?=
+ROUNDS    ?= 1000
+TRIALS    ?= 5
 
-.PHONY: help image probe src-diff verify correctness record bench diff fuzz fuzz-verify fuzz-selftest fuzz-observe-verify check
+.PHONY: help image probe src-diff verify correctness record bench diff fuzz fuzz-verify fuzz-selftest fuzz-observe-verify check profile
 
 help:  ## show this help
 	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | sed -E 's/:.*## /\t/' | sort
@@ -100,3 +103,7 @@ fuzz-observe-verify: image  ## exercise the persistent JVM observer and its time
 
 check:  ## LOCAL release build only — compiler-internal debugging, NOT acceptance
 	cargo build --release
+
+profile:  ## LOCAL hot compiler profile: make profile [ROUNDS=1000] [TRIALS=5]
+	cargo build --release --bin profile
+	./target/release/profile $(ROUNDS) $(TRIALS)

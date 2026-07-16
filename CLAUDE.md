@@ -393,11 +393,13 @@ itself, `profile` calls `compile()` in-process in a hot loop and reports a
 per-phase breakdown (lex / parse / sema / codegen+emit).
 
 ```bash
-./target/release/profile [rounds] [trials]   # defaults: 30000 rounds, 5 trials
+make profile [ROUNDS=n] [TRIALS=n]   # defaults: 1000 rounds, 5 trials
 ```
 
-It reports the **min over trials** — the robust estimator, since host noise can
-only ever *add* time. Single-shot host timing lies; always compare mins.
+Each cumulative phase/trial reports progress in ten measured chunks; progress I/O
+is outside the accumulated duration. The final breakdown reports the **min over
+trials** — the robust estimator, since host noise can only ever *add* time.
+Single-shot host timing lies; always compare mins on the same host and corpus.
 
 ## Architecture
 
