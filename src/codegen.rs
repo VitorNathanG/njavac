@@ -1172,6 +1172,12 @@ impl<'a> Gen<'a> {
     /// `entry_locals`, and locals are never read or written. The subsequent (unchanged)
     /// `resolve_branches` bakes every final offset over the compacted code.
     fn compact_gotos(&mut self) {
+        // This pass can only delete `goto`. Most methods are straight-line or have
+        // conditional branches only, so avoid building a CFG for a guaranteed no-op.
+        if !self.fixups.iter().any(|fx| self.code[fx.branch_pc as usize] == GOTO) {
+            return;
+        }
+
         #[cfg(debug_assertions)]
         self.assert_compaction_preconditions();
 
