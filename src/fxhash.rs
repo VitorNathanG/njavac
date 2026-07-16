@@ -1,7 +1,7 @@
 //! Fast dependency-free hashing for compiler-internal maps whose iteration order
 //! is not observable.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::hash::{BuildHasher, Hasher};
 
 #[derive(Default)]
@@ -67,3 +67,4 @@ impl BuildHasher for FxBuildHasher {
 }
 
 pub(crate) type FxHashMap<K, V> = HashMap<K, V, FxBuildHasher>;
+pub(crate) type FxHashSet<T> = HashSet<T, FxBuildHasher>;

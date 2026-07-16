@@ -12,12 +12,11 @@
 //! records the verifier-local state at method entry and around every statement;
 //! branch-local declarations remain an explicit unsupported boundary.
 
-use std::collections::{HashMap, HashSet};
-
 use crate::ast::{
     BinOp, BranchBody, CmpOp, CompilationUnit, Expr, Method, Name, Stmt, StmtKind, Type,
 };
 use crate::diagnostic::{CompileResult, Diagnostic};
+use crate::fxhash::{FxHashMap, FxHashSet};
 use crate::span::Span;
 
 /// The static type of an expression / local in the subset: the eight primitives
@@ -126,9 +125,9 @@ struct StmtFrameLocals {
 pub struct MethodInfo {
     /// Parameters followed by locals in declaration order.
     pub locals: Vec<LocalInfo>,
-    resolutions: HashMap<Span, LocalId>,
+    resolutions: FxHashMap<Span, LocalId>,
     entry_frame_locals: Vec<FrameLocal>,
-    stmt_frame_locals: HashMap<Span, StmtFrameLocals>,
+    stmt_frame_locals: FxHashMap<Span, StmtFrameLocals>,
     /// High-water local-slot count, counting `long`/`double` as two.
     pub max_locals: u16,
 }
@@ -194,7 +193,7 @@ fn validate_class_shape(unit: &CompilationUnit) -> CompileResult<()> {
     }
 
     for method in methods {
-        let mut names = HashSet::new();
+        let mut names = FxHashSet::default();
         for param in &method.params {
             if !names.insert(param.name.text.as_str()) {
                 return Err(Diagnostic::semantic(
@@ -244,10 +243,10 @@ fn validate_class_shape(unit: &CompilationUnit) -> CompileResult<()> {
 fn analyze_method(method: &Method) -> CompileResult<MethodInfo> {
     let mut analyzer = MethodAnalyzer {
         locals: Vec::new(),
-        resolutions: HashMap::new(),
-        stmt_frame_locals: HashMap::new(),
-        scopes: vec![Scope { symbols: HashMap::new(), allocator_base: 0 }],
-        assigned: HashSet::new(),
+        resolutions: FxHashMap::default(),
+        stmt_frame_locals: FxHashMap::default(),
+        scopes: vec![Scope { symbols: FxHashMap::default(), allocator_base: 0 }],
+        assigned: FxHashSet::default(),
         next_slot: 0,
         max_locals: 0,
     };
@@ -272,16 +271,16 @@ fn analyze_method(method: &Method) -> CompileResult<MethodInfo> {
 }
 
 struct Scope {
-    symbols: HashMap<String, LocalId>,
+    symbols: FxHashMap<String, LocalId>,
     allocator_base: u16,
 }
 
 struct MethodAnalyzer {
     locals: Vec<LocalInfo>,
-    resolutions: HashMap<Span, LocalId>,
-    stmt_frame_locals: HashMap<Span, StmtFrameLocals>,
+    resolutions: FxHashMap<Span, LocalId>,
+    stmt_frame_locals: FxHashMap<Span, StmtFrameLocals>,
     scopes: Vec<Scope>,
-    assigned: HashSet<LocalId>,
+    assigned: FxHashSet<LocalId>,
     next_slot: u16,
     max_locals: u16,
 }
@@ -289,7 +288,7 @@ struct MethodAnalyzer {
 impl MethodAnalyzer {
     fn enter_scope(&mut self) {
         self.scopes.push(Scope {
-            symbols: HashMap::new(),
+            symbols: FxHashMap::default(),
             allocator_base: self.next_slot,
         });
     }
