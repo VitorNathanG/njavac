@@ -13,8 +13,8 @@
 //! branch-local declarations remain an explicit unsupported boundary.
 
 use crate::ast::{
-    BinOp, BranchBody, CmpOp, CompilationUnit, Expr, ExprKind, Method, Name, PrimitiveType,
-    Stmt, StmtKind, Type,
+    BinOp, BranchBody, CmpOp, CompilationUnit, ExprArena, ExprId, ExprKind, Method, Name,
+    PrimitiveType, Stmt, StmtKind, Type,
 };
 use crate::diagnostic::{CompileResult, Diagnostic};
 use crate::fxhash::{FxHashMap, FxHashSet};
@@ -80,6 +80,7 @@ pub struct MethodInfo {
     frame_locals: Vec<Vec<FrameLocal>>,
     entry_frame_locals: usize,
     stmt_frame_locals: FxHashMap<Span, StmtFrameLocals>,
+    expr_type_base: Option<usize>,
     expr_types: Vec<Option<Type>>,
     /// High-water local-slot count, counting `long`/`double` as two.
     pub max_locals: u16,
@@ -108,11 +109,16 @@ impl MethodInfo {
         &self.local(name).ty
     }
 
-    pub fn expr_type(&self, expr: &Expr) -> &Type {
+    pub fn expr_type(&self, expr: ExprId) -> &Type {
+        let base = self.expr_type_base.expect("method has no expression types");
+        let index = expr
+            .index()
+            .checked_sub(base)
+            .expect("expression belongs to a different method");
         self.expr_types
-            .get(expr.id.0)
+            .get(index)
             .and_then(Option::as_ref)
-            .unwrap_or_else(|| panic!("sema did not record expression type for {:?}", expr.id))
+            .unwrap_or_else(|| panic!("sema did not record expression type for {expr:?}"))
     }
 
     pub fn entry_frame_locals(&self) -> &[FrameLocal] {
@@ -140,13 +146,23 @@ impl MethodInfo {
 
 /// Whole-program analysis result: one `MethodInfo` per method, in method order.
 pub struct Analysis {
-    pub methods: Vec<MethodInfo>,
+    arena_identity: (usize, usize),
+    pub(crate) methods: Vec<MethodInfo>,
 }
 
 /// Analyze a parsed compilation unit, assigning local slots for each method.
 pub fn analyze(unit: &CompilationUnit) -> CompileResult<Analysis> {
     validate_class_shape(unit)?;
-    Ok(Analysis { methods: vec![analyze_method(&unit.class.methods[0])?] })
+    Ok(Analysis {
+        arena_identity: unit.exprs.identity(),
+        methods: vec![analyze_method(&unit.class.methods[0], &unit.exprs)?],
+    })
+}
+
+impl Analysis {
+    pub(crate) fn arena_identity(&self) -> (usize, usize) {
+        self.arena_identity
+    }
 }
 
 fn validate_class_shape(unit: &CompilationUnit) -> CompileResult<()> {
@@ -206,7 +222,7 @@ fn validate_class_shape(unit: &CompilationUnit) -> CompileResult<()> {
     Ok(())
 }
 
-fn analyze_method(method: &Method) -> CompileResult<MethodInfo> {
+fn analyze_method(method: &Method, exprs: &ExprArena) -> CompileResult<MethodInfo> {
     let mut frame_locals = Vec::with_capacity(method.body.len() + 2);
     frame_locals.push(Vec::new());
     let mut analyzer = MethodAnalyzer {
@@ -216,6 +232,7 @@ fn analyze_method(method: &Method) -> CompileResult<MethodInfo> {
         scopes: vec![Scope { symbols: FxHashMap::default(), allocator_base: 0 }],
         assigned: FxHashSet::default(),
         frame_locals,
+        expr_type_base: None,
         expr_types: Vec::new(),
         current_frame_locals: 0,
         next_slot: 0,
@@ -230,7 +247,7 @@ fn analyze_method(method: &Method) -> CompileResult<MethodInfo> {
     analyzer.refresh_frame_locals();
     let entry_frame_locals = analyzer.current_frame_locals;
     for stmt in &method.body {
-        analyzer.validate_stmt(stmt, false)?;
+        analyzer.validate_stmt(stmt, false, exprs)?;
     }
 
     Ok(MethodInfo {
@@ -239,6 +256,7 @@ fn analyze_method(method: &Method) -> CompileResult<MethodInfo> {
         frame_locals: analyzer.frame_locals,
         entry_frame_locals,
         stmt_frame_locals: analyzer.stmt_frame_locals,
+        expr_type_base: analyzer.expr_type_base,
         expr_types: analyzer.expr_types,
         max_locals: analyzer.max_locals,
     })
@@ -258,6 +276,7 @@ struct MethodAnalyzer {
     /// Arena of immutable snapshots, extended only when `assigned` changes.
     frame_locals: Vec<Vec<FrameLocal>>,
     current_frame_locals: usize,
+    expr_type_base: Option<usize>,
     expr_types: Vec<Option<Type>>,
     next_slot: u16,
     max_locals: u16,
@@ -400,7 +419,12 @@ impl MethodAnalyzer {
         Ok((id, self.local_type(id)))
     }
 
-    fn validate_stmt(&mut self, stmt: &Stmt, in_branch: bool) -> CompileResult<()> {
+    fn validate_stmt(
+        &mut self,
+        stmt: &Stmt,
+        in_branch: bool,
+        exprs: &ExprArena,
+    ) -> CompileResult<()> {
         let entry = self.current_frame_locals;
         match &stmt.kind {
             StmtKind::LocalDecl { ty, name, init } => {
@@ -413,28 +437,28 @@ impl MethodAnalyzer {
                 let target = ty.clone();
                 let id = self.declare(name, target.clone())?;
                 if let Some(init) = init {
-                    let source = self.validate_expr(init, stmt.span)?;
-                    self.require_assignable(&target, &source, init, stmt.span)?;
+                    let source = self.validate_expr(*init, stmt.span, exprs)?;
+                    self.require_assignable(&target, &source, *init, stmt.span, exprs)?;
                     self.mark_assigned(id);
                 }
             }
             StmtKind::Assign { name, value } => {
                 let id = self.resolve(name)?;
                 let target = self.local_type(id);
-                let source = self.validate_expr(value, stmt.span)?;
-                self.require_assignable(&target, &source, value, stmt.span)?;
+                let source = self.validate_expr(*value, stmt.span, exprs)?;
+                self.require_assignable(&target, &source, *value, stmt.span, exprs)?;
                 self.mark_assigned(id);
             }
             StmtKind::CompoundAssign { name, op, value } => {
                 let (id, target) = self.read_local(name)?;
-                let source = self.validate_expr(value, stmt.span)?;
+                let source = self.validate_expr(*value, stmt.span, exprs)?;
                 self.require_compound(*op, &target, &source, stmt.span)?;
                 self.mark_assigned(id);
             }
-            StmtKind::Expr(expr) => match &expr.kind {
+            StmtKind::Expr(expr) => match &exprs[*expr] {
                 ExprKind::Println(arg) => {
-                    let ty = self.validate_expr(arg, stmt.span)?;
-                    if ty.is_string() && !is_string_value(arg) {
+                    let ty = self.validate_expr(*arg, stmt.span, exprs)?;
+                    if ty.is_string() && !is_string_value(exprs, *arg) {
                         return Err(Diagnostic::unsupported_semantic(
                             stmt.span,
                             "only string literals are supported as String values",
@@ -449,21 +473,21 @@ impl MethodAnalyzer {
                 }
             },
             StmtKind::If { cond, then_branch, else_branch } => {
-                let ty = self.validate_expr(cond, stmt.span)?;
+                let ty = self.validate_expr(*cond, stmt.span, exprs)?;
                 if !ty.is_boolean() {
                     return Err(Diagnostic::semantic(stmt.span, "if condition must be boolean"));
                 }
 
                 let incoming = self.assigned.clone();
                 let incoming_frame = self.current_frame_locals;
-                self.validate_branch(then_branch)?;
+                self.validate_branch(then_branch, exprs)?;
                 let then_assigned = self.assigned.clone();
                 let then_frame = self.current_frame_locals;
 
                 self.assigned = incoming;
                 self.current_frame_locals = incoming_frame;
                 if let Some(else_branch) = else_branch {
-                    self.validate_branch(else_branch)?;
+                    self.validate_branch(else_branch, exprs)?;
                 }
                 let else_assigned = self.assigned.clone();
                 let else_frame = self.current_frame_locals;
@@ -485,12 +509,12 @@ impl MethodAnalyzer {
         Ok(())
     }
 
-    fn validate_branch(&mut self, body: &BranchBody) -> CompileResult<()> {
+    fn validate_branch(&mut self, body: &BranchBody, exprs: &ExprArena) -> CompileResult<()> {
         if body.braced {
             self.enter_scope();
         }
         for stmt in &body.stmts {
-            self.validate_stmt(stmt, true)?;
+            self.validate_stmt(stmt, true, exprs)?;
         }
         if body.braced {
             self.exit_scope();
@@ -498,8 +522,13 @@ impl MethodAnalyzer {
         Ok(())
     }
 
-    fn validate_expr(&mut self, expr: &Expr, span: Span) -> CompileResult<Type> {
-        let ty = match &expr.kind {
+    fn validate_expr(
+        &mut self,
+        expr: ExprId,
+        span: Span,
+        exprs: &ExprArena,
+    ) -> CompileResult<Type> {
+        let ty = match &exprs[expr] {
             ExprKind::IntLit(_) => PrimitiveType::Int.into(),
             ExprKind::LongLit(_) => PrimitiveType::Long.into(),
             ExprKind::FloatLit(_) => PrimitiveType::Float.into(),
@@ -518,23 +547,23 @@ impl MethodAnalyzer {
                 ty
             }
             ExprKind::Neg(inner) => {
-                let ty = self.validate_expr(inner, span)?;
+                let ty = self.validate_expr(*inner, span, exprs)?;
                 self.require_numeric(&ty, span, "unary `-`")?;
                 unary_promote(ty.primitive()).into()
             }
             ExprKind::BitNot(inner) => {
-                let ty = self.validate_expr(inner, span)?;
+                let ty = self.validate_expr(*inner, span, exprs)?;
                 self.require_integral(&ty, span, "unary `~`")?;
                 unary_promote(ty.primitive()).into()
             }
             ExprKind::Not(inner) => {
-                let ty = self.validate_expr(inner, span)?;
+                let ty = self.validate_expr(*inner, span, exprs)?;
                 self.require_boolean(&ty, span, "unary `!`")?;
                 PrimitiveType::Boolean.into()
             }
-            ExprKind::Paren(inner) => self.validate_expr(inner, span)?,
+            ExprKind::Paren(inner) => self.validate_expr(*inner, span, exprs)?,
             ExprKind::Cast { ty, expr } => {
-                let source = self.validate_expr(expr, span)?;
+                let source = self.validate_expr(*expr, span, exprs)?;
                 let target = ty.clone();
                 if !((is_numeric(&source) && is_numeric(&target))
                     || (source.is_boolean() && target.is_boolean()))
@@ -544,19 +573,19 @@ impl MethodAnalyzer {
                 target
             }
             ExprKind::Binary { op, left, right } => {
-                let left_ty = self.validate_expr(left, span)?;
-                let right_ty = self.validate_expr(right, span)?;
-                self.validate_binary(*op, &left_ty, &right_ty, right, span)?
+                let left_ty = self.validate_expr(*left, span, exprs)?;
+                let right_ty = self.validate_expr(*right, span, exprs)?;
+                self.validate_binary(*op, &left_ty, &right_ty, *right, span, exprs)?
             }
             ExprKind::Compare { op, left, right } => {
-                let left_ty = self.validate_expr(left, span)?;
-                let right_ty = self.validate_expr(right, span)?;
+                let left_ty = self.validate_expr(*left, span, exprs)?;
+                let right_ty = self.validate_expr(*right, span, exprs)?;
                 self.validate_compare(*op, &left_ty, &right_ty, span)?;
                 PrimitiveType::Boolean.into()
             }
             ExprKind::Logical { left, right, .. } => {
-                let left_ty = self.validate_expr(left, span)?;
-                let right_ty = self.validate_expr(right, span)?;
+                let left_ty = self.validate_expr(*left, span, exprs)?;
+                let right_ty = self.validate_expr(*right, span, exprs)?;
                 self.require_boolean(&left_ty, span, "logical operator")?;
                 self.require_boolean(&right_ty, span, "logical operator")?;
                 PrimitiveType::Boolean.into()
@@ -568,12 +597,17 @@ impl MethodAnalyzer {
                 ));
             }
         };
-        if self.expr_types.len() <= expr.id.0 {
-            self.expr_types.resize_with(expr.id.0 + 1, || None);
+        let base = *self.expr_type_base.get_or_insert(expr.index());
+        let index = expr
+            .index()
+            .checked_sub(base)
+            .expect("expression validation order crossed method boundaries");
+        if self.expr_types.len() <= index {
+            self.expr_types.resize_with(index + 1, || None);
         }
-        match &self.expr_types[expr.id.0] {
+        match &self.expr_types[index] {
             Some(previous) => assert_eq!(previous, &ty, "expression type changed between visits"),
-            None => self.expr_types[expr.id.0] = Some(ty.clone()),
+            None => self.expr_types[index] = Some(ty.clone()),
         }
         Ok(ty)
     }
@@ -583,8 +617,9 @@ impl MethodAnalyzer {
         op: BinOp,
         left: &Type,
         right: &Type,
-        right_expr: &Expr,
+        right_expr: ExprId,
         span: Span,
+        exprs: &ExprArena,
     ) -> CompileResult<Type> {
         if op == BinOp::Add && (left.is_string() || right.is_string()) {
             return Err(Diagnostic::unsupported_semantic(
@@ -613,7 +648,7 @@ impl MethodAnalyzer {
         let result = binary_promote(left.primitive(), right.primitive());
         if matches!(op, BinOp::Div | BinOp::Rem)
             && result.is_integral()
-            && eval_numeric_constant(right_expr).is_some_and(NumericConst::is_zero)
+            && eval_numeric_constant(exprs, right_expr).is_some_and(NumericConst::is_zero)
         {
             return Err(Diagnostic::semantic(
                 span,
@@ -652,8 +687,9 @@ impl MethodAnalyzer {
         &self,
         target: &Type,
         source: &Type,
-        expr: &Expr,
+        expr: ExprId,
         span: Span,
+        exprs: &ExprArena,
     ) -> CompileResult<()> {
         if target.as_primitive().is_none() {
             return Err(Diagnostic::semantic(
@@ -672,7 +708,7 @@ impl MethodAnalyzer {
                             | PrimitiveType::Char
                     )
                 )
-                && is_constant_expression(expr))
+                && is_constant_expression(exprs, expr))
         {
             return Ok(());
         }
@@ -769,8 +805,8 @@ fn is_assignment_convertible(target: &Type, source: &Type) -> bool {
 /// A syntax-only approximation used for assignment conversion. Range checking is
 /// deliberately left to a later constant-analysis stage, so existing valid folded
 /// initializers are not rejected here.
-fn is_constant_expression(expr: &Expr) -> bool {
-    match &expr.kind {
+fn is_constant_expression(exprs: &ExprArena, expr: ExprId) -> bool {
+    match &exprs[expr] {
         ExprKind::IntLit(_)
         | ExprKind::LongLit(_)
         | ExprKind::FloatLit(_)
@@ -782,13 +818,13 @@ fn is_constant_expression(expr: &Expr) -> bool {
         | ExprKind::BitNot(inner)
         | ExprKind::Not(inner)
         | ExprKind::Paren(inner) => {
-            is_constant_expression(inner)
+            is_constant_expression(exprs, *inner)
         }
-        ExprKind::Cast { expr, .. } => is_constant_expression(expr),
+        ExprKind::Cast { expr, .. } => is_constant_expression(exprs, *expr),
         ExprKind::Binary { left, right, .. }
         | ExprKind::Compare { left, right, .. }
         | ExprKind::Logical { left, right, .. } => {
-            is_constant_expression(left) && is_constant_expression(right)
+            is_constant_expression(exprs, *left) && is_constant_expression(exprs, *right)
         }
         ExprKind::Name(_) | ExprKind::Println(_) => false,
     }
@@ -868,29 +904,31 @@ impl NumericConst {
     }
 }
 
-fn eval_numeric_constant(expr: &Expr) -> Option<NumericConst> {
-    Some(match &expr.kind {
+fn eval_numeric_constant(exprs: &ExprArena, expr: ExprId) -> Option<NumericConst> {
+    Some(match &exprs[expr] {
         ExprKind::IntLit(value) => NumericConst::Int(*value),
         ExprKind::LongLit(value) => NumericConst::Long(*value),
         ExprKind::FloatLit(value) => NumericConst::Float(*value),
         ExprKind::DoubleLit(value) => NumericConst::Double(*value),
         ExprKind::CharLit(value) => NumericConst::Int(*value as i32),
-        ExprKind::Neg(inner) => match eval_numeric_constant(inner)? {
+        ExprKind::Neg(inner) => match eval_numeric_constant(exprs, *inner)? {
             NumericConst::Int(value) => NumericConst::Int(value.wrapping_neg()),
             NumericConst::Long(value) => NumericConst::Long(value.wrapping_neg()),
             NumericConst::Float(value) => NumericConst::Float(-value),
             NumericConst::Double(value) => NumericConst::Double(-value),
         },
-        ExprKind::BitNot(inner) => match eval_numeric_constant(inner)? {
+        ExprKind::BitNot(inner) => match eval_numeric_constant(exprs, *inner)? {
             NumericConst::Int(value) => NumericConst::Int(!value),
             NumericConst::Long(value) => NumericConst::Long(!value),
             NumericConst::Float(_) | NumericConst::Double(_) => return None,
         },
-        ExprKind::Paren(inner) => eval_numeric_constant(inner)?,
-        ExprKind::Cast { ty, expr } => eval_numeric_constant(expr)?.cast(ty.primitive())?,
+        ExprKind::Paren(inner) => eval_numeric_constant(exprs, *inner)?,
+        ExprKind::Cast { ty, expr } => {
+            eval_numeric_constant(exprs, *expr)?.cast(ty.primitive())?
+        }
         ExprKind::Binary { op, left, right } => {
-            let left = eval_numeric_constant(left)?;
-            let right = eval_numeric_constant(right)?;
+            let left = eval_numeric_constant(exprs, *left)?;
+            let right = eval_numeric_constant(exprs, *right)?;
             eval_numeric_binary(*op, left, right)?
         }
         ExprKind::BoolLit(_)
@@ -990,10 +1028,10 @@ fn eval_numeric_binary(op: BinOp, left: NumericConst, right: NumericConst) -> Op
     })
 }
 
-fn is_string_value(expr: &Expr) -> bool {
-    match &expr.kind {
+fn is_string_value(exprs: &ExprArena, expr: ExprId) -> bool {
+    match &exprs[expr] {
         ExprKind::StringLit(_) => true,
-        ExprKind::Paren(inner) => is_string_value(inner),
+        ExprKind::Paren(inner) => is_string_value(exprs, *inner),
         _ => false,
     }
 }
@@ -1027,6 +1065,6 @@ pub fn binary_promote(a: PrimitiveType, b: PrimitiveType) -> PrimitiveType {
 }
 
 /// The static type recorded during semantic validation.
-pub fn type_of<'a>(expr: &Expr, info: &'a MethodInfo) -> &'a Type {
+pub fn type_of(expr: ExprId, info: &MethodInfo) -> &Type {
     info.expr_type(expr)
 }

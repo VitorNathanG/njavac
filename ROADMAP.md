@@ -127,7 +127,7 @@ Landed; see CLAUDE.md §Architecture.
 ### 2.6 De-hardcode the `main`/println/void/Object shape
 - **What.** Parameterize `gen_init` on the superclass (not hardwired `Object`),
   model method return types instead of appending `)V`, and turn `System.out.println`
-  from a bespoke `Expr::Println` statement into an ordinary method-call expression
+  from a bespoke `ExprKind::Println` statement into an ordinary method-call expression
   resolved in sema (deleting the parser's name-resolution-in-the-parser layering
   violation).
 - **Why.** Small and mechanical, but it's what turns "one `main`" into "a real

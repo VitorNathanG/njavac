@@ -25,8 +25,8 @@
 //! method whose branches all fold stays byte-identical to its straight-line form.
 
 use crate::ast::{
-    BinOp, Class, CmpOp, Expr, ExprKind, LogOp, Method, Name, PrimitiveType, Stmt, StmtKind,
-    Type,
+    BinOp, CmpOp, CompilationUnit, ExprArena, ExprId, ExprKind, LogOp, Method, Name,
+    PrimitiveType, Stmt, StmtKind, Type,
 };
 use crate::classfile::{
     ClassFile, CodeAttribute, ConstantPool, Method as CfMethod, StackFrame, VerificationType,
@@ -322,17 +322,32 @@ impl ClassPlan {
 }
 
 /// Build the typed bytecode and class-file model without serializing it.
-pub fn plan(class: &Class, analysis: &Analysis, source_file: &str) -> CompileResult<ClassPlan> {
-    preflight_codegen(class, analysis)?;
+pub fn plan(
+    unit: &CompilationUnit,
+    analysis: &Analysis,
+    source_file: &str,
+) -> CompileResult<ClassPlan> {
+    assert_eq!(
+        unit.exprs.identity(),
+        analysis.arena_identity(),
+        "analysis belongs to a different expression arena"
+    );
+    assert_eq!(
+        unit.class.methods.len(),
+        analysis.methods.len(),
+        "analysis method count does not match the compilation unit"
+    );
+    preflight_codegen(unit, analysis)?;
     #[cfg(debug_assertions)]
     assert_negate_op_consistent();
     let mut cp = ConstantPool::new();
+    let class = &unit.class;
 
     let mut methods = Vec::new();
     // `<init>` first: its `Methodref` is interned before any of main's operands.
     methods.push(gen_init(&mut cp, class.line));
     for (m, info) in class.methods.iter().zip(&analysis.methods) {
-        methods.push(gen_method(&mut cp, m, info));
+        methods.push(gen_method(&mut cp, m, info, &unit.exprs));
     }
 
     let class_file = ClassFile::new(
@@ -346,53 +361,57 @@ pub fn plan(class: &Class, analysis: &Analysis, source_file: &str) -> CompileRes
 }
 
 /// Compile one parsed+analyzed class into `.class` bytes.
-pub fn generate(class: &Class, analysis: &Analysis, source_file: &str) -> CompileResult<Vec<u8>> {
-    Ok(plan(class, analysis, source_file)?.to_bytes())
+pub fn generate(
+    unit: &CompilationUnit,
+    analysis: &Analysis,
+    source_file: &str,
+) -> CompileResult<Vec<u8>> {
+    Ok(plan(unit, analysis, source_file)?.to_bytes())
 }
 
 /// Reject the one valid-Java value shape that needs verifier frames the emitter
 /// cannot yet represent: materializing a branch boolean over a live base stack.
 /// This runs before constant-pool interning or byte emission; the corresponding
 /// emitter assert remains a post-preflight invariant.
-fn preflight_codegen(class: &Class, analysis: &Analysis) -> CompileResult<()> {
-    for (method, info) in class.methods.iter().zip(&analysis.methods) {
+fn preflight_codegen(unit: &CompilationUnit, analysis: &Analysis) -> CompileResult<()> {
+    for (method, info) in unit.class.methods.iter().zip(&analysis.methods) {
         for stmt in &method.body {
-            preflight_stmt(stmt, info)?;
+            preflight_stmt(stmt, info, &unit.exprs)?;
         }
     }
     Ok(())
 }
 
-fn preflight_stmt(stmt: &Stmt, info: &MethodInfo) -> CompileResult<()> {
+fn preflight_stmt(stmt: &Stmt, info: &MethodInfo, exprs: &ExprArena) -> CompileResult<()> {
     match &stmt.kind {
         StmtKind::LocalDecl { name, init: Some(init), .. }
         | StmtKind::Assign { name, value: init } => {
             if info.ty(name) == PrimitiveType::Boolean {
-                preflight_materialization(init, false, stmt.span, info)?;
+                preflight_materialization(*init, false, stmt.span, info, exprs)?;
             } else {
-                preflight_value(init, false, stmt.span, info)?;
+                preflight_value(*init, false, stmt.span, info, exprs)?;
             }
         }
         StmtKind::LocalDecl { init: None, .. } => {}
         StmtKind::CompoundAssign { value, .. } => {
             // The target value is loaded before the RHS except when folding makes
             // the RHS code-free; `preflight_value` applies that same fold first.
-            preflight_value(value, true, stmt.span, info)?;
+            preflight_value(*value, true, stmt.span, info, exprs)?;
         }
-        StmtKind::Expr(expr) => match &expr.kind {
+        StmtKind::Expr(expr) => match &exprs[*expr] {
             ExprKind::Println(arg) => {
                 // `getstatic System.out` leaves the receiver live while evaluating arg.
-                preflight_value(arg, true, stmt.span, info)?;
+                preflight_value(*arg, true, stmt.span, info, exprs)?;
             }
             _ => unreachable!("sema accepted a non-println expression statement"),
         },
         StmtKind::If { cond, then_branch, else_branch } => {
-            preflight_cond(cond, false, stmt.span, info)?;
+            preflight_cond(*cond, false, stmt.span, info, exprs)?;
             for nested in &then_branch.stmts {
-                preflight_stmt(nested, info)?;
+                preflight_stmt(nested, info, exprs)?;
             }
             for nested in else_branch.iter().flat_map(|body| &body.stmts) {
-                preflight_stmt(nested, info)?;
+                preflight_stmt(nested, info, exprs)?;
             }
         }
     }
@@ -402,26 +421,27 @@ fn preflight_stmt(stmt: &Stmt, info: &MethodInfo) -> CompileResult<()> {
 /// Mirror `gen_value`'s left-to-right evaluation enough to track whether a
 /// branch-valued boolean reaches `gen_bool_value` with another value live.
 fn preflight_value(
-    expr: &Expr,
+    expr: ExprId,
     base_live: bool,
     span: crate::span::Span,
     info: &MethodInfo,
+    exprs: &ExprArena,
 ) -> CompileResult<()> {
-    if matches!(&expr.kind, ExprKind::StringLit(_)) || fold(expr).is_some() {
+    if matches!(&exprs[expr], ExprKind::StringLit(_)) || fold(exprs, expr).is_some() {
         return Ok(());
     }
-    match &expr.kind {
+    match &exprs[expr] {
         ExprKind::Name(_) => Ok(()),
         ExprKind::Neg(inner) | ExprKind::BitNot(inner) | ExprKind::Paren(inner) => {
-            preflight_value(inner, base_live, span, info)
+            preflight_value(*inner, base_live, span, info, exprs)
         }
-        ExprKind::Cast { expr, .. } => preflight_value(expr, base_live, span, info),
+        ExprKind::Cast { expr, .. } => preflight_value(*expr, base_live, span, info, exprs),
         ExprKind::Binary { left, right, .. } => {
-            preflight_value(left, base_live, span, info)?;
-            preflight_value(right, true, span, info)
+            preflight_value(*left, base_live, span, info, exprs)?;
+            preflight_value(*right, true, span, info, exprs)
         }
         ExprKind::Compare { .. } | ExprKind::Not(_) | ExprKind::Logical { .. } => {
-            preflight_materialization(expr, base_live, span, info)
+            preflight_materialization(expr, base_live, span, info, exprs)
         }
         ExprKind::IntLit(_)
         | ExprKind::LongLit(_)
@@ -435,10 +455,11 @@ fn preflight_value(
 }
 
 fn preflight_materialization(
-    expr: &Expr,
+    expr: ExprId,
     base_live: bool,
     span: crate::span::Span,
     info: &MethodInfo,
+    exprs: &ExprArena,
 ) -> CompileResult<()> {
     if base_live {
         return Err(Diagnostic::unsupported_codegen(
@@ -446,45 +467,46 @@ fn preflight_materialization(
             "boolean value materialization with a live operand-stack value is unsupported",
         ));
     }
-    preflight_cond(expr, false, span, info)
+    preflight_cond(expr, false, span, info, exprs)
 }
 
 /// Mirror condition lowering: comparisons evaluate operands as values, logical
 /// operators consume the left test before evaluating the right, and a boolean
 /// cast explicitly materializes its operand.
 fn preflight_cond(
-    expr: &Expr,
+    expr: ExprId,
     base_live: bool,
     span: crate::span::Span,
     info: &MethodInfo,
+    exprs: &ExprArena,
 ) -> CompileResult<()> {
-    if lowering_const(expr).is_some() {
+    if lowering_const(exprs, expr).is_some() {
         return Ok(());
     }
-    match &expr.kind {
+    match &exprs[expr] {
         ExprKind::Not(inner) | ExprKind::Paren(inner) => {
-            preflight_cond(inner, base_live, span, info)
+            preflight_cond(*inner, base_live, span, info, exprs)
         }
         ExprKind::Cast { ty, expr } if ty.is_boolean() => {
-            preflight_materialization(expr, base_live, span, info)
+            preflight_materialization(*expr, base_live, span, info, exprs)
         }
         ExprKind::Compare { left, right, .. } => {
-            preflight_value(left, base_live, span, info)?;
-            preflight_value(right, true, span, info)
+            preflight_value(*left, base_live, span, info, exprs)?;
+            preflight_value(*right, true, span, info, exprs)
         }
         ExprKind::Logical { op, left, right } => {
-            preflight_cond(left, base_live, span, info)?;
-            let left_decides = fold(left).is_some_and(|value| match op {
+            preflight_cond(*left, base_live, span, info, exprs)?;
+            let left_decides = fold(exprs, *left).is_some_and(|value| match op {
                 LogOp::And => to_i32(value) == 0,
                 LogOp::Or => to_i32(value) != 0,
             });
             if left_decides {
                 Ok(())
             } else {
-                preflight_cond(right, base_live, span, info)
+                preflight_cond(*right, base_live, span, info, exprs)
             }
         }
-        _ => preflight_value(expr, base_live, span, info),
+        _ => preflight_value(expr, base_live, span, info, exprs),
     }
 }
 
@@ -518,12 +540,18 @@ fn gen_init(cp: &mut ConstantPool, class_line: u16) -> CfMethod {
 }
 
 /// Emit one method body.
-fn gen_method(cp: &mut ConstantPool, method: &Method, info: &MethodInfo) -> CfMethod {
+fn gen_method(
+    cp: &mut ConstantPool,
+    method: &Method,
+    info: &MethodInfo,
+    exprs: &ExprArena,
+) -> CfMethod {
     let entry_locals = verification_locals(info.entry_frame_locals());
 
     let mut g = Gen {
         cp,
         info,
+        exprs,
         emitter: Emitter::new(),
         semantic_locals: info.entry_frame_locals(),
         labels: Vec::new(),
@@ -786,6 +814,7 @@ fn cond_stack_test() -> CondItem {
 struct Gen<'a> {
     cp: &'a mut ConstantPool,
     info: &'a MethodInfo,
+    exprs: &'a ExprArena,
     emitter: Emitter,
     /// The current sema-owned verifier-local snapshot. Statement generation only
     /// selects an entry or exit state; it never mutates local state independently.
@@ -823,7 +852,7 @@ impl<'a> Gen<'a> {
             self.gen_if(
                 stmt.span,
                 stmt.line,
-                cond,
+                *cond,
                 &then_branch.stmts,
                 else_branch.as_ref().map(|body| body.stmts.as_slice()),
             );
@@ -832,14 +861,14 @@ impl<'a> Gen<'a> {
             match &stmt.kind {
                 StmtKind::LocalDecl { name, init, .. } => {
                     if let Some(init) = init {
-                        self.store_to(name, init);
+                        self.store_to(name, *init);
                     }
                 }
-                StmtKind::Assign { name, value } => self.store_to(name, value),
+                StmtKind::Assign { name, value } => self.store_to(name, *value),
                 StmtKind::CompoundAssign { name, op, value } => {
-                    self.gen_compound(name, *op, value)
+                    self.gen_compound(name, *op, *value)
                 }
-                StmtKind::Expr(expr) => self.gen_expr_stmt(expr),
+                StmtKind::Expr(expr) => self.gen_expr_stmt(*expr),
                 StmtKind::If { .. } => unreachable!("handled above"),
             }
         }
@@ -858,7 +887,7 @@ impl<'a> Gen<'a> {
         &mut self,
         stmt_span: Span,
         line: u16,
-        cond: &Expr,
+        cond: ExprId,
         then_b: &[Stmt],
         else_b: Option<&[Stmt]>,
     ) {
@@ -940,23 +969,26 @@ impl<'a> Gen<'a> {
     /// circuit from the *left*: the left's deciding branch is emitted, its
     /// non-deciding outcome falls through into the right operand, and the two
     /// chains are merged (`Code.mergeChains`).
-    fn gen_cond(&mut self, e: &Expr) -> CondItem {
+    fn gen_cond(&mut self, e: ExprId) -> CondItem {
         // This query requires the complete subtree to be available as a javac
         // immediate. Non-strict shortcuts (`true || local`) stay structural so
         // grouping, negation, and casts retain their observable lowering history.
-        if let Some(c) = lowering_const(e) {
+        if let Some(c) = lowering_const(self.exprs, e) {
             return if to_i32(c) != 0 { cond_true() } else { cond_false() };
         }
-        match &e.kind {
-            ExprKind::Not(inner) => self.gen_cond(inner).negate(),
-            ExprKind::Paren(inner) => self.gen_cond(inner).parenthesize(),
+        let exprs = self.exprs;
+        match &exprs[e] {
+            ExprKind::Not(inner) => self.gen_cond(*inner).negate(),
+            ExprKind::Paren(inner) => self.gen_cond(*inner).parenthesize(),
             ExprKind::Cast { ty, expr } if ty.is_boolean() => {
-                self.gen_bool_value(expr);
+                self.gen_bool_value(*expr);
                 cond_stack_test()
             }
-            ExprKind::Compare { op, left, right } => self.gen_compare_cond(*op, left, right),
+            ExprKind::Compare { op, left, right } => {
+                self.gen_compare_cond(*op, *left, *right)
+            }
             ExprKind::Logical { op: LogOp::And, left, right } => {
-                let lc = self.gen_cond(left).as_logical_left();
+                let lc = self.gen_cond(*left).as_logical_left();
                 if lc.is_false() {
                     return lc.mark_shortcut(); // false && _ : right is dead
                 }
@@ -964,13 +996,13 @@ impl<'a> Gen<'a> {
                 let lt = lc.true_chain;
                 let fj = self.jump_false(lc); // emit the left's false branch
                 self.resolve_chain(lt); // left-true falls through to the right
-                let mut rc = self.gen_cond(right);
+                let mut rc = self.gen_cond(*right);
                 rc.false_chain = self.merge_chains(fj, rc.false_chain);
                 rc.carry_prefix(&lc, crossed_join);
                 rc
             }
             ExprKind::Logical { op: LogOp::Or, left, right } => {
-                let lc = self.gen_cond(left).as_logical_left();
+                let lc = self.gen_cond(*left).as_logical_left();
                 if lc.is_true() {
                     return lc.mark_shortcut(); // true || _ : right is dead
                 }
@@ -978,7 +1010,7 @@ impl<'a> Gen<'a> {
                 let lf = lc.false_chain;
                 let tj = self.jump_true(lc);
                 self.resolve_chain(lf);
-                let mut rc = self.gen_cond(right);
+                let mut rc = self.gen_cond(*right);
                 rc.true_chain = self.merge_chains(tj, rc.true_chain);
                 rc.carry_prefix(&lc, crossed_join);
                 rc
@@ -996,7 +1028,7 @@ impl<'a> Gen<'a> {
     /// `lcmp`/`fcmp*`/`dcmp*`), but *not* the branch — the deciding test opcode
     /// (true polarity) is returned pending. Its operands are popped when the
     /// branch is finally emitted, in `emit_test_branch`.
-    fn gen_compare_cond(&mut self, op: CmpOp, left: &Expr, right: &Expr) -> CondItem {
+    fn gen_compare_cond(&mut self, op: CmpOp, left: ExprId, right: ExprId) -> CondItem {
         let p = sema::binary_promote(
             sema::type_of(left, self.info).primitive(),
             sema::type_of(right, self.info).primitive(),
@@ -1005,7 +1037,7 @@ impl<'a> Gen<'a> {
             StackTy::Int => {
                 // javac folds `x <op> 0` to the compare-with-zero opcodes, but only
                 // when the literal `0` is the *right* operand.
-                if matches!(fold(right), Some(Const::Int(0))) {
+                if matches!(fold(self.exprs, right), Some(Const::Int(0))) {
                     self.gen_promoted_operand(left, PrimitiveType::Int);
                     int_zero_branch(op, true)
                 } else {
@@ -1102,7 +1134,7 @@ impl<'a> Gen<'a> {
     /// empty base operand stack (the non-empty case needs full_frames — a later
     /// rung). Codegen preflight rejects that shape, leaving this assert as an
     /// invariant guard.
-    fn gen_bool_value(&mut self, cond: &Expr) -> PrimitiveType {
+    fn gen_bool_value(&mut self, cond: ExprId) -> PrimitiveType {
         assert!(self.cur == 0, "materialized boolean with non-empty operand stack is unsupported");
         let c = self.gen_cond(cond);
 
@@ -1483,14 +1515,14 @@ impl<'a> Gen<'a> {
     // -------- statements --------
 
     /// `System.out.println(arg)`.
-    fn gen_expr_stmt(&mut self, expr: &Expr) {
-        match &expr.kind {
-            ExprKind::Println(arg) => self.gen_println(arg),
+    fn gen_expr_stmt(&mut self, expr: ExprId) {
+        match &self.exprs[expr] {
+            ExprKind::Println(arg) => self.gen_println(*arg),
             other => panic!("unsupported expression statement: {other:?}"),
         }
     }
 
-    fn gen_println(&mut self, arg: &Expr) {
+    fn gen_println(&mut self, arg: ExprId) {
         let field = self.cp.fieldref("java/lang/System", "out", "Ljava/io/PrintStream;");
         self.emitter.emit(Instruction::Field {
             opcode: GETSTATIC,
@@ -1519,7 +1551,7 @@ impl<'a> Gen<'a> {
     }
 
     /// Assign `value` into local `name`, coercing to the local's declared type.
-    fn store_to(&mut self, name: &Name, value: &Expr) {
+    fn store_to(&mut self, name: &Name, value: ExprId) {
         let target = self.info.ty(name);
         let slot = self.info.slot(name);
         self.gen_coerced(value, target);
@@ -1528,7 +1560,7 @@ impl<'a> Gen<'a> {
 
     /// Compound assignment `name op= value` (also `++`/`--`, which arrive as
     /// `op ∈ {Add,Sub}` with `value == 1`).
-    fn gen_compound(&mut self, name: &Name, op: BinOp, value: &Expr) {
+    fn gen_compound(&mut self, name: &Name, op: BinOp, value: ExprId) {
         let target = self.info.ty(name);
         let slot = self.info.slot(name);
 
@@ -1546,7 +1578,7 @@ impl<'a> Gen<'a> {
                 )
             )
         {
-            if let Some(c) = fold(value) {
+            if let Some(c) = fold(self.exprs, value) {
                 let k = to_i32(c);
                 let delta = if op == BinOp::Add { k } else { k.wrapping_neg() };
                 if slot <= 0xff && (-128..=127).contains(&delta) {
@@ -1589,7 +1621,7 @@ impl<'a> Gen<'a> {
         if op.is_shift() {
             self.gen_shift_distance(value);
             self.emit_shift(p, op);
-        } else if let Some(delta) = int_additive_const_delta(op, p, value) {
+        } else if let Some(delta) = int_additive_const_delta(self.exprs, op, p, value) {
             // javac normalizes an additive *constant* on an int-family target to a
             // non-negative magnitude, choosing the operator by the delta's sign — so
             // `char v -= -100` is `bipush 100; iadd` (then i2c), never `bipush -100;
@@ -1611,12 +1643,12 @@ impl<'a> Gen<'a> {
     /// Emit `value` coerced to `target` (assignment / initializer context): a
     /// constant is folded straight to a `target`-typed constant (no conversion
     /// opcode); a non-constant is emitted then widened.
-    fn gen_coerced(&mut self, value: &Expr, target: PrimitiveType) {
+    fn gen_coerced(&mut self, value: ExprId, target: PrimitiveType) {
         if target == PrimitiveType::Boolean && sema::type_of(value, self.info).is_boolean() {
             self.gen_bool_value(value);
             return;
         }
-        if let Some(c) = fold(value) {
+        if let Some(c) = fold(self.exprs, value) {
             self.load_const(const_convert(c, target), target);
         } else {
             let s = self.gen_nonconst(value);
@@ -1625,21 +1657,21 @@ impl<'a> Gen<'a> {
     }
 
     /// Emit `expr` leaving its natural-typed value on the stack; returns the type.
-    fn gen_value(&mut self, expr: &Expr) -> Type {
+    fn gen_value(&mut self, expr: ExprId) -> Type {
         // Value-mode parentheses are transparent. Handle them before the
         // primitive-only path so a parenthesized String literal keeps its class
         // type instead of being projected to `PrimitiveType`.
-        if let ExprKind::Paren(inner) = &expr.kind {
-            return self.gen_value(inner);
+        if let ExprKind::Paren(inner) = &self.exprs[expr] {
+            return self.gen_value(*inner);
         }
         // A string literal is the one non-numeric value form (only ever a
         // `println` argument); it loads via `ldc` of a `String` constant.
-        if let ExprKind::StringLit(s) = &expr.kind {
+        if let ExprKind::StringLit(s) = &self.exprs[expr] {
             let idx = self.cp.string(s);
             self.emit_ldc(idx);
             return Type::string();
         }
-        if let Some(c) = fold(expr) {
+        if let Some(c) = fold(self.exprs, expr) {
             let t = sema::type_of(expr, self.info);
             let primitive = t.primitive();
             self.load_const(const_convert(c, primitive), primitive);
@@ -1652,8 +1684,8 @@ impl<'a> Gen<'a> {
     /// Emit `expr` as an operand of a binary op whose promoted type is `p`,
     /// widening to `p`. A constant is loaded already in `p`; a non-constant is
     /// emitted in its own type then converted.
-    fn gen_promoted_operand(&mut self, expr: &Expr, p: PrimitiveType) {
-        if let Some(c) = fold(expr) {
+    fn gen_promoted_operand(&mut self, expr: ExprId, p: PrimitiveType) {
+        if let Some(c) = fold(self.exprs, expr) {
             self.load_const(const_convert(c, p), p);
         } else {
             let s = self.gen_nonconst(expr);
@@ -1662,33 +1694,34 @@ impl<'a> Gen<'a> {
     }
 
     /// Emit a non-constant expression, returning its static type.
-    fn gen_nonconst(&mut self, expr: &Expr) -> PrimitiveType {
-        match &expr.kind {
+    fn gen_nonconst(&mut self, expr: ExprId) -> PrimitiveType {
+        let exprs = self.exprs;
+        match &exprs[expr] {
             ExprKind::Name(n) => {
                 let ty = self.info.ty(n);
                 self.emit_load(self.info.slot(n), ty);
                 ty
             }
             ExprKind::Neg(e) => {
-                self.gen_value(e);
-                let p = sema::unary_promote(sema::type_of(e, self.info).primitive());
+                self.gen_value(*e);
+                let p = sema::unary_promote(sema::type_of(*e, self.info).primitive());
                 self.emit_op(neg_op(p.stack()));
                 p
             }
             ExprKind::BitNot(e) => {
-                self.gen_value(e);
-                let p = sema::unary_promote(sema::type_of(e, self.info).primitive());
+                self.gen_value(*e);
+                let p = sema::unary_promote(sema::type_of(*e, self.info).primitive());
                 self.emit_bitnot(p);
                 p
             }
-            ExprKind::Paren(e) => self.gen_value(e).primitive(),
+            ExprKind::Paren(e) => self.gen_value(*e).primitive(),
             ExprKind::Cast { ty, expr } => {
-                let s = self.gen_value(expr).primitive();
+                let s = self.gen_value(*expr).primitive();
                 let target = ty.primitive();
                 self.emit_convert(s, target);
                 target
             }
-            ExprKind::Binary { op, left, right } => self.gen_binary(*op, left, right),
+            ExprKind::Binary { op, left, right } => self.gen_binary(*op, *left, *right),
             ExprKind::Compare { .. } | ExprKind::Not(_) | ExprKind::Logical { .. } => {
                 self.gen_bool_value(expr)
             }
@@ -1700,8 +1733,8 @@ impl<'a> Gen<'a> {
     /// consumes as an `int`. javac narrows a *constant* distance to an int constant at
     /// compile time (`x << 40L` → `bipush 40`, not `ldc2_w 40l; l2i`); only a
     /// non-constant `long` distance keeps the runtime `l2i`.
-    fn gen_shift_distance(&mut self, right: &Expr) {
-        if let Some(c) = fold(right) {
+    fn gen_shift_distance(&mut self, right: ExprId) {
+        if let Some(c) = fold(self.exprs, right) {
             self.emit_int_const(to_i32(c)); // (int) narrowing of the constant
         } else {
             let at = self.gen_value(right);
@@ -1711,7 +1744,7 @@ impl<'a> Gen<'a> {
         }
     }
 
-    fn gen_binary(&mut self, op: BinOp, left: &Expr, right: &Expr) -> PrimitiveType {
+    fn gen_binary(&mut self, op: BinOp, left: ExprId, right: ExprId) -> PrimitiveType {
         let lt = sema::type_of(left, self.info).primitive();
         let rt = sema::type_of(right, self.info).primitive();
 
@@ -2145,20 +2178,20 @@ fn subint_narrow_op(cur: PrimitiveType, to: PrimitiveType) -> Option<u8> {
 /// leaf is a local. Uses wrapping integer arithmetic and exact IEEE-754 float
 /// arithmetic with JLS shift masking, so a folded constant is bit-identical to
 /// what the unfolded bytecode would compute.
-fn fold(expr: &Expr) -> Option<Const> {
-    fold_impl(expr, false)
+fn fold(exprs: &ExprArena, expr: ExprId) -> Option<Const> {
+    fold_impl(exprs, expr, false)
 }
 
 /// Return a value only when the complete subtree is available to javac lowering as
 /// an immediate. Unlike `fold`, a deciding logical left operand does not hide an
 /// unavailable right operand. This keeps non-strict shortcuts structural while
 /// preserving javac's observed `long >>> long` non-folding exception.
-fn lowering_const(expr: &Expr) -> Option<Const> {
-    fold_impl(expr, true)
+fn lowering_const(exprs: &ExprArena, expr: ExprId) -> Option<Const> {
+    fold_impl(exprs, expr, true)
 }
 
-fn fold_impl(expr: &Expr, strict_logical: bool) -> Option<Const> {
-    Some(match &expr.kind {
+fn fold_impl(exprs: &ExprArena, expr: ExprId, strict_logical: bool) -> Option<Const> {
+    Some(match &exprs[expr] {
         ExprKind::IntLit(v) => Const::Int(*v),
         ExprKind::LongLit(v) => Const::Long(*v),
         ExprKind::FloatLit(v) => Const::Float(*v),
@@ -2166,17 +2199,19 @@ fn fold_impl(expr: &Expr, strict_logical: bool) -> Option<Const> {
         ExprKind::BoolLit(b) => Const::Int(*b as i32),
         ExprKind::CharLit(v) => Const::Int(*v as i32),
         ExprKind::StringLit(_) | ExprKind::Name(_) | ExprKind::Println(_) => return None,
-        ExprKind::Neg(e) => neg_const(fold_impl(e, strict_logical)?),
-        ExprKind::BitNot(e) => bitnot_const(fold_impl(e, strict_logical)?),
-        ExprKind::Not(e) => Const::Int((to_i32(fold_impl(e, strict_logical)?) == 0) as i32),
-        ExprKind::Paren(e) => fold_impl(e, strict_logical)?,
+        ExprKind::Neg(e) => neg_const(fold_impl(exprs, *e, strict_logical)?),
+        ExprKind::BitNot(e) => bitnot_const(fold_impl(exprs, *e, strict_logical)?),
+        ExprKind::Not(e) => {
+            Const::Int((to_i32(fold_impl(exprs, *e, strict_logical)?) == 0) as i32)
+        }
+        ExprKind::Paren(e) => fold_impl(exprs, *e, strict_logical)?,
         ExprKind::Cast { ty, expr } => {
-            const_convert(fold_impl(expr, strict_logical)?, ty.primitive())
+            const_convert(fold_impl(exprs, *expr, strict_logical)?, ty.primitive())
         }
         ExprKind::Binary { op, left, right } => {
             let (l, r) = (
-                fold_impl(left, strict_logical)?,
-                fold_impl(right, strict_logical)?,
+                fold_impl(exprs, *left, strict_logical)?,
+                fold_impl(exprs, *right, strict_logical)?,
             );
             // javac's ConstFold folds *every* shift except `long >>> long` (unsigned
             // shift, both operands `long`) — a genuine javac quirk. Returning None
@@ -2192,8 +2227,8 @@ fn fold_impl(expr: &Expr, strict_logical: bool) -> Option<Const> {
             Const::Int(
                 eval_compare(
                     *op,
-                    fold_impl(left, strict_logical)?,
-                    fold_impl(right, strict_logical)?,
+                    fold_impl(exprs, *left, strict_logical)?,
+                    fold_impl(exprs, *right, strict_logical)?,
                 ) as i32,
             )
         }
@@ -2203,9 +2238,9 @@ fn fold_impl(expr: &Expr, strict_logical: bool) -> Option<Const> {
         // return `None` and let `gen_cond` emit it. When the left decides, return its
         // verdict WITHOUT folding the right; otherwise the tree reduces to the right.
         ExprKind::Logical { op, left, right } => {
-            let lb = to_i32(fold_impl(left, strict_logical)?) != 0;
+            let lb = to_i32(fold_impl(exprs, *left, strict_logical)?) != 0;
             if strict_logical {
-                let rb = to_i32(fold_impl(right, true)?) != 0;
+                let rb = to_i32(fold_impl(exprs, *right, true)?) != 0;
                 return Some(Const::Int(match op {
                     LogOp::And => (lb && rb) as i32,
                     LogOp::Or => (lb || rb) as i32,
@@ -2214,7 +2249,7 @@ fn fold_impl(expr: &Expr, strict_logical: bool) -> Option<Const> {
             match op {
                 LogOp::And if !lb => Const::Int(0),                  // false && _ -> false
                 LogOp::Or if lb => Const::Int(1),                    // true  || _ -> true
-                _ => Const::Int((to_i32(fold_impl(right, false)?) != 0) as i32),
+                _ => Const::Int((to_i32(fold_impl(exprs, *right, false)?) != 0) as i32),
             }
         }
     })
@@ -2377,11 +2412,16 @@ fn const_convert(c: Const, to: PrimitiveType) -> Const {
 /// RHS (`+= k` → `k`, `-= k` → `-k`), or `None` when javac's magnitude normalization
 /// does not apply: a non-int-family promoted type (`long`/`float`/`double` keep the
 /// raw `lsub`/…), a non-additive op, or a non-constant RHS.
-fn int_additive_const_delta(op: BinOp, p: PrimitiveType, value: &Expr) -> Option<i32> {
+fn int_additive_const_delta(
+    exprs: &ExprArena,
+    op: BinOp,
+    p: PrimitiveType,
+    value: ExprId,
+) -> Option<i32> {
     if p.stack() != StackTy::Int || !matches!(op, BinOp::Add | BinOp::Sub) {
         return None;
     }
-    let k = to_i32(fold(value)?);
+    let k = to_i32(fold(exprs, value)?);
     Some(if op == BinOp::Add { k } else { k.wrapping_neg() })
 }
 

@@ -8,8 +8,8 @@
 //! and conversion surface; `if`/`else` introduces the first control flow (and thus
 //! the `StackMapTable`). Locals are still declared at method-body scope.
 //!
-//! Recursion is expressed with `Box`, matching the plain-enum style of
-//! `classfile.rs`. Every statement carries the 1-based source line it starts on
+//! Expressions live in a compilation-unit-owned arena and refer to children by
+//! stable `ExprId`. Every statement carries the 1-based source line it starts on
 //! (plus the class carries the line of its closing brace) so codegen can build
 //! the LineNumberTable byte-identically to javac.
 
@@ -31,6 +31,7 @@ pub struct Name {
 pub struct CompilationUnit {
     pub span: Span,
     pub class: Class,
+    pub exprs: ExprArena,
 }
 
 /// `public class Name { ... }`.
@@ -219,12 +220,12 @@ pub enum StmtKind {
     LocalDecl {
         ty: Type,
         name: Name,
-        init: Option<Expr>,
+        init: Option<ExprId>,
     },
     /// `name = value;` — plain assignment to an already-declared local.
     Assign {
         name: Name,
-        value: Expr,
+        value: ExprId,
     },
     /// `name <op>= value;` — compound assignment. `++`/`--` are lowered here with
     /// `op = Add`/`Sub` and `value = IntLit(1)`. Pre/post form is irrelevant in
@@ -232,35 +233,60 @@ pub enum StmtKind {
     CompoundAssign {
         name: Name,
         op: BinOp,
-        value: Expr,
+        value: ExprId,
     },
     /// `if (cond) <then> [else <else>]`. Each branch is the block (or single
     /// statement) it guards. `else if` is just an `If` nested as the sole
     /// statement of `else_branch`. The enclosing `Stmt`'s line is the condition's
     /// source position; codegen marks it pending for the next emitted instruction.
     If {
-        cond: Expr,
+        cond: ExprId,
         then_branch: BranchBody,
         else_branch: Option<BranchBody>,
     },
     /// An expression used as a statement (only `System.out.println(...)`).
-    Expr(Expr),
+    Expr(ExprId),
 }
 
 /// Stable parser-assigned identity for one expression node.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub struct ExprId(pub usize);
+pub struct ExprId(usize);
 
-/// One expression node. Identity is independent of source spans and remains
-/// stable as semantic facts move into dense tables and storage moves to an arena.
-#[derive(Debug)]
-pub struct Expr {
-    pub id: ExprId,
-    pub kind: ExprKind,
+impl ExprId {
+    pub(crate) fn index(self) -> usize {
+        self.0
+    }
 }
 
-/// Expression payload. `Box` currently breaks recursion; a later storage change
-/// can replace child boxes with `ExprId` without changing semantic identity.
+/// Append-only storage for every expression payload in one compilation unit.
+/// Parser allocation order is child-before-parent, preserving the exact tree
+/// shape while allowing semantic facts to use `ExprId` as a dense table index.
+#[derive(Default, Debug)]
+pub struct ExprArena {
+    nodes: Vec<ExprKind>,
+}
+
+impl ExprArena {
+    pub(crate) fn alloc(&mut self, kind: ExprKind) -> ExprId {
+        let id = ExprId(self.nodes.len());
+        self.nodes.push(kind);
+        id
+    }
+
+    pub(crate) fn identity(&self) -> (usize, usize) {
+        (self.nodes.as_ptr() as usize, self.nodes.len())
+    }
+}
+
+impl std::ops::Index<ExprId> for ExprArena {
+    type Output = ExprKind;
+
+    fn index(&self, id: ExprId) -> &Self::Output {
+        &self.nodes[id.index()]
+    }
+}
+
+/// Expression payload. Recursive children are stable arena indices.
 #[derive(Debug)]
 pub enum ExprKind {
     /// An `int` literal, already parsed to its 32-bit value.
@@ -281,32 +307,32 @@ pub enum ExprKind {
     /// A reference to a local variable by name.
     Name(Name),
     /// Unary minus, e.g. `-x`. A literal operand is constant-folded by codegen.
-    Neg(Box<Expr>),
+    Neg(ExprId),
     /// Unary bitwise complement `~x` (int/long).
-    BitNot(Box<Expr>),
+    BitNot(ExprId),
     /// Logical negation `!x` (boolean).
-    Not(Box<Expr>),
+    Not(ExprId),
     /// A parenthesized expression. Grouping is semantically transparent, but the
     /// syntax can affect javac's boolean-item lowering and must survive parsing.
-    Paren(Box<Expr>),
+    Paren(ExprId),
     /// An explicit primitive cast `(Type) expr`.
     Cast {
         ty: Type,
-        expr: Box<Expr>,
+        expr: ExprId,
     },
     /// A binary arithmetic / bitwise / shift expression.
     Binary {
         op: BinOp,
-        left: Box<Expr>,
-        right: Box<Expr>,
+        left: ExprId,
+        right: ExprId,
     },
     /// A relational / equality comparison (`< <= > >= == !=`). Its static type is
     /// `boolean`; codegen lowers it either as a conditional branch (condition
     /// context) or as a materialized 0/1 (value context).
     Compare {
         op: CmpOp,
-        left: Box<Expr>,
-        right: Box<Expr>,
+        left: ExprId,
+        right: ExprId,
     },
     /// Short-circuit `&&` / `||`. Distinct from the bitwise `Binary { And | Or }`
     /// on booleans (those push both operands and emit `iand`/`ior`); these lower
@@ -314,11 +340,11 @@ pub enum ExprKind {
     /// when the left already decides the result.
     Logical {
         op: LogOp,
-        left: Box<Expr>,
-        right: Box<Expr>,
+        left: ExprId,
+        right: ExprId,
     },
     /// `System.out.println(arg)`.
-    Println(Box<Expr>),
+    Println(ExprId),
 }
 
 /// The two short-circuit logical operators. Their operands are `boolean`; the
@@ -330,8 +356,8 @@ pub enum LogOp {
 }
 
 /// The binary operators of the subset: arithmetic, bitwise, and shift. All are
-/// left-associative. Comparisons live in their own `CmpOp`/`Expr::Compare` and the
-/// short-circuit `&&`/`||` in `LogOp`/`Expr::Logical` (all lower to branches, not
+/// left-associative. Comparisons live in their own `CmpOp`/`ExprKind::Compare` and
+/// short-circuit `&&`/`||` in `LogOp`/`ExprKind::Logical` (all lower to branches, not
 /// stack ops). The bitwise `And`/`Or` here are the non-short-circuit `&`/`|`. `?:`
 /// is not yet supported.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

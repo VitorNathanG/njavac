@@ -417,15 +417,16 @@ source → lexer::lex → parser::parse → sema::analyze → codegen::generate 
   failures remain Rust panics rather than a diagnostic category.
 - **`lexer`** → flat `Vec<Token>`, each carrying a half-open source-byte `Span`
   plus the existing 1-based line used for a byte-identical `LineNumberTable`.
-- **`ast`** → plain enums, `Box` for recursion; declarations/statements carry
-  source spans while statements/braces retain their byte-visible line facts. One
+- **`ast`** → plain enums; declarations/statements carry source spans while
+  statements/braces retain their byte-visible line facts. One
   recursive `Type` (`Primitive` / canonical-internal-name `Class` / `Array`)
   represents Java types throughout the AST and sema; its copyable `PrimitiveType`
   leaf drives numeric promotion and opcode selection. `Type` centrally owns slot
   width, recursive descriptor writing, and verifier reference names; there is no
-  parallel semantic value-type enum. Every expression has a parser-assigned stable
-  `ExprId`; its payload lives in `ExprKind`, preparing child storage to move from
-  boxes to arena indices without changing semantic identity.
+  parallel semantic value-type enum. Every expression is a stable parser-assigned
+  `ExprId`; `CompilationUnit` owns the append-only `ExprArena` of `ExprKind`
+  payloads, statement roots and recursive children are IDs, and sema/codegen resolve
+  those IDs through the arena while semantic types remain a parallel dense table.
 - **`parser`** → recursive descent for declarations/statements and a single
   precedence-climbing loop for expressions; `infix_binding_power` is the ordered
   operator/associativity table.
@@ -551,7 +552,7 @@ code-free false verdict may independently preserve an `if` source position.
 available, including javac's observed `long >>> long` non-folding exception.
 Otherwise `gen_cond` walks it structurally. A deciding `true || q`/`false && q`
 becomes `Shortcut`; `!` turns that into `NegatedShortcut` (and repeated `!` keeps
-that origin). The parser preserves grouping as `Expr::Paren`; grouping is transparent
+that origin). The parser preserves grouping as `ExprKind::Paren`; grouping is transparent
 except directly around `NegatedShortcut`, where it sets `DiamondRequired` without
 emitting code. Thus `!(true||p) || q` leaves `q` bare, while `(!(true||p)) || q`
 diamonds `q`. A boolean cast is stronger: it materializes its operand once and

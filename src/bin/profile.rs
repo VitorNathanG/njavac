@@ -91,13 +91,13 @@ fn main() {
                 let tokens = lexer::lex(src).expect("valid fixture");
                 let unit = parser::parse(tokens).expect("valid fixture");
                 let analysis = sema::analyze(&unit).expect("valid fixture");
-                black_box(codegen::plan(&unit.class, &analysis, name).expect("valid fixture"));
+                black_box(codegen::plan(&unit, &analysis, name).expect("valid fixture"));
             }),
             "full" => time("full", rounds, trials, &fixtures, |src, name| {
                 let tokens = lexer::lex(src).expect("valid fixture");
                 let unit = parser::parse(tokens).expect("valid fixture");
                 let analysis = sema::analyze(&unit).expect("valid fixture");
-                black_box(codegen::generate(&unit.class, &analysis, name).expect("valid fixture"));
+                black_box(codegen::generate(&unit, &analysis, name).expect("valid fixture"));
             }),
             _ => unreachable!(),
         };
@@ -129,14 +129,14 @@ fn main() {
         let tokens = lexer::lex(src).expect("valid fixture");
         let unit = parser::parse(tokens).expect("valid fixture");
         let analysis = sema::analyze(&unit).expect("valid fixture");
-        black_box(codegen::plan(&unit.class, &analysis, name).expect("valid fixture"));
+        black_box(codegen::plan(&unit, &analysis, name).expect("valid fixture"));
     });
     let t_full = time("full", rounds, trials, &fixtures, |src, name| {
         // Full pipeline including codegen + class-file serialization.
         let tokens = lexer::lex(src).expect("valid fixture");
         let unit = parser::parse(tokens).expect("valid fixture");
         let analysis = sema::analyze(&unit).expect("valid fixture");
-        black_box(codegen::generate(&unit.class, &analysis, name).expect("valid fixture"));
+        black_box(codegen::generate(&unit, &analysis, name).expect("valid fixture"));
     });
 
     let per = |ns: f64| ns / compiles;

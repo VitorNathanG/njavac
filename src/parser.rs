@@ -17,8 +17,8 @@
 //! can rebuild the `LineNumberTable` byte-identically to javac.
 //!
 use crate::ast::{
-    BinOp, BranchBody, Class, CmpOp, CompilationUnit, Expr, ExprId, ExprKind, LogOp, Method,
-    Name, Param, PrimitiveType, Stmt, StmtKind, Type,
+    BinOp, BranchBody, Class, CmpOp, CompilationUnit, ExprArena, ExprId, ExprKind, LogOp,
+    Method, Name, Param, PrimitiveType, Stmt, StmtKind, Type,
 };
 use crate::diagnostic::{CompileResult, Diagnostic};
 use crate::lexer::{Token, TokenKind};
@@ -26,20 +26,18 @@ use crate::span::Span;
 
 /// Parse a token stream (as produced by `lexer::lex`) into a `CompilationUnit`.
 pub fn parse(tokens: Vec<Token>) -> CompileResult<CompilationUnit> {
-    Parser { tokens, pos: 0, next_expr_id: 0 }.compilation_unit()
+    Parser { tokens, pos: 0, exprs: ExprArena::default() }.compilation_unit()
 }
 
 struct Parser {
     tokens: Vec<Token>,
     pos: usize,
-    next_expr_id: usize,
+    exprs: ExprArena,
 }
 
 impl Parser {
-    fn expr(&mut self, kind: ExprKind) -> Expr {
-        let id = ExprId(self.next_expr_id);
-        self.next_expr_id += 1;
-        Expr { id, kind }
+    fn expr(&mut self, kind: ExprKind) -> ExprId {
+        self.exprs.alloc(kind)
     }
     fn peek(&self) -> &TokenKind {
         &self.tokens[self.pos].kind
@@ -106,7 +104,7 @@ impl Parser {
     }
 
     // compilation unit -> public class
-    fn compilation_unit(&mut self) -> CompileResult<CompilationUnit> {
+    fn compilation_unit(mut self) -> CompileResult<CompilationUnit> {
         let class = self.class()?;
         // Everything after the top-level class must be end of input.
         if !matches!(self.peek(), TokenKind::Eof) {
@@ -115,7 +113,7 @@ impl Parser {
                 format!("unexpected trailing token: {:?}", self.peek()),
             ));
         }
-        Ok(CompilationUnit { span: class.span, class })
+        Ok(CompilationUnit { span: class.span, class, exprs: self.exprs })
     }
 
     // `public class Name { <methods> }`
@@ -355,14 +353,14 @@ impl Parser {
 
     // ---- expressions ----
 
-    fn expression(&mut self) -> CompileResult<Expr> {
+    fn expression(&mut self) -> CompileResult<ExprId> {
         self.expression_bp(0)
     }
 
     /// Parse every binary/logical level from one binding-power table. All current
     /// operators are left-associative, so the right binding power is one greater
     /// than the left (`a+b+c` becomes `(a+b)+c`).
-    fn expression_bp(&mut self, min_bp: u8) -> CompileResult<Expr> {
+    fn expression_bp(&mut self, min_bp: u8) -> CompileResult<ExprId> {
         let mut left = self.unary()?;
         loop {
             let Some((op, left_bp, right_bp)) = infix_binding_power(self.peek()) else {
@@ -380,29 +378,29 @@ impl Parser {
     }
 
     // unary -> '-' unary | '~' unary | '(' primitive ')' unary | primary
-    fn unary(&mut self) -> CompileResult<Expr> {
+    fn unary(&mut self) -> CompileResult<ExprId> {
         let expr = match self.peek() {
             TokenKind::Minus => {
                 self.bump();
                 let inner = self.unary()?;
-                self.expr(ExprKind::Neg(Box::new(inner)))
+                self.expr(ExprKind::Neg(inner))
             }
             TokenKind::Tilde => {
                 self.bump();
                 let inner = self.unary()?;
-                self.expr(ExprKind::BitNot(Box::new(inner)))
+                self.expr(ExprKind::BitNot(inner))
             }
             TokenKind::Bang => {
                 self.bump();
                 let inner = self.unary()?;
-                self.expr(ExprKind::Not(Box::new(inner)))
+                self.expr(ExprKind::Not(inner))
             }
             TokenKind::LParen if self.is_cast() => {
                 self.bump(); // (
                 let ty = self.primitive_type()?;
                 self.expect(&TokenKind::RParen)?;
                 let inner = self.unary()?;
-                self.expr(ExprKind::Cast { ty, expr: Box::new(inner) })
+                self.expr(ExprKind::Cast { ty, expr: inner })
             }
             _ => return self.primary(),
         };
@@ -417,7 +415,7 @@ impl Parser {
     }
 
     // primary -> literal | '(' expression ')' | System.out.println(arg) | name
-    fn primary(&mut self) -> CompileResult<Expr> {
+    fn primary(&mut self) -> CompileResult<ExprId> {
         let token = self.bump();
         let expr = match token.kind {
             TokenKind::IntLit(v) => self.expr(ExprKind::IntLit(v)),
@@ -431,7 +429,7 @@ impl Parser {
             TokenKind::LParen => {
                 let inner = self.expression()?;
                 self.expect(&TokenKind::RParen)?;
-                self.expr(ExprKind::Paren(Box::new(inner)))
+                self.expr(ExprKind::Paren(inner))
             }
             // `System.out.println(arg)` — the only call shape in the subset.
             TokenKind::Ident(name) if name == "System" => {
@@ -454,7 +452,7 @@ impl Parser {
                 self.expect(&TokenKind::LParen)?;
                 let arg = self.expression()?;
                 self.expect(&TokenKind::RParen)?;
-                self.expr(ExprKind::Println(Box::new(arg)))
+                self.expr(ExprKind::Println(arg))
             }
             TokenKind::Ident(name) => {
                 self.expr(ExprKind::Name(Name { text: name, span: token.span }))
@@ -478,9 +476,7 @@ enum InfixOp {
 }
 
 impl InfixOp {
-    fn apply(self, left: Expr, right: Expr) -> ExprKind {
-        let left = Box::new(left);
-        let right = Box::new(right);
+    fn apply(self, left: ExprId, right: ExprId) -> ExprKind {
         match self {
             InfixOp::Binary(op) => ExprKind::Binary { op, left, right },
             InfixOp::Compare(op) => ExprKind::Compare { op, left, right },

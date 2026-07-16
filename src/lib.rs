@@ -28,5 +28,5 @@ pub fn compile(source: &str, source_file: &str) -> diagnostic::CompileResult<Vec
     let tokens = lexer::lex(source)?;
     let unit = parser::parse(tokens)?;
     let analysis = sema::analyze(&unit)?;
-    codegen::generate(&unit.class, &analysis, source_file)
+    codegen::generate(&unit, &analysis, source_file)
 }
