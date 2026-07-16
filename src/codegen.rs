@@ -1486,7 +1486,7 @@ impl<'a> Gen<'a> {
     fn gen_expr_stmt(&mut self, expr: &Expr) {
         match expr {
             Expr::Println(arg) => self.gen_println(arg),
-            other => panic!("unsupported expression statement: {:?}", DebugExpr(other)),
+            other => panic!("unsupported expression statement: {other:?}"),
         }
     }
 
@@ -1674,7 +1674,7 @@ impl<'a> Gen<'a> {
             }
             Expr::Binary { op, left, right } => self.gen_binary(*op, left, right),
             Expr::Compare { .. } | Expr::Not(_) | Expr::Logical { .. } => self.gen_bool_value(expr),
-            other => panic!("not a value expression: {:?}", DebugExpr(other)),
+            other => panic!("not a value expression: {other:?}"),
         }
     }
 
@@ -2416,31 +2416,4 @@ fn to_f64(c: Const) -> f64 {
 
 fn push_u16(code: &mut Vec<u8>, v: u16) {
     code.extend_from_slice(&v.to_be_bytes());
-}
-
-/// Minimal `Debug` shim for panic messages, since `ast::Expr` does not derive it.
-struct DebugExpr<'a>(&'a Expr);
-impl std::fmt::Debug for DebugExpr<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let kind = match self.0 {
-            Expr::IntLit(_) => "IntLit",
-            Expr::LongLit(_) => "LongLit",
-            Expr::FloatLit(_) => "FloatLit",
-            Expr::DoubleLit(_) => "DoubleLit",
-            Expr::BoolLit(_) => "BoolLit",
-            Expr::CharLit(_) => "CharLit",
-            Expr::StringLit(_) => "StringLit",
-            Expr::Name(_) => "Name",
-            Expr::Neg(_) => "Neg",
-            Expr::BitNot(_) => "BitNot",
-            Expr::Not(_) => "Not",
-            Expr::Paren(_) => "Paren",
-            Expr::Cast { .. } => "Cast",
-            Expr::Binary { .. } => "Binary",
-            Expr::Compare { .. } => "Compare",
-            Expr::Logical { .. } => "Logical",
-            Expr::Println(_) => "Println",
-        };
-        f.write_str(kind)
-    }
 }

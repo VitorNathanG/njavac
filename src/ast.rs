@@ -23,12 +23,14 @@ pub struct Name {
 }
 
 /// A whole compilation unit: exactly one top-level class.
+#[derive(Debug)]
 pub struct CompilationUnit {
     pub span: Span,
     pub class: Class,
 }
 
 /// `public class Name { ... }`.
+#[derive(Debug)]
 pub struct Class {
     pub span: Span,
     pub name: String,
@@ -41,6 +43,7 @@ pub struct Class {
 }
 
 /// A method declaration, e.g. `public static void main(String[] args)`.
+#[derive(Debug)]
 pub struct Method {
     pub span: Span,
     pub name: String,
@@ -53,6 +56,7 @@ pub struct Method {
 }
 
 /// One formal parameter: a name and its type.
+#[derive(Debug)]
 pub struct Param {
     pub span: Span,
     pub name: Name,
@@ -76,6 +80,7 @@ pub enum Type {
 }
 
 /// A single statement, tagged with the source line it begins on.
+#[derive(Debug)]
 pub struct Stmt {
     pub span: Span,
     pub line: u16,
@@ -83,12 +88,14 @@ pub struct Stmt {
 }
 
 /// One `if`/`else` arm, preserving whether Java source used braces.
+#[derive(Debug)]
 pub struct BranchBody {
     pub span: Span,
     pub braced: bool,
     pub stmts: Vec<Stmt>,
 }
 
+#[derive(Debug)]
 pub enum StmtKind {
     /// `<ty> name = init;` (initializer optional).
     LocalDecl {
@@ -123,6 +130,7 @@ pub enum StmtKind {
 }
 
 /// An expression. `Box` breaks the recursion for the compound forms.
+#[derive(Debug)]
 pub enum Expr {
     /// An `int` literal, already parsed to its 32-bit value.
     IntLit(i32),
