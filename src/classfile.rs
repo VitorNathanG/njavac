@@ -12,6 +12,8 @@ use std::rc::Rc;
 
 use crate::fxhash::FxHashMap;
 
+mod modified_utf8;
+
 /// A pool-local identity for one deduplicated string. Composite entries use these
 /// integer identities so their keys never re-hash or compare string contents.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -229,10 +231,7 @@ impl ConstantPool {
             match e {
                 Entry::Utf8(s) => {
                     buf.u8(1);
-                    // JVM modified UTF-8. ASCII is identical; good enough for now.
-                    let bytes = self.texts[s.0 as usize].as_bytes();
-                    buf.u16(bytes.len() as u16);
-                    buf.bytes(bytes);
+                    modified_utf8::write(&self.texts[s.0 as usize], buf);
                 }
                 Entry::Integer(v) => {
                     buf.u8(3);
