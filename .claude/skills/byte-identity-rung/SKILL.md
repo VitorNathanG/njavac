@@ -5,7 +5,8 @@ description: >-
   construct (a new operator, literal form, statement, type, control-flow shape,
   attribute, etc.) under the invariant that the emitted .class is byte-identical
   to the reference javac. Use when extending the compiler's supported surface,
-  when planning the next rung from README/ROADMAP, or when a fixture's bytes
+  when planning the next rung from README or its infrastructure prerequisites from
+  ROADMAP, or when a fixture's bytes
   diverge from javac's and you need to localize and fix it.
 ---
 
@@ -15,7 +16,8 @@ njavac's one invariant: for a supported program, its `.class` must equal the
 **pinned** javac's (`GraalVM CE 25.0.2-graalce`, class-file major 69)
 **byte-for-byte**. A "rung" is one new construct brought under that invariant.
 This is the repeatable workflow; the detailed mechanics live in CLAUDE.md, the
-coverage map in README, the infrastructure plan in ROADMAP.
+coverage map in README, the active infrastructure plan in ROADMAP, and deferred
+improvements in FUTURE_WORK.md.
 
 **Every command here is a `make` target — run it and it runs inside the pinned
 Docker image, so results are reproducible. Never invoke `javac`, `javap`, `njavac`,
@@ -139,9 +141,10 @@ silently narrowing the rung.
 ## 7. Docs in lockstep — in the *same* commit
 - **README**: check off the feature map, update scope prose.
 - **CLAUDE.md**: record the new mechanics and any byte-identity gotcha.
-- **ROADMAP**: check off any infrastructure item this touched.
+- **ROADMAP**: remove any active infrastructure item this completed.
 
 ## 8. Reflect at the end of the cycle
 Produce a short proposal — what went well, what went badly, what would help next
 time (a script, better docs, a refactor, another skill) — and bring it to the user
-through the question tool. Capture durable lessons in CLAUDE.md.
+through the question tool. Capture durable lessons in CLAUDE.md and accepted
+non-blocking improvements in FUTURE_WORK.md.

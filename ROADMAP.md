@@ -1,209 +1,83 @@
-# ROADMAP.md — infrastructure & architecture evolution
+# ROADMAP.md - active compiler evolution
 
-This is the **make-the-compiler-extensible** plan: the infrastructure and
-structural refactors that let njavac grow toward a fuller Java compiler while never
-losing byte-identity to `javac`. It owns *ordered infra work not yet done*, the
-record of what landed, and the open bug backlog; the full charter and its boundary
-against README.md (language coverage) and CLAUDE.md (mechanics + conventions) are
-defined once in **CLAUDE.md §"Documentation: one fact, one home"**. When an item here
-lands, check it off with a one-line "as built" and record the mechanics in CLAUDE.md
-— don't restate them here.
+This file is the **ordered working plan** for compiler infrastructure,
+architecture, and confirmed bugs. Work proceeds from top to bottom. Completed
+items are deleted rather than retained as history; the lasting record is the
+code, its fixtures and doc-comments, and git history.
 
-It came out of a three-way audit (front-end, back-end, dev/test infra) in 2026-07;
-this is the agreed sequencing.
+Language-feature order belongs in README.md. The long-term destination and the
+triggers for creating new subsystems belong in ARCHITECTURE.md. Current mechanics
+belong in CLAUDE.md. Non-blocking ideas belong in FUTURE_WORK.md until they are
+promoted into this sequence.
 
----
+## Landed Foundation
 
-## The core diagnosis
+The diagnostics, differential-testing tools, semantic local model, ordered
+attribute model, recursive type model, structural call parsing, semantic call
+resolution, and symbolic instruction assembler are established. See CLAUDE.md for
+current mechanics and git history for the changes that built them.
 
-njavac is a **clean core wearing a subset-shaped skin.** The architecture is not
-sloppy: `compile()` is a tidy four-stage pipeline, `classfile.rs`'s breadth-first
-constant-pool interning is a faithful model of javac's `PoolWriter`, and the
-opcode-selection helpers (`int_icmp_branch`, `classify_frame`, `subint_narrow_op`)
-are exemplary. What feels "hardcoded" is that every layer bakes in one assumption
-— *the input is always valid and always in-subset* — and a few data structures are
-shaped specifically for straight-line numeric code.
+## Active Sequence
 
-**The load-bearing insight: the dangerous failures as this grows are silent, not
-loud.** The initial audit found three immediate byte-level risks: local-slot and
-verifier-state drift, distributed `max_stack` accounting, and parallel
-constant-pool/attribute ordering. Phase 2.1–2.4 close their current concrete forms;
-the remaining work below removes the subset-shaped parser boundary before language
-growth resumes.
+### Restore Modified UTF-8 Correctness
 
-That reframes the plan. **The first investment is not a refactor — it is the
-safety net and feedback loop that make the refactors verifiable.** We don't touch
-the slot allocator until a fuzzer and a structural differ can instantly prove
-whether byte-identity broke.
+Replace the constant pool's ordinary UTF-8 serialization with JVM modified UTF-8.
+The currently supported string escape `"\0"` already reaches a `CONSTANT_Utf8`, so
+this is a current-surface correctness bug rather than future Unicode coverage.
+Land the smallest regression fixture with the fix.
 
----
+### Separate Existing Codegen Responsibilities
 
-## Sequencing at a glance
+Split the responsibilities already present in `src/codegen.rs` without changing
+behavior or creating the full future module tree. Isolate the symbolic method
+assembler, constant and opcode policy, condition lowering, and statement/value
+lowering behind explicit boundaries. Keep each move independently verifiable.
 
-| Phase | Theme | Why this order |
-| ----- | ----- | -------------- |
-| **0** | Enablers (fuzzer, single-fixture verify, structural differ, CI) | Cheap, immediately useful every turn; converts byte-identity into an automatic check *before* we touch load-bearing code. |
-| **1** | Diagnostics foundation (`Diagnostic` + `Span` + 3-way taxonomy) | Makes the fuzzer *trustworthy* (a real bug stops looking like "unsupported"); prerequisite for type-checking and parser recovery. |
-| **2** | Keystone refactors (sema scoping, attribute abstraction, `emit()` chokepoint, recursive `Type`) | Byte-preserving structural wins that unlock whole *families* of rungs — now provable by Phase 0's net. |
-| **3** | Resume language rungs (`&& || ?:`, loops, methods, string concat) | Each is now much cheaper and safer on the extensible foundation. |
+### Complete the Symbolic Assembler Boundary
 
-The connective thread between phases: **the fuzzer (Phase 0) depends on the
-taxonomy (Phase 1).** That integration is now complete: the current oracle contract
-lives in CLAUDE.md §Testing.
+Make the assembler the exclusive owner of symbolic method state. Branch-chain
+retargeting and frame requests must go through assembler operations rather than
+direct mutation from Java lowering.
 
----
+Complete instruction forms reachable by the current supported surface, one
+fixture-backed bug cycle at a time:
 
-## Phase 0 — Enablers
+- local loads and stores for slots above 255 using `wide`;
+- long conditional and unconditional branches using javac-compatible branch-form
+  selection during final layout.
 
-### 0.1 Differential fuzzer — ✅ DONE *(the highest-leverage item)*
-`make fuzz`: random in-scope Java through an exact-byte layer followed by persistent
-execution observation for byte divergences. The open behavioral finding backlog is
-below. The mechanics and the 5-touch "grow it for a new rung" list live in CLAUDE.md
-§Testing; deferred sub-features are in §"Deferred / opportunistic improvements".
+### Complete Semantic Attribution Facts
 
-### Fuzzer-found bug backlog
+Record the conversions and promoted types selected during attribution so lowering
+does not recompute semantic expression results. Expand resolved invocation facts to
+carry the selected owner, member, invocation kind, descriptor, parameter types, and
+return type; lowering should consume those facts without reconstructing library
+signatures.
+
+Do not build the future generic type arena, resolver environment, or source-type
+hierarchy until a language rung triggers those responsibilities.
+
+### Model the Typed Operand Stack
+
+Replace word-depth-only stack tracking with typed symbolic operand-stack state.
+Derive field and invocation effects from their modeled types or descriptors, and
+let frame requests snapshot the assembler's current stack rather than supplying a
+parallel manual vector.
+
+This is the infrastructure prerequisite for full-frame boolean materialization and
+the conditional-expression rung in README.md. Land it as a byte-preserving change
+before extending language behavior.
+
+### Resume Language Rungs
+
+Once the active infrastructure above is green, return to README.md §"Suggested
+next rungs". Any newly triggered structural prerequisite enters this sequence as a
+small tidy-first change; the feature itself remains tracked only in README.md.
+
+## Open Fuzzer Findings
 
 No open findings.
 
-### 0.2 Single-fixture verify — ✅ DONE
-`make verify FILE=<f>` (cached) / `make bench FILE=<f>` (online): compile one fixture,
-byte-compare, print the localized diff on mismatch. See CLAUDE.md §Testing.
-
-### 0.3 Structured class-file differ — ✅ DONE
-The `classdiff` bin (`make diff A=… B=…`) and the first-structural-divergence report
-the bench prints on any mismatch — works even when `javap` output matches. It is the
-mirror of the `classfile` writer (`njavac::classdump`). See CLAUDE.md §Testing.
-
-### 0.4 CI correctness gate — ✅ DONE
-`.github/workflows/ci.yml` runs `make correctness` (correctness only, no timing/fuzz)
-on push/PR in the pinned image — the unconditional backstop against a byte-breaking
-commit reaching `main`. A cold `docker build` each run for now (no GHA layer cache yet).
-
-### 0.5 Fast offline gate (volume-backed) — ✅ DONE
-`make verify` byte-compares njavac against goldens the pinned in-image javac recorded
-into a Docker volume — no javac spawns, ~1.3s for the whole suite (`make record`
-refreshes after a fixture/JDK change). `make bench` stays the authoritative
-from-scratch check. See CLAUDE.md §Testing.
-
----
-
-## Phase 1 — Diagnostics foundation — ✅ DONE
-
-`Diagnostic`/`Span` and the three-way returned-syntax/returned-unsupported/internal-
-panic taxonomy now run through every compiler stage, the CLI, and the fuzzer. See
-CLAUDE.md §Architecture for the stage contract and §Testing for the oracle policy.
-
----
-
-## Phase 2 — Keystone refactors
-
-All of these are **byte-preserving** — they re-express the current output, and
-Phase 0's net (fuzzer + differ + single-fixture verify + CI) proves it.
-
-### 2.1 Sema: scoped symbols + sema-owned verifier locals — ✅ DONE
-
-Landed; see CLAUDE.md §Architecture. Activating block-scoped declarations remains
-language-coverage work tracked by README.md §D, not part of this byte-preserving phase.
-
-### 2.2 Backend: `Attribute` abstraction — ✅ DONE
-
-Landed; see CLAUDE.md §"Where byte-identity is won or lost" for the ordered
-attribute model and the remaining phase-1 constant-pool ordering boundary.
-
-### 2.3 Backend: symbolic instruction assembler — ✅ DONE
-
-Landed; see CLAUDE.md §"Where byte-identity is won or lost" and ARCHITECTURE.md
-§"Symbolic bytecode".
-
-### 2.4 Front-end: recursive unified `Type` — ✅ DONE
-
-Landed; see CLAUDE.md §Architecture.
-
-### 2.5 Front-end: parser precedence table (Pratt) — ✅ DONE
-
-Landed; see CLAUDE.md §Architecture.
-
-### 2.6 De-hardcode the `main`/println/void/Object shape — ✅ DONE
-
-Landed; see CLAUDE.md §Architecture for modeled superclass/return types and
-sema-resolved method calls.
-
----
-
-## Cross-cutting notes
-
-- **Keep the plain-enum AST.** A visitor/fold framework would be premature at this
-  size and would fight the borrow checker for little gain. The friction is the
-  *closed, subset-specific type universe* and the *missing diagnostic/scope
-  infrastructure*, not the enum style. Fix those and the enums scale fine.
-- **Do not build a "correct core + javac-quirk overlay."** The project's entire
-  premise is byte-identity, so the whole compiler *is* the javac-matching layer;
-  splitting it would add complexity for its own sake, and several quirks (folding,
-  frame minimization) are too entangled with emission to separate cleanly. The
-  pragmatic form of this discipline is what the code already does well: keep each
-  javac-matching *decision* in a named pure function with a javac-referenced
-  rationale. Enforce that convention as switch/enum/record land (their heuristics —
-  `tableswitch`-vs-`lookupswitch` density, String-switch hashing, `$SwitchMap$`
-  synthesis — should each be one documented function, not inlined).
-- **No checked-in golden `.class` files.** javac stays the live reference; the
-  optional offline cache (0.5) is a git-ignored cache, never a source of truth.
-
----
-
-## Deferred / opportunistic improvements
-
-Smaller wins noticed mid-work that aren't big enough for a phase and don't block
-anything — captured here so they surface proactively instead of waiting until
-someone trips on them. End-of-cycle reflection (CLAUDE.md §Working conventions)
-files its "what would help" items here.
-
-- **Formatting: define a sanctioned rustfmt surface.** The repository is not
-  normalized to the current host rustfmt, so `cargo fmt --all` rewrites unrelated
-  files and obscures focused diffs. Pin the formatter/config (preferably through a
-  `make fmt-check` command using the repository's Rust toolchain) and decide whether
-  to do one explicit normalization change; until then, avoid repo-wide formatting.
-
-- **classdiff: disassemble the `code[]` array.** Today the bytecode is one raw-hex
-  field, so a `Code` divergence localizes to a byte offset but not an opcode.
-  Decoding the instruction stream would name the diverging op (and its operands).
-- **`make verify` staleness guard.** `verify` only auto-records when the volume is
-  *empty*; if fixtures change and you forget `make record`, it silently compares
-  against stale goldens. A freshness check (re-record when any fixture is newer than
-  the volume) would remove the footgun. `make correctness` already sidesteps it by
-  always using live javac.
-- **fuzz: observation-aware minimization.** Behavioral findings are emitted raw
-  because byte-only minimization can drift to an observationally-equivalent class.
-  Add a predicate that recompiles and re-observes each candidate, then add type-aware
-  expression shrinking (same-typed children, casts, and literals toward 0/1) so a
-  behavioral finding becomes directly droppable into `fixtures/`.
-- **fuzz: strengthen execution isolation with the first JVM-global capability.**
-  Before a generator rung can read `System.in`, exit, create threads, or mutate
-  process-global state, replace the current in-process class-loader boundary with a
-  disposable execution process and a parent-enforced timeout; see CLAUDE.md
-  §Testing for the current boundary.
-- **fuzz: generator-validity smoke gate.** The `v ^= 1.5` generator bug (compound
-  bitwise with a float RHS → javac-reject) was caught by eyeballing `--dump-sources`,
-  not systematically. A cheap gate asserting `generator-invalid ≈ 0` over a small
-  probe corpus would catch a new rung's generation code emitting invalid Java the
-  moment it regresses (today it silently lowers yield).
-- **fuzz: group String print arguments.** String arguments are generated as a
-  separate direct `PrintArg::Str`, so expression grouping never reaches them. Add
-  grouped String literals to the generator/minimizer; `ParenString.java` now guards
-  the compiler path, but fuzzing should exercise it compositionally.
-- **fuzz: "replay case N of seed S".** A mode to re-run/re-minimize one specific
-  finding (e.g. `Fuzz0000264`) without sweeping from the seed — a triage convenience
-  for working the backlog.
-- **fuzz: multi-seed census helper.** Now that a bare `make fuzz` uses a fresh random
-  seed, one run is a spot check — gauging "is the tail clearing?" means eyeballing
-  several runs. A `make fuzz-census [RUNS=n]` that runs n random seeds in one command
-  and prints the *union* of distinct finding signatures (with a reproduce-seed per
-  signature) would make progress-tracking one command. Noticed while clearing the
-  goto-compaction / materialization tail.
-## Status
-
-Phases 0–2 landed. The ordered language rungs live in README.md; all tests run
-through Docker via the `Makefile`.
-
-As items land, mark them ✅ in place and record the mechanics at the fix site / in
-CLAUDE.md — never restate them here, and delete a finished bug's backlog entry (per
-CLAUDE.md §"Documentation: one fact, one home").
+When a finding appears, work one signature through reproduction, minimization,
+fix, authoritative verification, regression fixture, and removal from this section
+before starting another.

@@ -24,7 +24,7 @@ can't drift the way a hand-maintained feature list does (it once still listed
 ## Working conventions
 
 **Documentation: one fact, one home — link, don't copy.** Keep the docs in lockstep
-with the code, in the *same* commit as the change. There are five homes, each with a
+with the code, in the *same* commit as the change. There are six homes, each with a
 charter and a boundary; when a doc needs a fact that lives in another, it **points to
 it by section name** instead of restating it. The failure this rule exists to kill is
 a fact written into two files' prose, where one copy later rots (the `&&`/`||` scope
@@ -37,7 +37,8 @@ a pointer.
   prose, and the forward-looking byte-identity gotchas for features not built yet.
   The source of truth for "is X supported?". **Update when** a rung lands or the
   supported surface moves. **Not here:** how a feature is implemented (→ CLAUDE.md
-  §Architecture), tooling/infra plans (→ ROADMAP), how-we-work rules (→ CLAUDE.md).
+  §Architecture), active tooling/infra plans (→ ROADMAP), deferred improvements
+  (→ FUTURE_WORK), how-we-work rules (→ CLAUDE.md).
 - **CLAUDE.md (this file) — how the compiler works and how we work.** Two charters:
   (a) **mechanics** — the byte-identity implementation *as it exists now* (the
   constant pool, `StackMapTable`, codegen lowering, the pipeline); (b) **conventions**
@@ -45,8 +46,9 @@ a pointer.
   **Update when** the implementation of a built feature changes, or the user gives a
   standing instruction (if the user tells you to do something a certain way, write it
   down here). **Not here:** the coverage checklist (→ README — do not re-enumerate
-  the supported surface; it drifts), infra work not yet built (→ ROADMAP), a lone
-  decision's fine detail that belongs in a code doc-comment at its function.
+  the supported surface; it drifts), active infra work not yet built (→ ROADMAP),
+  deferred improvements (→ FUTURE_WORK), or a lone decision's fine detail that
+  belongs in a code doc-comment at its function.
 - **ARCHITECTURE.md — the target structure.** The intended long-term layer/module
   boundaries, dependency rules, core contracts, byte-identity invariants, and the
   concrete triggers for creating those modules. **Update when** the agreed
@@ -60,7 +62,14 @@ a pointer.
   the regression fixture, and the git commit — not a ROADMAP entry. **Update when**
   work is planned, triaged, or **completed (by removing it)**. **Not here:**
   language-rung order (→ README), the mechanics of anything landed (→ CLAUDE.md or the
-  code), how-we-work rules (→ CLAUDE.md).
+  code), non-blocking improvement ideas (→ FUTURE_WORK), how-we-work rules
+  (→ CLAUDE.md).
+- **FUTURE_WORK.md — the deferred improvement pool.** Worthwhile tooling, testing,
+  workflow, and opportunistic refactor ideas that are not in the active sequence.
+  It is deliberately unordered. **Move an item to ROADMAP.md** when it becomes a
+  prerequisite or is explicitly selected for implementation; delete it when it is
+  no longer useful. **Not here:** active work order or confirmed bugs (→ ROADMAP),
+  language coverage (→ README), destination architecture (→ ARCHITECTURE).
 - **Code doc-comments & `make help` — the finest grain.** A specific javac-matching
   decision's rationale lives in the doc-comment on its function; the prose docs
   *reference the function*, they don't re-derive it. The command/flag list's source
@@ -118,7 +127,7 @@ a silent change. Cover three things:
 The point is continuous improvement — always look for a better way to do the job
 well, and capture the lesson (usually right here in CLAUDE.md, or as a skill/
 script) so the next cycle starts ahead of this one. File the concrete
-"what would help" items in ROADMAP.md §"Deferred / opportunistic improvements" so
+"what would help" items in FUTURE_WORK.md so
 they surface proactively instead of evaporating into the chat log — the correctness
 slowness sat there noticed-but-unwritten until it had to be tripped over. Keep this
 close to heart.
@@ -240,10 +249,10 @@ truth); its gates all build and run `bench` inside the pinned image:
 them directly (or `NJAVAC_BENCH_ALLOW_HOST=1 bench` to force host timing) is for
 debugging only and is **not** a sanctioned way to validate byte-identity.
 
-**Dev-loop tooling** (ROADMAP.md §Phase 0; CI gate 0.4 deferred), all invoked
-*through Docker* per the policy above:
+**Dev-loop tooling** (the landed foundation; deferred extensions live in
+FUTURE_WORK.md), all invoked *through Docker* per the policy above:
 
-- **Differential fuzzer (0.1).** `make fuzz [SEED=n COUNT=n BATCH=n]` generates
+- **Differential fuzzer.** `make fuzz [SEED=n COUNT=n BATCH=n]` generates
   random *in-scope* Java (`src/bin/fuzz/`), compiles each with njavac (in-process)
   and the pinned javac (via a **persistent in-memory worker** — see Performance
   below), then applies a two-layer oracle: exact byte comparison first, and a
@@ -318,15 +327,15 @@ debugging only and is **not** a sanctioned way to validate byte-identity.
     pass, a `ScopeCaps` flag) — run `make fuzz` as part of landing it, and
     `make fuzz-verify` if the rung reaches new class-file territory; run
     `make fuzz-observe-verify` after observer edits. The open
-    fuzzer-found bug backlog lives in ROADMAP.md §"Fuzzer-found bug backlog" (kept
+    fuzzer-found bug backlog lives in ROADMAP.md §"Open Fuzzer Findings" (kept
     there and not re-characterized here, so this pointer can't go stale).
 
-- **Single-fixture verify (0.2).** `make verify FILE=<File.java>` (fast, cached
+- **Single-fixture verify.** `make verify FILE=<File.java>` (fast, cached
   goldens) or `make bench FILE=<File.java>` (online) compiles just that fixture
   inside the container, byte-compares, prints the localized diff on mismatch, and
   skips timing. This is the edit→verify inner loop — not a hand-run
   `javac && njavac && cmp`.
-- **Structured differ (0.3).** On any mismatch the bench prints a **classdiff** —
+- **Structured differ.** On any mismatch the bench prints a **classdiff** —
   the first *substantive* structurally-divergent field with its byte offset and
   readable context (`methods[0].attr[0].Code.max_stack`, `cp[17].bytes`) — *before*
   the javap diff. A *derived* field (a count/byte-length like `constant_pool_count`
@@ -338,7 +347,7 @@ debugging only and is **not** a sanctioned way to validate byte-identity.
   even when javap output matches ("bytes differ, javap agrees"). The same engine
   (`njavac::classdump`) backs the `classdiff` bin, baked into the image; diff two
   class files with `make diff A=a.class B=b.class`.
-- **Fast offline gate (0.5).** `make verify` records goldens from the **pinned**
+- **Fast offline gate.** `make verify` records goldens from the **pinned**
   javac *inside* the image (one batch javac invocation) and persists them to a
   Docker volume (`njavac-goldens`), then byte-compares njavac against that cache
   with **no javac spawns** — ~1.3s for the whole suite vs ~30s online, entirely in

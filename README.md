@@ -4,7 +4,8 @@ A toy **Java 25 → JVM bytecode** compiler written in Rust whose one hard
 constraint is **byte-identical output to the reference `javac`** (GraalVM CE
 `25.0.2-graalce`, class-file major version 69). See [`CLAUDE.md`](CLAUDE.md) for the
 architecture and the benchmark that is also the test suite; its §"Documentation: one
-fact, one home" defines which of README / CLAUDE.md / ROADMAP owns what.
+fact, one home" defines the roles of README, CLAUDE.md, ARCHITECTURE.md, ROADMAP.md,
+and FUTURE_WORK.md.
 
 This document is the **language-coverage** home: what the compiler accepts today and,
 below, an enumeration of the Java 25 syntax that is **not yet implemented**.

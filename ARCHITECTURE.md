@@ -7,8 +7,9 @@ compiler should grow without losing byte identity to the pinned `javac`.
 It is a destination map, not an instruction to create empty modules. The active,
 ordered infrastructure work remains in **ROADMAP.md**; language coverage and the
 next language rungs remain in **README.md**; current implementation mechanics and
-working conventions remain in **CLAUDE.md**. New directories described here are
-created only when a concrete feature gives them a real responsibility.
+working conventions remain in **CLAUDE.md**; non-blocking improvements remain in
+**FUTURE_WORK.md**. New directories described here are created only when a concrete
+feature gives them a real responsibility.
 
 ---
 
