@@ -249,6 +249,15 @@ impl ConstantPool {
             .unwrap_or_else(|| panic!("class not interned: {internal_name}"))
     }
 
+    /// The slot of an already-interned `Utf8`. Attribute writing uses this only
+    /// after the phase-2 interning walk has frozen the pool.
+    pub fn utf8_index(&self, value: &str) -> u16 {
+        *self
+            .index
+            .get(&Entry::Utf8(Rc::from(value)))
+            .unwrap_or_else(|| panic!("Utf8 not interned: {value}"))
+    }
+
     fn serialize(&self, buf: &mut ByteBuf) {
         // Resolve child indices through borrowed lookup tables built once from
         // the ordered entries, so writing never reconstructs or clones an `Entry`
@@ -417,16 +426,13 @@ impl ClassFile {
         struct MethodIdx {
             name: u16,
             descriptor: u16,
-            code_attr: u16,
-            line_attr: u16,
-            stack_map_attr: Option<u16>,
         }
         let mut method_idx = Vec::new();
         for m in &self.methods {
             let name = cp.utf8(&m.name);
             let descriptor = cp.utf8(&m.descriptor);
-            let code_attr = cp.utf8("Code");
-            let line_attr = cp.utf8("LineNumberTable");
+            cp.utf8("Code");
+            cp.utf8("LineNumberTable");
             let stack_map_attr = (!m.stack_frames.is_empty()).then(|| cp.utf8("StackMapTable"));
             // Any `Class` a frame names (only `args`'s array type here, and only
             // when a full_frame lists it) is interned right after the attribute
@@ -436,12 +442,15 @@ impl ClassFile {
                     cp.class(&name);
                 }
             }
-            method_idx.push(MethodIdx { name, descriptor, code_attr, line_attr, stack_map_attr });
+            method_idx.push(MethodIdx { name, descriptor });
         }
 
         // Class attribute names.
-        let sourcefile_attr = cp.utf8("SourceFile");
-        let sourcefile_val = cp.utf8(&self.source_file);
+        cp.utf8("SourceFile");
+        cp.utf8(&self.source_file);
+
+        // The pool is frozen after the phase-2 walk. Body builders and attribute
+        // writers below may only resolve existing entries through immutable lookup.
 
         // ---- serialize ----
         // Presize to a whole small class file so the output never reallocs mid-write
@@ -464,50 +473,61 @@ impl ClassFile {
             buf.u16(mi.descriptor);
             buf.u16(1); // attributes_count: just Code
 
-            // The StackMapTable body (number_of_entries + frames), if any. Built
-            // first so it can be both measured and written.
-            let smt_body = mi
-                .stack_map_attr
-                .map(|_| stack_map_body(&m.stack_frames, &m.entry_locals, &cp));
-
-            // Code attribute.
-            // body: max_stack(2) max_locals(2) code_len(4) code exc_len(2)
-            //       attrs_count(2) + LineNumberTable attribute [+ StackMapTable]
-            let line_attr_len = 2 + 4 * m.line_numbers.len();
-            let smt_attr_len = smt_body.as_ref().map_or(0, |b| 6 + b.len());
-            let code_attrs = 1 + smt_body.is_some() as u16; // LineNumberTable [+ StackMapTable]
-            let code_attr_len = 2 + 2 + 4 + m.code.len() + 2 + 2 + (6 + line_attr_len) + smt_attr_len;
-            buf.u16(mi.code_attr);
-            buf.u32(code_attr_len as u32);
-            buf.u16(m.max_stack);
-            buf.u16(m.max_locals);
-            buf.u32(m.code.len() as u32);
-            buf.bytes(&m.code);
-            buf.u16(0); // exception_table_length
-            buf.u16(code_attrs);
-
-            // LineNumberTable first, then StackMapTable — javac's sub-attribute order.
-            buf.u16(mi.line_attr);
-            buf.u32(line_attr_len as u32);
-            buf.u16(m.line_numbers.len() as u16);
-            for &(pc, line) in &m.line_numbers {
-                buf.u16(pc);
-                buf.u16(line);
-            }
-            if let (Some(attr), Some(body)) = (mi.stack_map_attr, &smt_body) {
-                buf.u16(attr);
-                buf.u32(body.len() as u32);
-                buf.bytes(body);
-            }
+            let body = code_body(m, &cp);
+            write_attribute(&mut buf, &cp, "Code", &body);
         }
 
         buf.u16(1); // class attributes_count: SourceFile
-        buf.u16(sourcefile_attr);
-        buf.u32(2); // SourceFile length
-        buf.u16(sourcefile_val);
+        let body = source_file_body(&self.source_file, &cp);
+        write_attribute(&mut buf, &cp, "SourceFile", &body);
 
         buf.into_vec()
     }
+}
+
+/// Write an attribute header and its already-built body. The body buffer is the
+/// measurement boundary: no caller computes `attribute_length` independently.
+fn write_attribute(buf: &mut ByteBuf, cp: &ConstantPool, name: &str, body: &[u8]) {
+    buf.u16(cp.utf8_index(name));
+    buf.u32(body.len() as u32);
+    buf.bytes(body);
+}
+
+fn code_body(method: &Method, cp: &ConstantPool) -> Vec<u8> {
+    let line_body = line_number_table_body(&method.line_numbers);
+    let stack_map_body = (!method.stack_frames.is_empty())
+        .then(|| stack_map_body(&method.stack_frames, &method.entry_locals, cp));
+
+    let mut buf = ByteBuf::new();
+    buf.u16(method.max_stack);
+    buf.u16(method.max_locals);
+    buf.u32(method.code.len() as u32);
+    buf.bytes(&method.code);
+    buf.u16(0); // exception_table_length
+    buf.u16(1 + stack_map_body.is_some() as u16); // LineNumberTable [+ StackMapTable]
+
+    // LineNumberTable first, then StackMapTable — javac's sub-attribute order.
+    write_attribute(&mut buf, cp, "LineNumberTable", &line_body);
+    if let Some(body) = stack_map_body {
+        write_attribute(&mut buf, cp, "StackMapTable", &body);
+    }
+    buf.into_vec()
+}
+
+fn line_number_table_body(line_numbers: &[(u16, u16)]) -> Vec<u8> {
+    let mut buf = ByteBuf::new();
+    buf.u16(line_numbers.len() as u16);
+    for &(pc, line) in line_numbers {
+        buf.u16(pc);
+        buf.u16(line);
+    }
+    buf.into_vec()
+}
+
+fn source_file_body(source_file: &str, cp: &ConstantPool) -> Vec<u8> {
+    let mut buf = ByteBuf::new();
+    buf.u16(cp.utf8_index(source_file));
+    buf.into_vec()
 }
 
 /// Serialize a method's StackMapTable attribute *body* (`number_of_entries`
