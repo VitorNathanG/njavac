@@ -48,20 +48,21 @@ pub enum Entry {
 
 impl Entry {
     /// Direct children in the order javac enqueues them.
-    fn children(&self) -> Vec<Entry> {
+    fn children(&self) -> [Option<Entry>; 2] {
         match self {
             Entry::Utf8(_)
             | Entry::Integer(_)
             | Entry::Long(_)
             | Entry::Float(_)
-            | Entry::Double(_) => vec![],
-            Entry::Class(n) => vec![Entry::Utf8(n.clone())],
-            Entry::NameAndType(n, d) => vec![Entry::Utf8(n.clone()), Entry::Utf8(d.clone())],
-            Entry::Fieldref(o, n, d) | Entry::Methodref(o, n, d) => vec![
-                Entry::Class(o.clone()),
-                Entry::NameAndType(n.clone(), d.clone()),
+            | Entry::Double(_) => [None, None],
+            Entry::Class(n) => [Some(Entry::Utf8(n.clone())), None],
+            Entry::NameAndType(n, d) =>
+                [Some(Entry::Utf8(n.clone())), Some(Entry::Utf8(d.clone()))],
+            Entry::Fieldref(o, n, d) | Entry::Methodref(o, n, d) => [
+                Some(Entry::Class(o.clone())),
+                Some(Entry::NameAndType(n.clone(), d.clone())),
             ],
-            Entry::StringConst(s) => vec![Entry::Utf8(s.clone())],
+            Entry::StringConst(s) => [Some(Entry::Utf8(s.clone())), None],
         }
     }
 
@@ -82,6 +83,8 @@ pub struct ConstantPool {
     /// once any `Long`/`Double` (which each burn two indices) has been interned.
     slots: Vec<u16>,
     index: FxHashMap<Entry, u16>,
+    /// Reused scratch storage for one breadth-first intern walk.
+    queue: VecDeque<Entry>,
     /// Index the next interned entry will receive (also the `constant_pool_count`).
     next_index: u16,
 }
@@ -95,6 +98,7 @@ impl ConstantPool {
             entries: Vec::with_capacity(CAP),
             slots: Vec::with_capacity(CAP),
             index: FxHashMap::with_capacity_and_hasher(CAP, Default::default()),
+            queue: VecDeque::with_capacity(4),
             next_index: 1,
         }
     }
@@ -107,10 +111,8 @@ impl ConstantPool {
 
     /// Append a single entry (no child handling), assigning it the next index and
     /// advancing the counter by the entry's width.
-    fn alloc(&mut self, e: Entry) -> u16 {
-        if let Some(&i) = self.index.get(&e) {
-            return i;
-        }
+    fn alloc_new(&mut self, e: Entry) -> u16 {
+        debug_assert!(!self.index.contains_key(&e));
         let idx = self.next_index;
         self.next_index += e.width();
         self.entries.push(e.clone());
@@ -125,14 +127,14 @@ impl ConstantPool {
         if let Some(&i) = self.index.get(&e) {
             return i;
         }
-        let root = self.alloc(e.clone());
-        let mut queue = VecDeque::new();
-        queue.push_back(e);
-        while let Some(cur) = queue.pop_front() {
-            for child in cur.children() {
+        debug_assert!(self.queue.is_empty());
+        self.queue.push_back(e.clone());
+        let root = self.alloc_new(e);
+        while let Some(cur) = self.queue.pop_front() {
+            for child in cur.children().into_iter().flatten() {
                 if !self.index.contains_key(&child) {
-                    self.alloc(child.clone());
-                    queue.push_back(child);
+                    self.queue.push_back(child.clone());
+                    self.alloc_new(child);
                 }
             }
         }
