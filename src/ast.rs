@@ -13,7 +13,11 @@
 //! (plus the class carries the line of its closing brace) so codegen can build
 //! the LineNumberTable byte-identically to javac.
 
+use std::borrow::Cow;
+
 use crate::span::Span;
+
+pub const JAVA_LANG_STRING: &str = "java/lang/String";
 
 /// One source-level name occurrence.
 #[derive(Debug)]
@@ -63,10 +67,10 @@ pub struct Param {
     pub ty: Type,
 }
 
-/// The types the subset can name. The eight primitives plus `String[]`, which
-/// only ever appears as `main`'s parameter.
+/// A primitive Java type. This copyable leaf keeps numeric promotion and opcode
+/// selection cheap without creating a second semantic type universe.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Type {
+pub enum PrimitiveType {
     Int,
     Long,
     Float,
@@ -75,8 +79,122 @@ pub enum Type {
     Char,
     Byte,
     Short,
-    /// `String[]`, only ever `main`'s parameter.
-    StringArray,
+}
+
+impl PrimitiveType {
+    pub fn width(self) -> u16 {
+        match self {
+            PrimitiveType::Long | PrimitiveType::Double => 2,
+            _ => 1,
+        }
+    }
+
+    pub fn is_numeric(self) -> bool {
+        self != PrimitiveType::Boolean
+    }
+
+    pub fn is_integral(self) -> bool {
+        matches!(
+            self,
+            PrimitiveType::Int
+                | PrimitiveType::Long
+                | PrimitiveType::Char
+                | PrimitiveType::Byte
+                | PrimitiveType::Short
+        )
+    }
+
+    fn descriptor(self) -> char {
+        match self {
+            PrimitiveType::Int => 'I',
+            PrimitiveType::Long => 'J',
+            PrimitiveType::Float => 'F',
+            PrimitiveType::Double => 'D',
+            PrimitiveType::Boolean => 'Z',
+            PrimitiveType::Char => 'C',
+            PrimitiveType::Byte => 'B',
+            PrimitiveType::Short => 'S',
+        }
+    }
+}
+
+/// One Java semantic type. Class names are canonical JVM internal names; arrays
+/// recursively retain their element type instead of using a one-off `String[]`.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum Type {
+    Primitive(PrimitiveType),
+    Class(Cow<'static, str>),
+    Array(Box<Type>),
+}
+
+impl Type {
+    pub fn string() -> Self {
+        Type::Class(Cow::Borrowed(JAVA_LANG_STRING))
+    }
+
+    pub fn string_array() -> Self {
+        Type::Array(Box::new(Type::string()))
+    }
+
+    pub fn as_primitive(&self) -> Option<PrimitiveType> {
+        match self {
+            Type::Primitive(ty) => Some(*ty),
+            Type::Class(_) | Type::Array(_) => None,
+        }
+    }
+
+    pub fn primitive(&self) -> PrimitiveType {
+        self.as_primitive().expect("reference type used as a primitive")
+    }
+
+    pub fn is_boolean(&self) -> bool {
+        self.as_primitive() == Some(PrimitiveType::Boolean)
+    }
+
+    pub fn is_string(&self) -> bool {
+        matches!(self, Type::Class(name) if name.as_ref() == JAVA_LANG_STRING)
+    }
+
+    pub fn is_string_array(&self) -> bool {
+        matches!(self, Type::Array(element) if element.is_string())
+    }
+
+    pub fn width(&self) -> u16 {
+        self.as_primitive().map_or(1, PrimitiveType::width)
+    }
+
+    pub fn write_descriptor(&self, out: &mut String) {
+        match self {
+            Type::Primitive(ty) => out.push(ty.descriptor()),
+            Type::Class(name) => {
+                out.push('L');
+                out.push_str(name);
+                out.push(';');
+            }
+            Type::Array(element) => {
+                out.push('[');
+                element.write_descriptor(out);
+            }
+        }
+    }
+
+    pub fn verifier_name(&self) -> Option<String> {
+        match self {
+            Type::Primitive(_) => None,
+            Type::Class(name) => Some(name.to_string()),
+            Type::Array(_) => {
+                let mut descriptor = String::new();
+                self.write_descriptor(&mut descriptor);
+                Some(descriptor)
+            }
+        }
+    }
+}
+
+impl From<PrimitiveType> for Type {
+    fn from(value: PrimitiveType) -> Self {
+        Type::Primitive(value)
+    }
 }
 
 /// A single statement, tagged with the source line it begins on.

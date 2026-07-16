@@ -418,7 +418,12 @@ source → lexer::lex → parser::parse → sema::analyze → codegen::generate 
 - **`lexer`** → flat `Vec<Token>`, each carrying a half-open source-byte `Span`
   plus the existing 1-based line used for a byte-identical `LineNumberTable`.
 - **`ast`** → plain enums, `Box` for recursion; declarations/statements carry
-  source spans while statements/braces retain their byte-visible line facts.
+  source spans while statements/braces retain their byte-visible line facts. One
+  recursive `Type` (`Primitive` / canonical-internal-name `Class` / `Array`)
+  represents Java types throughout the AST and sema; its copyable `PrimitiveType`
+  leaf drives numeric promotion and opcode selection. `Type` centrally owns slot
+  width, recursive descriptor writing, and verifier reference names; there is no
+  parallel semantic value-type enum.
 - **`parser`** → recursive descent; precedence unary → `* / %` → `+ -`.
 - **`sema`** → supported-class-shape validation, operand-family checks, and
   occurrence-based local resolution: each declaration gets a stable `LocalId`,
@@ -431,8 +436,8 @@ source → lexer::lex → parser::parse → sema::analyze → codegen::generate 
   but two slots, and trailing `Top` is trimmed. Snapshots are shared immutable
   slices and rebuilt only when definite assignment changes, so statements whose
   verifier state is unchanged reuse one snapshot. Branch-local declarations remain
-  an explicit unsupported boundary. `type_of` implements unary/binary numeric
-  promotion from the resolved records.
+  an explicit unsupported boundary. `type_of` returns the unified `Type` and
+  implements unary/binary numeric promotion from the resolved records.
 - **`codegen`** → typed bytecode + `max_stack`/`max_locals` + `LineNumberTable`,
   via the `classfile` backend.
 - **`main`** is a thin javac-like CLI (`njavac [-d <dir>] <file.java> …`): it

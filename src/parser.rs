@@ -17,8 +17,8 @@
 //! can rebuild the `LineNumberTable` byte-identically to javac.
 //!
 use crate::ast::{
-    BinOp, BranchBody, Class, CmpOp, CompilationUnit, Expr, LogOp, Method, Name, Param, Stmt,
-    StmtKind, Type,
+    BinOp, BranchBody, Class, CmpOp, CompilationUnit, Expr, LogOp, Method, Name, Param,
+    PrimitiveType, Stmt, StmtKind, Type,
 };
 use crate::diagnostic::{CompileResult, Diagnostic};
 use crate::lexer::{Token, TokenKind};
@@ -183,7 +183,7 @@ impl Parser {
             self.bump();
             self.expect(&TokenKind::LBracket)?;
             self.expect(&TokenKind::RBracket)?;
-            return Ok(Type::StringArray);
+            return Ok(Type::string_array());
         }
         self.primitive_type()
     }
@@ -191,14 +191,14 @@ impl Parser {
     /// Consume a primitive type keyword.
     fn primitive_type(&mut self) -> CompileResult<Type> {
         let ty = match self.peek() {
-            TokenKind::Int => Type::Int,
-            TokenKind::Long => Type::Long,
-            TokenKind::Float => Type::Float,
-            TokenKind::Double => Type::Double,
-            TokenKind::Boolean => Type::Boolean,
-            TokenKind::Char => Type::Char,
-            TokenKind::Byte => Type::Byte,
-            TokenKind::Short => Type::Short,
+            TokenKind::Int => PrimitiveType::Int,
+            TokenKind::Long => PrimitiveType::Long,
+            TokenKind::Float => PrimitiveType::Float,
+            TokenKind::Double => PrimitiveType::Double,
+            TokenKind::Boolean => PrimitiveType::Boolean,
+            TokenKind::Char => PrimitiveType::Char,
+            TokenKind::Byte => PrimitiveType::Byte,
+            TokenKind::Short => PrimitiveType::Short,
             other => {
                 return Err(Diagnostic::parse(
                     self.span(),
@@ -207,7 +207,7 @@ impl Parser {
             }
         };
         self.bump();
-        Ok(ty)
+        Ok(ty.into())
     }
 
     // A single statement.

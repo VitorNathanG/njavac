@@ -24,12 +24,14 @@
 //! unconditional `goto` are threaded through — both exactly as javac does, so a
 //! method whose branches all fold stays byte-identical to its straight-line form.
 
-use crate::ast::{BinOp, Class, CmpOp, Expr, LogOp, Method, Name, Stmt, StmtKind, Type};
+use crate::ast::{
+    BinOp, Class, CmpOp, Expr, LogOp, Method, Name, PrimitiveType, Stmt, StmtKind, Type,
+};
 use crate::classfile::{
     ClassFile, CodeAttribute, ConstantPool, Method as CfMethod, StackFrame, VerificationType,
 };
 use crate::diagnostic::{CompileResult, Diagnostic};
-use crate::sema::{self, Analysis, FrameLocal, MethodInfo, StackTy, ValType};
+use crate::sema::{self, Analysis, FrameLocal, MethodInfo, StackTy};
 use crate::span::Span;
 
 // ---- opcodes ----
@@ -364,7 +366,7 @@ fn preflight_stmt(stmt: &Stmt, info: &MethodInfo) -> CompileResult<()> {
     match &stmt.kind {
         StmtKind::LocalDecl { name, init: Some(init), .. }
         | StmtKind::Assign { name, value: init } => {
-            if info.ty(name) == ValType::Boolean {
+            if info.ty(name) == PrimitiveType::Boolean {
                 preflight_materialization(init, false, stmt.span, info)?;
             } else {
                 preflight_value(init, false, stmt.span, info)?;
@@ -458,7 +460,7 @@ fn preflight_cond(
     }
     match expr {
         Expr::Not(inner) | Expr::Paren(inner) => preflight_cond(inner, base_live, span, info),
-        Expr::Cast { ty: Type::Boolean, expr } => {
+        Expr::Cast { ty, expr } if ty.is_boolean() => {
             preflight_materialization(expr, base_live, span, info)
         }
         Expr::Compare { left, right, .. } => {
@@ -556,17 +558,7 @@ fn gen_method(cp: &mut ConstantPool, method: &Method, info: &MethodInfo) -> CfMe
 fn descriptor_of(method: &Method) -> String {
     let mut d = String::from("(");
     for p in &method.params {
-        d.push_str(match p.ty {
-            Type::Int => "I",
-            Type::Long => "J",
-            Type::Float => "F",
-            Type::Double => "D",
-            Type::Boolean => "Z",
-            Type::Char => "C",
-            Type::Byte => "B",
-            Type::Short => "S",
-            Type::StringArray => "[Ljava/lang/String;",
-        });
+        p.ty.write_descriptor(&mut d);
     }
     d.push_str(")V");
     d
@@ -953,7 +945,7 @@ impl<'a> Gen<'a> {
         match e {
             Expr::Not(inner) => self.gen_cond(inner).negate(),
             Expr::Paren(inner) => self.gen_cond(inner).parenthesize(),
-            Expr::Cast { ty: Type::Boolean, expr } => {
+            Expr::Cast { ty, expr } if ty.is_boolean() => {
                 self.gen_bool_value(expr);
                 cond_stack_test()
             }
@@ -1000,35 +992,38 @@ impl<'a> Gen<'a> {
     /// (true polarity) is returned pending. Its operands are popped when the
     /// branch is finally emitted, in `emit_test_branch`.
     fn gen_compare_cond(&mut self, op: CmpOp, left: &Expr, right: &Expr) -> CondItem {
-        let p = sema::binary_promote(sema::type_of(left, self.info), sema::type_of(right, self.info));
+        let p = sema::binary_promote(
+            sema::type_of(left, self.info).primitive(),
+            sema::type_of(right, self.info).primitive(),
+        );
         let opcode = match p.stack() {
             StackTy::Int => {
                 // javac folds `x <op> 0` to the compare-with-zero opcodes, but only
                 // when the literal `0` is the *right* operand.
                 if matches!(fold(right), Some(Const::Int(0))) {
-                    self.gen_promoted_operand(left, ValType::Int);
+                    self.gen_promoted_operand(left, PrimitiveType::Int);
                     int_zero_branch(op, true)
                 } else {
-                    self.gen_promoted_operand(left, ValType::Int);
-                    self.gen_promoted_operand(right, ValType::Int);
+                    self.gen_promoted_operand(left, PrimitiveType::Int);
+                    self.gen_promoted_operand(right, PrimitiveType::Int);
                     int_icmp_branch(op, true)
                 }
             }
             StackTy::Long => {
-                self.gen_promoted_operand(left, ValType::Long);
-                self.gen_promoted_operand(right, ValType::Long);
+                self.gen_promoted_operand(left, PrimitiveType::Long);
+                self.gen_promoted_operand(right, PrimitiveType::Long);
                 self.emit_op(LCMP);
                 int_zero_branch(op, true)
             }
             StackTy::Float => {
-                self.gen_promoted_operand(left, ValType::Float);
-                self.gen_promoted_operand(right, ValType::Float);
+                self.gen_promoted_operand(left, PrimitiveType::Float);
+                self.gen_promoted_operand(right, PrimitiveType::Float);
                 self.emit_op(if matches!(op, CmpOp::Lt | CmpOp::Le) { FCMPG } else { FCMPL });
                 int_zero_branch(op, true)
             }
             StackTy::Double => {
-                self.gen_promoted_operand(left, ValType::Double);
-                self.gen_promoted_operand(right, ValType::Double);
+                self.gen_promoted_operand(left, PrimitiveType::Double);
+                self.gen_promoted_operand(right, PrimitiveType::Double);
                 self.emit_op(if matches!(op, CmpOp::Lt | CmpOp::Le) { DCMPG } else { DCMPL });
                 int_zero_branch(op, true)
             }
@@ -1102,7 +1097,7 @@ impl<'a> Gen<'a> {
     /// empty base operand stack (the non-empty case needs full_frames — a later
     /// rung). Codegen preflight rejects that shape, leaving this assert as an
     /// invariant guard.
-    fn gen_bool_value(&mut self, cond: &Expr) -> ValType {
+    fn gen_bool_value(&mut self, cond: &Expr) -> PrimitiveType {
         assert!(self.cur == 0, "materialized boolean with non-empty operand stack is unsupported");
         let c = self.gen_cond(cond);
 
@@ -1117,7 +1112,7 @@ impl<'a> Gen<'a> {
             && c.origin == CondOrigin::Ordinary
             && c.materialization == Materialization::BareAllowed
         {
-            return ValType::Boolean;
+            return PrimitiveType::Boolean;
         }
 
         let is_false = c.is_false();
@@ -1146,7 +1141,7 @@ impl<'a> Gen<'a> {
             self.place_label(lmerge);
             self.add_frame(vec![VerificationType::Integer]);
         }
-        ValType::Boolean
+        PrimitiveType::Boolean
     }
 
     /// Emit branch opcode `op` to a fresh label and return it as a one-site chain.
@@ -1499,14 +1494,15 @@ impl<'a> Gen<'a> {
         });
 
         let ty = self.gen_value(arg);
-        let desc = match ty {
-            ValType::Int | ValType::Byte | ValType::Short => "(I)V",
-            ValType::Long => "(J)V",
-            ValType::Float => "(F)V",
-            ValType::Double => "(D)V",
-            ValType::Char => "(C)V",
-            ValType::Boolean => "(Z)V",
-            ValType::String => "(Ljava/lang/String;)V",
+        let desc = match ty.as_primitive() {
+            Some(PrimitiveType::Int | PrimitiveType::Byte | PrimitiveType::Short) => "(I)V",
+            Some(PrimitiveType::Long) => "(J)V",
+            Some(PrimitiveType::Float) => "(F)V",
+            Some(PrimitiveType::Double) => "(D)V",
+            Some(PrimitiveType::Char) => "(C)V",
+            Some(PrimitiveType::Boolean) => "(Z)V",
+            None if ty.is_string() => "(Ljava/lang/String;)V",
+            None => unreachable!("unsupported println reference type"),
         };
         let method = self.cp.methodref("java/io/PrintStream", "println", desc);
         self.emitter.emit(Instruction::Invoke {
@@ -1533,9 +1529,17 @@ impl<'a> Gen<'a> {
 
         // iinc fast path: an `int` target, `+=`/`-=`, an int-family constant delta
         // that keeps the expression in `int`, and a slot/delta that fits.
-        if target == ValType::Int
+        if target == PrimitiveType::Int
             && matches!(op, BinOp::Add | BinOp::Sub)
-            && matches!(sema::type_of(value, self.info), ValType::Int | ValType::Byte | ValType::Short | ValType::Char)
+            && matches!(
+                sema::type_of(value, self.info).as_primitive(),
+                Some(
+                    PrimitiveType::Int
+                        | PrimitiveType::Byte
+                        | PrimitiveType::Short
+                        | PrimitiveType::Char
+                )
+            )
         {
             if let Some(c) = fold(value) {
                 let k = to_i32(c);
@@ -1558,11 +1562,11 @@ impl<'a> Gen<'a> {
                     // `x -= -32768` becomes `iload; ldc 32768; iadd; istore` (not
                     // `sipush -32768; isub`) and `x += -40000` becomes `… isub`.
                     // (This also lets `+= n` and `-= -n` share one pool entry.)
-                    self.emit_load(slot, ValType::Int);
+                    self.emit_load(slot, PrimitiveType::Int);
                     let (mag, add) = int_delta_magnitude(delta);
                     self.emit_int_const(mag);
                     self.emit_op(if add { IADD } else { ISUB });
-                    self.emit_store(slot, ValType::Int);
+                    self.emit_store(slot, PrimitiveType::Int);
                     return;
                 }
             }
@@ -1573,7 +1577,7 @@ impl<'a> Gen<'a> {
         let p = if op.is_shift() {
             sema::unary_promote(target)
         } else {
-            sema::binary_promote(target, sema::type_of(value, self.info))
+            sema::binary_promote(target, sema::type_of(value, self.info).primitive())
         };
         self.emit_load(slot, target);
         self.emit_convert(target, p);
@@ -1602,8 +1606,8 @@ impl<'a> Gen<'a> {
     /// Emit `value` coerced to `target` (assignment / initializer context): a
     /// constant is folded straight to a `target`-typed constant (no conversion
     /// opcode); a non-constant is emitted then widened.
-    fn gen_coerced(&mut self, value: &Expr, target: ValType) {
-        if target == ValType::Boolean && sema::type_of(value, self.info) == ValType::Boolean {
+    fn gen_coerced(&mut self, value: &Expr, target: PrimitiveType) {
+        if target == PrimitiveType::Boolean && sema::type_of(value, self.info).is_boolean() {
             self.gen_bool_value(value);
             return;
         }
@@ -1616,27 +1620,34 @@ impl<'a> Gen<'a> {
     }
 
     /// Emit `expr` leaving its natural-typed value on the stack; returns the type.
-    fn gen_value(&mut self, expr: &Expr) -> ValType {
+    fn gen_value(&mut self, expr: &Expr) -> Type {
+        // Value-mode parentheses are transparent. Handle them before the
+        // primitive-only path so a parenthesized String literal keeps its class
+        // type instead of being projected to `PrimitiveType`.
+        if let Expr::Paren(inner) = expr {
+            return self.gen_value(inner);
+        }
         // A string literal is the one non-numeric value form (only ever a
         // `println` argument); it loads via `ldc` of a `String` constant.
         if let Expr::StringLit(s) = expr {
             let idx = self.cp.string(s);
             self.emit_ldc(idx);
-            return ValType::String;
+            return Type::string();
         }
         if let Some(c) = fold(expr) {
             let t = sema::type_of(expr, self.info);
-            self.load_const(const_convert(c, t), t);
+            let primitive = t.primitive();
+            self.load_const(const_convert(c, primitive), primitive);
             t
         } else {
-            self.gen_nonconst(expr)
+            self.gen_nonconst(expr).into()
         }
     }
 
     /// Emit `expr` as an operand of a binary op whose promoted type is `p`,
     /// widening to `p`. A constant is loaded already in `p`; a non-constant is
     /// emitted in its own type then converted.
-    fn gen_promoted_operand(&mut self, expr: &Expr, p: ValType) {
+    fn gen_promoted_operand(&mut self, expr: &Expr, p: PrimitiveType) {
         if let Some(c) = fold(expr) {
             self.load_const(const_convert(c, p), p);
         } else {
@@ -1646,7 +1657,7 @@ impl<'a> Gen<'a> {
     }
 
     /// Emit a non-constant expression, returning its static type.
-    fn gen_nonconst(&mut self, expr: &Expr) -> ValType {
+    fn gen_nonconst(&mut self, expr: &Expr) -> PrimitiveType {
         match expr {
             Expr::Name(n) => {
                 let ty = self.info.ty(n);
@@ -1655,20 +1666,20 @@ impl<'a> Gen<'a> {
             }
             Expr::Neg(e) => {
                 self.gen_value(e);
-                let p = sema::unary_promote(sema::type_of(e, self.info));
+                let p = sema::unary_promote(sema::type_of(e, self.info).primitive());
                 self.emit_op(neg_op(p.stack()));
                 p
             }
             Expr::BitNot(e) => {
                 self.gen_value(e);
-                let p = sema::unary_promote(sema::type_of(e, self.info));
+                let p = sema::unary_promote(sema::type_of(e, self.info).primitive());
                 self.emit_bitnot(p);
                 p
             }
-            Expr::Paren(e) => self.gen_value(e),
+            Expr::Paren(e) => self.gen_value(e).primitive(),
             Expr::Cast { ty, expr } => {
-                let s = self.gen_value(expr);
-                let target = sema::valtype(*ty);
+                let s = self.gen_value(expr).primitive();
+                let target = ty.primitive();
                 self.emit_convert(s, target);
                 target
             }
@@ -1687,25 +1698,25 @@ impl<'a> Gen<'a> {
             self.emit_int_const(to_i32(c)); // (int) narrowing of the constant
         } else {
             let at = self.gen_value(right);
-            if at.stack() == StackTy::Long {
+            if at.primitive().stack() == StackTy::Long {
                 self.emit_op(L2I);
             }
         }
     }
 
-    fn gen_binary(&mut self, op: BinOp, left: &Expr, right: &Expr) -> ValType {
-        let lt = sema::type_of(left, self.info);
-        let rt = sema::type_of(right, self.info);
+    fn gen_binary(&mut self, op: BinOp, left: &Expr, right: &Expr) -> PrimitiveType {
+        let lt = sema::type_of(left, self.info).primitive();
+        let rt = sema::type_of(right, self.info).primitive();
 
         // `&`/`|`/`^` on two booleans: int opcode, boolean result.
         if matches!(op, BinOp::And | BinOp::Or | BinOp::Xor)
-            && lt == ValType::Boolean
-            && rt == ValType::Boolean
+            && lt == PrimitiveType::Boolean
+            && rt == PrimitiveType::Boolean
         {
             self.gen_value(left);
             self.gen_value(right);
-            self.emit_binop(ValType::Int, op);
-            return ValType::Boolean;
+            self.emit_binop(PrimitiveType::Int, op);
+            return PrimitiveType::Boolean;
         }
 
         if op.is_shift() {
@@ -1726,7 +1737,7 @@ impl<'a> Gen<'a> {
     // -------- emitters --------
 
     /// Load a constant already in family `ty` onto the stack.
-    fn load_const(&mut self, c: Const, ty: ValType) {
+    fn load_const(&mut self, c: Const, ty: PrimitiveType) {
         match ty.stack() {
             StackTy::Int => self.emit_int_const(to_i32(c)),
             StackTy::Long => self.emit_long_const(to_i64(c)),
@@ -1798,7 +1809,7 @@ impl<'a> Gen<'a> {
         }
     }
 
-    fn emit_load(&mut self, slot: u16, ty: ValType) {
+    fn emit_load(&mut self, slot: u16, ty: PrimitiveType) {
         let (short0, wide) = load_ops(ty);
         if slot <= 3 {
             self.emit_op(short0 + slot as u8);
@@ -1807,7 +1818,7 @@ impl<'a> Gen<'a> {
         }
     }
 
-    fn emit_store(&mut self, slot: u16, ty: ValType) {
+    fn emit_store(&mut self, slot: u16, ty: PrimitiveType) {
         let (short0, wide) = store_ops(ty);
         if slot <= 3 {
             self.emit_op(short0 + slot as u8);
@@ -1816,16 +1827,16 @@ impl<'a> Gen<'a> {
         }
     }
 
-    fn emit_binop(&mut self, p: ValType, op: BinOp) {
+    fn emit_binop(&mut self, p: PrimitiveType, op: BinOp) {
         self.emit_op(binop_op(p.stack(), op));
     }
 
-    fn emit_shift(&mut self, result: ValType, op: BinOp) {
+    fn emit_shift(&mut self, result: PrimitiveType, op: BinOp) {
         self.emit_op(shift_op(result.stack(), op));
     }
 
     /// `~x` == `x ^ -1`, with the `-1` loaded per the value's type.
-    fn emit_bitnot(&mut self, p: ValType) {
+    fn emit_bitnot(&mut self, p: PrimitiveType) {
         match p.stack() {
             StackTy::Long => {
                 let idx = self.cp.long(-1);
@@ -1840,12 +1851,12 @@ impl<'a> Gen<'a> {
     }
 
     /// Emit the conversion from `from` to `to`, if any, adjusting the stack.
-    fn emit_convert(&mut self, from: ValType, to: ValType) {
+    fn emit_convert(&mut self, from: PrimitiveType, to: PrimitiveType) {
         if from == to {
             return;
         }
         let fs = from.stack();
-        if matches!(to, ValType::Byte | ValType::Short | ValType::Char) {
+        if matches!(to, PrimitiveType::Byte | PrimitiveType::Short | PrimitiveType::Char) {
             // Bring the value to the `int` computational type first.
             match fs {
                 StackTy::Long => self.emit_op(L2I),
@@ -1854,7 +1865,7 @@ impl<'a> Gen<'a> {
                 StackTy::Int => {}
             }
             // Narrow within int-family only when `from` is wider than `to`.
-            let cur_ty = if fs == StackTy::Int { from } else { ValType::Int };
+            let cur_ty = if fs == StackTy::Int { from } else { PrimitiveType::Int };
             if let Some(op) = subint_narrow_op(cur_ty, to) {
                 self.emit_op(op);
             }
@@ -1935,7 +1946,7 @@ fn is_branch(op: u8) -> bool {
 }
 
 /// (slot-0 short opcode, wide opcode) for a load of type `ty`.
-fn load_ops(ty: ValType) -> (u8, u8) {
+fn load_ops(ty: PrimitiveType) -> (u8, u8) {
     match ty.stack() {
         StackTy::Int => (ILOAD_0, ILOAD),
         StackTy::Long => (LLOAD_0, LLOAD),
@@ -1944,7 +1955,7 @@ fn load_ops(ty: ValType) -> (u8, u8) {
     }
 }
 
-fn store_ops(ty: ValType) -> (u8, u8) {
+fn store_ops(ty: PrimitiveType) -> (u8, u8) {
     match ty.stack() {
         StackTy::Int => (ISTORE_0, ISTORE),
         StackTy::Long => (LSTORE_0, LSTORE),
@@ -2109,14 +2120,14 @@ fn verification_locals(locals: &[FrameLocal]) -> Vec<VerificationType> {
 /// *widening* `byte`->`short` emits `i2s` (numerically a no-op, but javac emits it),
 /// as does an implicit `short s = someByte;` assignment. `None` therefore means only
 /// `cur == to` (byte->byte / short->short / char->char).
-fn subint_narrow_op(cur: ValType, to: ValType) -> Option<u8> {
+fn subint_narrow_op(cur: PrimitiveType, to: PrimitiveType) -> Option<u8> {
     if cur == to {
         return None;
     }
     match to {
-        ValType::Byte => Some(I2B),
-        ValType::Short => Some(I2S),
-        ValType::Char => Some(I2C),
+        PrimitiveType::Byte => Some(I2B),
+        PrimitiveType::Short => Some(I2S),
+        PrimitiveType::Char => Some(I2C),
         _ => None,
     }
 }
@@ -2153,7 +2164,7 @@ fn fold_impl(expr: &Expr, strict_logical: bool) -> Option<Const> {
         Expr::Not(e) => Const::Int((to_i32(fold_impl(e, strict_logical)?) == 0) as i32),
         Expr::Paren(e) => fold_impl(e, strict_logical)?,
         Expr::Cast { ty, expr } => {
-            const_convert(fold_impl(expr, strict_logical)?, sema::valtype(*ty))
+            const_convert(fold_impl(expr, strict_logical)?, ty.primitive())
         }
         Expr::Binary { op, left, right } => {
             let (l, r) = (
@@ -2343,16 +2354,15 @@ fn promote_const(l: Const, r: Const) -> StackTy {
 
 /// Convert a constant to the value it becomes when cast/assigned to `to`, using
 /// Java's narrowing/widening semantics (Rust `as` matches JVM `d2i`/`l2i`/etc.).
-fn const_convert(c: Const, to: ValType) -> Const {
+fn const_convert(c: Const, to: PrimitiveType) -> Const {
     match to {
-        ValType::Int | ValType::Boolean => Const::Int(to_i32(c)),
-        ValType::Long => Const::Long(to_i64(c)),
-        ValType::Float => Const::Float(to_f32(c)),
-        ValType::Double => Const::Double(to_f64(c)),
-        ValType::Byte => Const::Int((to_i32(c) as i8) as i32),
-        ValType::Short => Const::Int((to_i32(c) as i16) as i32),
-        ValType::Char => Const::Int((to_i32(c) as u16) as i32),
-        ValType::String => c,
+        PrimitiveType::Int | PrimitiveType::Boolean => Const::Int(to_i32(c)),
+        PrimitiveType::Long => Const::Long(to_i64(c)),
+        PrimitiveType::Float => Const::Float(to_f32(c)),
+        PrimitiveType::Double => Const::Double(to_f64(c)),
+        PrimitiveType::Byte => Const::Int((to_i32(c) as i8) as i32),
+        PrimitiveType::Short => Const::Int((to_i32(c) as i16) as i32),
+        PrimitiveType::Char => Const::Int((to_i32(c) as u16) as i32),
     }
 }
 
@@ -2360,7 +2370,7 @@ fn const_convert(c: Const, to: ValType) -> Const {
 /// RHS (`+= k` → `k`, `-= k` → `-k`), or `None` when javac's magnitude normalization
 /// does not apply: a non-int-family promoted type (`long`/`float`/`double` keep the
 /// raw `lsub`/…), a non-additive op, or a non-constant RHS.
-fn int_additive_const_delta(op: BinOp, p: ValType, value: &Expr) -> Option<i32> {
+fn int_additive_const_delta(op: BinOp, p: PrimitiveType, value: &Expr) -> Option<i32> {
     if p.stack() != StackTy::Int || !matches!(op, BinOp::Add | BinOp::Sub) {
         return None;
     }

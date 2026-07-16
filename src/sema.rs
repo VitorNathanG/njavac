@@ -13,80 +13,34 @@
 //! branch-local declarations remain an explicit unsupported boundary.
 
 use crate::ast::{
-    BinOp, BranchBody, CmpOp, CompilationUnit, Expr, Method, Name, Stmt, StmtKind, Type,
+    BinOp, BranchBody, CmpOp, CompilationUnit, Expr, Method, Name, PrimitiveType, Stmt,
+    StmtKind, Type,
 };
 use crate::diagnostic::{CompileResult, Diagnostic};
 use crate::fxhash::{FxHashMap, FxHashSet};
 use crate::span::Span;
 
-/// The static type of an expression / local in the subset: the eight primitives
-/// plus `String` (only ever a string-literal `println` argument).
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum ValType {
-    Int,
-    Long,
-    Float,
-    Double,
-    Boolean,
-    Char,
-    Byte,
-    Short,
-    String,
-}
-
-impl ValType {
-    /// Local-slot / operand-stack width in words: `long`/`double` are 2, all
-    /// others (including the sub-int types, which live as `int` on the stack) 1.
-    pub fn width(self) -> u16 {
-        match self {
-            ValType::Long | ValType::Double => 2,
-            _ => 1,
-        }
-    }
-
+impl PrimitiveType {
     /// The JVM *computational* type this value occupies on the operand stack. The
     /// sub-int types (`boolean`/`char`/`byte`/`short`) are all `Int` on the stack.
     pub fn stack(self) -> StackTy {
         match self {
-            ValType::Long => StackTy::Long,
-            ValType::Float => StackTy::Float,
-            ValType::Double => StackTy::Double,
+            PrimitiveType::Long => StackTy::Long,
+            PrimitiveType::Float => StackTy::Float,
+            PrimitiveType::Double => StackTy::Double,
             _ => StackTy::Int,
         }
     }
-
-    /// Whether this is one of the sub-int integral types stored as an `int`.
-    pub fn is_subint(self) -> bool {
-        matches!(self, ValType::Boolean | ValType::Char | ValType::Byte | ValType::Short)
-    }
 }
 
-/// The four JVM operand-stack computational types the subset can produce (plus
-/// `reference`, which only `String` uses and which never participates in
-/// arithmetic here).
+/// The four JVM operand-stack computational types produced by primitive values.
+/// References stay in `Type` and never enter numeric opcode selection.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum StackTy {
     Int,
     Long,
     Float,
     Double,
-}
-
-/// The `ValType` an AST declared type denotes.
-pub fn valtype(ty: Type) -> ValType {
-    match ty {
-        Type::Int => ValType::Int,
-        Type::Long => ValType::Long,
-        Type::Float => ValType::Float,
-        Type::Double => ValType::Double,
-        Type::Boolean => ValType::Boolean,
-        Type::Char => ValType::Char,
-        Type::Byte => ValType::Byte,
-        Type::Short => ValType::Short,
-        // `String[]` is only ever `main`'s parameter, never read as a value; give
-        // it a placeholder so slot allocation can size it (one slot).
-        Type::StringArray => ValType::String,
-    }
 }
 
 /// Stable identity of one local declaration within a method.
@@ -97,10 +51,7 @@ pub struct LocalId(usize);
 pub struct LocalInfo {
     pub name: String,
     pub declaration: Span,
-    /// Source-level declared type. `ValType::String` alone cannot distinguish the
-    /// `String[]` parameter from a future String-valued local in verifier frames.
-    pub declared_ty: Type,
-    pub ty: ValType,
+    pub ty: Type,
     pub slot: u16,
 }
 
@@ -148,8 +99,12 @@ impl MethodInfo {
         self.local(name).slot
     }
 
-    pub fn ty(&self, name: &Name) -> ValType {
-        self.local(name).ty
+    pub fn ty(&self, name: &Name) -> PrimitiveType {
+        self.local(name).ty.primitive()
+    }
+
+    pub fn declared_type(&self, name: &Name) -> &Type {
+        &self.local(name).ty
     }
 
     pub fn entry_frame_locals(&self) -> &[FrameLocal] {
@@ -234,7 +189,7 @@ fn validate_class_shape(unit: &CompilationUnit) -> CompileResult<()> {
             "the supported `main` method must have one String[] parameter",
         ));
     }
-    if method.params[0].ty != Type::StringArray {
+    if !method.params[0].ty.is_string_array() {
         return Err(Diagnostic::unsupported_semantic(
             method.params[0].span,
             "the supported `main` parameter must have type String[]",
@@ -260,7 +215,7 @@ fn analyze_method(method: &Method) -> CompileResult<MethodInfo> {
 
     // Parameters take the low slots and are definitely assigned at method entry.
     for param in &method.params {
-        let id = analyzer.declare(&param.name, param.ty)?;
+        let id = analyzer.declare(&param.name, param.ty.clone())?;
         analyzer.assigned.insert(id);
     }
     analyzer.refresh_frame_locals();
@@ -318,14 +273,13 @@ impl MethodAnalyzer {
         }
     }
 
-    fn declare(&mut self, name: &Name, declared_ty: Type) -> CompileResult<LocalId> {
+    fn declare(&mut self, name: &Name, ty: Type) -> CompileResult<LocalId> {
         if self.scopes.iter().any(|scope| scope.symbols.contains_key(&name.text)) {
             return Err(Diagnostic::semantic(
                 name.span,
                 format!("duplicate local `{}`", name.text),
             ));
         }
-        let ty = valtype(declared_ty);
         let next = self.next_slot.checked_add(ty.width()).ok_or_else(|| {
             Diagnostic::unsupported_semantic(name.span, "method requires too many local slots")
         })?;
@@ -333,7 +287,6 @@ impl MethodAnalyzer {
         self.locals.push(LocalInfo {
             name: name.text.clone(),
             declaration: name.span,
-            declared_ty,
             ty,
             slot: self.next_slot,
         });
@@ -366,8 +319,8 @@ impl MethodAnalyzer {
         assert!(previous.is_none(), "name occurrence resolved more than once");
     }
 
-    fn local_type(&self, id: LocalId) -> ValType {
-        self.locals[id.0].ty
+    fn local_type(&self, id: LocalId) -> Type {
+        self.locals[id.0].ty.clone()
     }
 
     /// Build verifier locals from definite assignment and physical slot positions.
@@ -386,7 +339,7 @@ impl MethodAnalyzer {
         let mut starts: Vec<Option<FrameLocal>> = vec![None; last_assigned_slot as usize];
         for id in &self.assigned {
             let local = &self.locals[id.0];
-            let previous = starts[local.slot as usize].replace(frame_local(local.declared_ty));
+            let previous = starts[local.slot as usize].replace(frame_local(&local.ty));
             assert!(previous.is_none(), "assigned locals overlap at slot {}", local.slot);
         }
 
@@ -425,7 +378,7 @@ impl MethodAnalyzer {
         }
     }
 
-    fn read_local(&mut self, name: &Name) -> CompileResult<(LocalId, ValType)> {
+    fn read_local(&mut self, name: &Name) -> CompileResult<(LocalId, Type)> {
         let id = self.resolve(name)?;
         if !self.assigned.contains(&id) {
             return Err(Diagnostic::semantic(
@@ -446,11 +399,11 @@ impl MethodAnalyzer {
                         "local declarations inside branches are unsupported",
                     ));
                 }
-                let target = valtype(*ty);
-                let id = self.declare(name, *ty)?;
+                let target = ty.clone();
+                let id = self.declare(name, target.clone())?;
                 if let Some(init) = init {
                     let source = self.validate_expr(init, stmt.span)?;
-                    self.require_assignable(target, source, init, stmt.span)?;
+                    self.require_assignable(&target, &source, init, stmt.span)?;
                     self.mark_assigned(id);
                 }
             }
@@ -458,19 +411,19 @@ impl MethodAnalyzer {
                 let id = self.resolve(name)?;
                 let target = self.local_type(id);
                 let source = self.validate_expr(value, stmt.span)?;
-                self.require_assignable(target, source, value, stmt.span)?;
+                self.require_assignable(&target, &source, value, stmt.span)?;
                 self.mark_assigned(id);
             }
             StmtKind::CompoundAssign { name, op, value } => {
                 let (id, target) = self.read_local(name)?;
                 let source = self.validate_expr(value, stmt.span)?;
-                self.require_compound(*op, target, source, stmt.span)?;
+                self.require_compound(*op, &target, &source, stmt.span)?;
                 self.mark_assigned(id);
             }
             StmtKind::Expr(expr) => match expr {
                 Expr::Println(arg) => {
                     let ty = self.validate_expr(arg, stmt.span)?;
-                    if ty == ValType::String && !is_string_value(arg) {
+                    if ty.is_string() && !is_string_value(arg) {
                         return Err(Diagnostic::unsupported_semantic(
                             stmt.span,
                             "only string literals are supported as String values",
@@ -486,7 +439,7 @@ impl MethodAnalyzer {
             },
             StmtKind::If { cond, then_branch, else_branch } => {
                 let ty = self.validate_expr(cond, stmt.span)?;
-                if ty != ValType::Boolean {
+                if !ty.is_boolean() {
                     return Err(Diagnostic::semantic(stmt.span, "if condition must be boolean"));
                 }
 
@@ -534,18 +487,18 @@ impl MethodAnalyzer {
         Ok(())
     }
 
-    fn validate_expr(&mut self, expr: &Expr, span: Span) -> CompileResult<ValType> {
+    fn validate_expr(&mut self, expr: &Expr, span: Span) -> CompileResult<Type> {
         let ty = match expr {
-            Expr::IntLit(_) => ValType::Int,
-            Expr::LongLit(_) => ValType::Long,
-            Expr::FloatLit(_) => ValType::Float,
-            Expr::DoubleLit(_) => ValType::Double,
-            Expr::BoolLit(_) => ValType::Boolean,
-            Expr::CharLit(_) => ValType::Char,
-            Expr::StringLit(_) => ValType::String,
+            Expr::IntLit(_) => PrimitiveType::Int.into(),
+            Expr::LongLit(_) => PrimitiveType::Long.into(),
+            Expr::FloatLit(_) => PrimitiveType::Float.into(),
+            Expr::DoubleLit(_) => PrimitiveType::Double.into(),
+            Expr::BoolLit(_) => PrimitiveType::Boolean.into(),
+            Expr::CharLit(_) => PrimitiveType::Char.into(),
+            Expr::StringLit(_) => Type::string(),
             Expr::Name(name) => {
                 let (_, ty) = self.read_local(name)?;
-                if ty == ValType::String {
+                if ty.as_primitive().is_none() {
                     return Err(Diagnostic::unsupported_semantic(
                         name.span,
                         "using the String[] parameter as a value is unsupported",
@@ -555,25 +508,25 @@ impl MethodAnalyzer {
             }
             Expr::Neg(inner) => {
                 let ty = self.validate_expr(inner, span)?;
-                self.require_numeric(ty, span, "unary `-`")?;
-                unary_promote(ty)
+                self.require_numeric(&ty, span, "unary `-`")?;
+                unary_promote(ty.primitive()).into()
             }
             Expr::BitNot(inner) => {
                 let ty = self.validate_expr(inner, span)?;
-                self.require_integral(ty, span, "unary `~`")?;
-                unary_promote(ty)
+                self.require_integral(&ty, span, "unary `~`")?;
+                unary_promote(ty.primitive()).into()
             }
             Expr::Not(inner) => {
                 let ty = self.validate_expr(inner, span)?;
-                self.require_boolean(ty, span, "unary `!`")?;
-                ValType::Boolean
+                self.require_boolean(&ty, span, "unary `!`")?;
+                PrimitiveType::Boolean.into()
             }
             Expr::Paren(inner) => self.validate_expr(inner, span)?,
             Expr::Cast { ty, expr } => {
                 let source = self.validate_expr(expr, span)?;
-                let target = valtype(*ty);
-                if !((is_numeric(source) && is_numeric(target))
-                    || (source == ValType::Boolean && target == ValType::Boolean))
+                let target = ty.clone();
+                if !((is_numeric(&source) && is_numeric(&target))
+                    || (source.is_boolean() && target.is_boolean()))
                 {
                     return Err(Diagnostic::semantic(span, "invalid primitive cast"));
                 }
@@ -582,20 +535,20 @@ impl MethodAnalyzer {
             Expr::Binary { op, left, right } => {
                 let left_ty = self.validate_expr(left, span)?;
                 let right_ty = self.validate_expr(right, span)?;
-                self.validate_binary(*op, left_ty, right_ty, right, span)?
+                self.validate_binary(*op, &left_ty, &right_ty, right, span)?
             }
             Expr::Compare { op, left, right } => {
                 let left_ty = self.validate_expr(left, span)?;
                 let right_ty = self.validate_expr(right, span)?;
-                self.validate_compare(*op, left_ty, right_ty, span)?;
-                ValType::Boolean
+                self.validate_compare(*op, &left_ty, &right_ty, span)?;
+                PrimitiveType::Boolean.into()
             }
             Expr::Logical { left, right, .. } => {
                 let left_ty = self.validate_expr(left, span)?;
                 let right_ty = self.validate_expr(right, span)?;
-                self.require_boolean(left_ty, span, "logical operator")?;
-                self.require_boolean(right_ty, span, "logical operator")?;
-                ValType::Boolean
+                self.require_boolean(&left_ty, span, "logical operator")?;
+                self.require_boolean(&right_ty, span, "logical operator")?;
+                PrimitiveType::Boolean.into()
             }
             Expr::Println(_) => {
                 return Err(Diagnostic::semantic(
@@ -610,27 +563,27 @@ impl MethodAnalyzer {
     fn validate_binary(
         &self,
         op: BinOp,
-        left: ValType,
-        right: ValType,
+        left: &Type,
+        right: &Type,
         right_expr: &Expr,
         span: Span,
-    ) -> CompileResult<ValType> {
-        if op == BinOp::Add && (left == ValType::String || right == ValType::String) {
+    ) -> CompileResult<Type> {
+        if op == BinOp::Add && (left.is_string() || right.is_string()) {
             return Err(Diagnostic::unsupported_semantic(
                 span,
                 "String concatenation is unsupported",
             ));
         }
         if matches!(op, BinOp::And | BinOp::Or | BinOp::Xor)
-            && left == ValType::Boolean
-            && right == ValType::Boolean
+            && left.is_boolean()
+            && right.is_boolean()
         {
-            return Ok(ValType::Boolean);
+            return Ok(PrimitiveType::Boolean.into());
         }
         if op.is_shift() {
             self.require_integral(left, span, "shift operator")?;
             self.require_integral(right, span, "shift operator")?;
-            return Ok(unary_promote(left));
+            return Ok(unary_promote(left.primitive()).into());
         }
         if matches!(op, BinOp::And | BinOp::Or | BinOp::Xor) {
             self.require_integral(left, span, "bitwise operator")?;
@@ -639,9 +592,9 @@ impl MethodAnalyzer {
             self.require_numeric(left, span, "arithmetic operator")?;
             self.require_numeric(right, span, "arithmetic operator")?;
         }
-        let result = binary_promote(left, right);
+        let result = binary_promote(left.primitive(), right.primitive());
         if matches!(op, BinOp::Div | BinOp::Rem)
-            && is_integral(result)
+            && result.is_integral()
             && eval_numeric_constant(right_expr).is_some_and(NumericConst::is_zero)
         {
             return Err(Diagnostic::semantic(
@@ -649,25 +602,25 @@ impl MethodAnalyzer {
                 "integral division or remainder by zero",
             ));
         }
-        Ok(result)
+        Ok(result.into())
     }
 
     fn validate_compare(
         &self,
         op: CmpOp,
-        left: ValType,
-        right: ValType,
+        left: &Type,
+        right: &Type,
         span: Span,
     ) -> CompileResult<()> {
         if matches!(op, CmpOp::Eq | CmpOp::Ne) {
-            if left == ValType::String && right == ValType::String {
+            if left.is_string() && right.is_string() {
                 return Err(Diagnostic::unsupported_semantic(
                     span,
                     "reference comparison is unsupported",
                 ));
             }
             if (is_numeric(left) && is_numeric(right))
-                || (left == ValType::Boolean && right == ValType::Boolean)
+                || (left.is_boolean() && right.is_boolean())
             {
                 return Ok(());
             }
@@ -679,12 +632,12 @@ impl MethodAnalyzer {
 
     fn require_assignable(
         &self,
-        target: ValType,
-        source: ValType,
+        target: &Type,
+        source: &Type,
         expr: &Expr,
         span: Span,
     ) -> CompileResult<()> {
-        if target == ValType::String {
+        if target.as_primitive().is_none() {
             return Err(Diagnostic::semantic(
                 span,
                 "cannot assign a value to the String[] parameter",
@@ -692,7 +645,15 @@ impl MethodAnalyzer {
         }
         if is_assignment_convertible(target, source)
             || (is_integral(target)
-                && matches!(source, ValType::Int | ValType::Byte | ValType::Short | ValType::Char)
+                && matches!(
+                    source.as_primitive(),
+                    Some(
+                        PrimitiveType::Int
+                            | PrimitiveType::Byte
+                            | PrimitiveType::Short
+                            | PrimitiveType::Char
+                    )
+                )
                 && is_constant_expression(expr))
         {
             return Ok(());
@@ -706,15 +667,15 @@ impl MethodAnalyzer {
     fn require_compound(
         &self,
         op: BinOp,
-        target: ValType,
-        source: ValType,
+        target: &Type,
+        source: &Type,
         span: Span,
     ) -> CompileResult<()> {
         let valid = if op.is_shift() {
             is_integral(target) && is_integral(source)
         } else if matches!(op, BinOp::And | BinOp::Or | BinOp::Xor) {
             (is_integral(target) && is_integral(source))
-                || (target == ValType::Boolean && source == ValType::Boolean)
+                || (target.is_boolean() && source.is_boolean())
         } else {
             is_numeric(target) && is_numeric(source)
         };
@@ -725,7 +686,7 @@ impl MethodAnalyzer {
         }
     }
 
-    fn require_numeric(&self, ty: ValType, span: Span, context: &str) -> CompileResult<()> {
+    fn require_numeric(&self, ty: &Type, span: Span, context: &str) -> CompileResult<()> {
         if is_numeric(ty) {
             Ok(())
         } else {
@@ -733,7 +694,7 @@ impl MethodAnalyzer {
         }
     }
 
-    fn require_integral(&self, ty: ValType, span: Span, context: &str) -> CompileResult<()> {
+    fn require_integral(&self, ty: &Type, span: Span, context: &str) -> CompileResult<()> {
         if is_integral(ty) {
             Ok(())
         } else {
@@ -741,8 +702,8 @@ impl MethodAnalyzer {
         }
     }
 
-    fn require_boolean(&self, ty: ValType, span: Span, context: &str) -> CompileResult<()> {
-        if ty == ValType::Boolean {
+    fn require_boolean(&self, ty: &Type, span: Span, context: &str) -> CompileResult<()> {
+        if ty.is_boolean() {
             Ok(())
         } else {
             Err(Diagnostic::semantic(span, format!("{context} requires boolean operands")))
@@ -750,26 +711,31 @@ impl MethodAnalyzer {
     }
 }
 
-fn frame_local(ty: Type) -> FrameLocal {
+fn frame_local(ty: &Type) -> FrameLocal {
     match ty {
-        Type::Long => FrameLocal::Long,
-        Type::Float => FrameLocal::Float,
-        Type::Double => FrameLocal::Double,
-        Type::StringArray => FrameLocal::Object("[Ljava/lang/String;".to_string()),
-        Type::Int | Type::Boolean | Type::Char | Type::Byte | Type::Short => FrameLocal::Integer,
+        Type::Primitive(PrimitiveType::Long) => FrameLocal::Long,
+        Type::Primitive(PrimitiveType::Float) => FrameLocal::Float,
+        Type::Primitive(PrimitiveType::Double) => FrameLocal::Double,
+        Type::Primitive(_) => FrameLocal::Integer,
+        Type::Class(_) | Type::Array(_) => {
+            FrameLocal::Object(ty.verifier_name().expect("reference type has no verifier name"))
+        }
     }
 }
 
-fn is_numeric(ty: ValType) -> bool {
-    !matches!(ty, ValType::Boolean | ValType::String)
+fn is_numeric(ty: &Type) -> bool {
+    ty.as_primitive().is_some_and(PrimitiveType::is_numeric)
 }
 
-fn is_integral(ty: ValType) -> bool {
-    matches!(ty, ValType::Int | ValType::Long | ValType::Char | ValType::Byte | ValType::Short)
+fn is_integral(ty: &Type) -> bool {
+    ty.as_primitive().is_some_and(PrimitiveType::is_integral)
 }
 
-fn is_assignment_convertible(target: ValType, source: ValType) -> bool {
-    use ValType::*;
+fn is_assignment_convertible(target: &Type, source: &Type) -> bool {
+    use PrimitiveType::*;
+    let (Some(target), Some(source)) = (target.as_primitive(), source.as_primitive()) else {
+        return target == source;
+    };
     target == source
         || matches!(
             (source, target),
@@ -867,16 +833,16 @@ impl NumericConst {
         }
     }
 
-    fn cast(self, ty: Type) -> Option<Self> {
+    fn cast(self, ty: PrimitiveType) -> Option<Self> {
         Some(match ty {
-            Type::Int => Self::Int(self.to_i32()),
-            Type::Long => Self::Long(self.to_i64()),
-            Type::Float => Self::Float(self.to_f32()),
-            Type::Double => Self::Double(self.to_f64()),
-            Type::Byte => Self::Int((self.to_i32() as i8) as i32),
-            Type::Short => Self::Int((self.to_i32() as i16) as i32),
-            Type::Char => Self::Int((self.to_i32() as u16) as i32),
-            Type::Boolean | Type::StringArray => return None,
+            PrimitiveType::Int => Self::Int(self.to_i32()),
+            PrimitiveType::Long => Self::Long(self.to_i64()),
+            PrimitiveType::Float => Self::Float(self.to_f32()),
+            PrimitiveType::Double => Self::Double(self.to_f64()),
+            PrimitiveType::Byte => Self::Int((self.to_i32() as i8) as i32),
+            PrimitiveType::Short => Self::Int((self.to_i32() as i16) as i32),
+            PrimitiveType::Char => Self::Int((self.to_i32() as u16) as i32),
+            PrimitiveType::Boolean => return None,
         })
     }
 }
@@ -900,7 +866,7 @@ fn eval_numeric_constant(expr: &Expr) -> Option<NumericConst> {
             NumericConst::Float(_) | NumericConst::Double(_) => return None,
         },
         Expr::Paren(inner) => eval_numeric_constant(inner)?,
-        Expr::Cast { ty, expr } => eval_numeric_constant(expr)?.cast(*ty)?,
+        Expr::Cast { ty, expr } => eval_numeric_constant(expr)?.cast(ty.primitive())?,
         Expr::Binary { op, left, right } => {
             let left = eval_numeric_constant(left)?;
             let right = eval_numeric_constant(right)?;
@@ -1014,20 +980,20 @@ fn is_string_value(expr: &Expr) -> bool {
 /// Unary numeric promotion: `byte`/`short`/`char` (and `boolean`) become `int`;
 /// wider types are unchanged. Applied to the operand of a unary op and to the
 /// left operand of a shift.
-pub fn unary_promote(t: ValType) -> ValType {
+pub fn unary_promote(t: PrimitiveType) -> PrimitiveType {
     match t {
-        ValType::Long => ValType::Long,
-        ValType::Float => ValType::Float,
-        ValType::Double => ValType::Double,
-        ValType::Boolean => ValType::Boolean,
-        _ => ValType::Int,
+        PrimitiveType::Long => PrimitiveType::Long,
+        PrimitiveType::Float => PrimitiveType::Float,
+        PrimitiveType::Double => PrimitiveType::Double,
+        PrimitiveType::Boolean => PrimitiveType::Boolean,
+        _ => PrimitiveType::Int,
     }
 }
 
 /// Binary numeric promotion: the wider of the two operand types, with everything
 /// narrower than `int` promoted to `int`.
-pub fn binary_promote(a: ValType, b: ValType) -> ValType {
-    use ValType::*;
+pub fn binary_promote(a: PrimitiveType, b: PrimitiveType) -> PrimitiveType {
+    use PrimitiveType::*;
     if a == Double || b == Double {
         Double
     } else if a == Float || b == Float {
@@ -1041,38 +1007,38 @@ pub fn binary_promote(a: ValType, b: ValType) -> ValType {
 
 /// The static type of an expression, implementing promotion. `Println` is a
 /// `void` call and never appears as a value operand.
-pub fn type_of(expr: &Expr, info: &MethodInfo) -> ValType {
+pub fn type_of(expr: &Expr, info: &MethodInfo) -> Type {
     match expr {
-        Expr::IntLit(_) => ValType::Int,
-        Expr::LongLit(_) => ValType::Long,
-        Expr::FloatLit(_) => ValType::Float,
-        Expr::DoubleLit(_) => ValType::Double,
-        Expr::BoolLit(_) => ValType::Boolean,
-        Expr::CharLit(_) => ValType::Char,
-        Expr::StringLit(_) => ValType::String,
-        Expr::Name(n) => info.ty(n),
-        Expr::Neg(e) => unary_promote(type_of(e, info)),
-        Expr::BitNot(e) => unary_promote(type_of(e, info)),
-        Expr::Not(_) => ValType::Boolean,
+        Expr::IntLit(_) => PrimitiveType::Int.into(),
+        Expr::LongLit(_) => PrimitiveType::Long.into(),
+        Expr::FloatLit(_) => PrimitiveType::Float.into(),
+        Expr::DoubleLit(_) => PrimitiveType::Double.into(),
+        Expr::BoolLit(_) => PrimitiveType::Boolean.into(),
+        Expr::CharLit(_) => PrimitiveType::Char.into(),
+        Expr::StringLit(_) => Type::string(),
+        Expr::Name(n) => info.declared_type(n).clone(),
+        Expr::Neg(e) => unary_promote(type_of(e, info).primitive()).into(),
+        Expr::BitNot(e) => unary_promote(type_of(e, info).primitive()).into(),
+        Expr::Not(_) => PrimitiveType::Boolean.into(),
         Expr::Paren(e) => type_of(e, info),
-        Expr::Compare { .. } => ValType::Boolean,
-        Expr::Logical { .. } => ValType::Boolean,
-        Expr::Cast { ty, .. } => valtype(*ty),
+        Expr::Compare { .. } => PrimitiveType::Boolean.into(),
+        Expr::Logical { .. } => PrimitiveType::Boolean.into(),
+        Expr::Cast { ty, .. } => ty.clone(),
         Expr::Binary { op, left, right } => {
             let lt = type_of(left, info);
             let rt = type_of(right, info);
             // `&`/`|`/`^` on two booleans is boolean (non-short-circuit logical).
             if matches!(op, BinOp::And | BinOp::Or | BinOp::Xor)
-                && lt == ValType::Boolean
-                && rt == ValType::Boolean
+                && lt.is_boolean()
+                && rt.is_boolean()
             {
-                ValType::Boolean
+                PrimitiveType::Boolean.into()
             } else if op.is_shift() {
-                unary_promote(lt)
+                unary_promote(lt.primitive()).into()
             } else {
-                binary_promote(lt, rt)
+                binary_promote(lt.primitive(), rt.primitive()).into()
             }
         }
-        Expr::Println(_) => ValType::Int,
+        Expr::Println(_) => unreachable!("println does not have a value type"),
     }
 }

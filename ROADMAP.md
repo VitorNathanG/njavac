@@ -27,9 +27,9 @@ shaped specifically for straight-line numeric code.
 **The load-bearing insight: the dangerous failures as this grows are silent, not
 loud.** The initial audit found three immediate byte-level risks: local-slot and
 verifier-state drift, distributed `max_stack` accounting, and parallel
-constant-pool/attribute ordering. Phase 2.1–2.3 close their current concrete forms;
-the remaining work below removes the subset-shaped type and parser boundaries
-before language growth resumes.
+constant-pool/attribute ordering. Phase 2.1–2.4 close their current concrete forms;
+the remaining work below removes the subset-shaped parser boundary before language
+growth resumes.
 
 That reframes the plan. **The first investment is not a refactor — it is the
 safety net and feedback loop that make the refactors verifiable.** We don't touch
@@ -116,18 +116,9 @@ Landed; see CLAUDE.md §"Where byte-identity is won or lost". Full symbolic
 instructions and metadata remain the target described by ARCHITECTURE.md
 §"Symbolic bytecode".
 
-### 2.4 Front-end: recursive `Type`, collapse `Type`/`ValType`, `#[derive(Debug)]`
-- **What.** Make `Type` recursive (`Primitive | Class(name) | Array(Box<Type>) |
-  …`), retiring the `StringArray` special case; unify it with sema's parallel
-  `ValType` so "add a type" is one edit site, not four (`Type`, `ValType`,
-  `valtype()`, `descriptor_of`/`param_vti`/`local_vti`). Add `#[derive(Debug)]` to
-  the AST to delete the hand-maintained `DebugExpr` shim in `codegen.rs` (a
-  cross-file invariant that silently rots on every new `Expr` variant).
-- **Why.** The `StringArray` hack and the twin enums are the concrete source of the
-  "hardcoded, not extensible" feeling. `derive(Debug)` is tiny and pure win.
-- **Effort.** Small (`derive`) + medium (`Type`). Note `Type` becoming non-`Copy`
-  ripples through `Param`/`Cast`/`LocalDecl`/sema.
-- **Key files.** `ast.rs`, `sema.rs`, `codegen.rs`.
+### 2.4 Front-end: recursive unified `Type` — ✅ DONE
+
+Landed; see CLAUDE.md §Architecture.
 
 ### 2.5 Front-end: parser precedence table (Pratt)
 - **What.** Replace the eight hand-rolled binary-precedence ladder methods
@@ -144,16 +135,16 @@ instructions and metadata remain the target described by ARCHITECTURE.md
 
 ### 2.6 De-hardcode the `main`/println/void/Object shape
 - **What.** Parameterize `gen_init` on the superclass (not hardwired `Object`),
-  generalize `descriptor_of`/`param_vti` off `StringArray`/`)V`, and turn
-  `System.out.println` from a bespoke `Expr::Println` statement into an ordinary
-  method-call expression resolved in sema (deleting the parser's
-  name-resolution-in-the-parser layering violation).
+  model method return types instead of appending `)V`, and turn `System.out.println`
+  from a bespoke `Expr::Println` statement into an ordinary method-call expression
+  resolved in sema (deleting the parser's name-resolution-in-the-parser layering
+  violation).
 - **Why.** Small and mechanical, but it's what turns "one `main`" into "a real
   class with methods" — the unlock for the multiple-methods rung.
 - **Effort.** Small.
-- **Key files.** `codegen.rs` (`gen_init`, `descriptor_of`, `param_vti`,
-  `gen_expr_stmt`, `gen_println`), `parser.rs` (`primary`'s `System.out.println`
-  walk), `ast.rs`/`sema.rs` (a general `Call` node).
+- **Key files.** `codegen.rs` (`gen_init`, `descriptor_of`, `gen_expr_stmt`,
+  `gen_println`), `parser.rs` (`primary`'s `System.out.println` walk),
+  `ast.rs`/`sema.rs` (return types and a general `Call` node).
 
 ---
 
@@ -224,7 +215,7 @@ files its "what would help" items here.
   goto-compaction / materialization tail.
 ## Status
 
-Phases 0–1 and Phase 2.1–2.3 landed; Phase 2.4 is next. All tests run through Docker
+Phases 0–1 and Phase 2.1–2.4 landed; Phase 2.5 is next. All tests run through Docker
 via the `Makefile`.
 
 As items land, mark them ✅ in place and record the mechanics at the fix site / in
