@@ -19,13 +19,6 @@ current mechanics and git history for the changes that built them.
 
 ## Active Sequence
 
-### Restore Modified UTF-8 Correctness
-
-Replace the constant pool's ordinary UTF-8 serialization with JVM modified UTF-8.
-The currently supported string escape `"\0"` already reaches a `CONSTANT_Utf8`, so
-this is a current-surface correctness bug rather than future Unicode coverage.
-Land the smallest regression fixture with the fix.
-
 ### Separate Existing Codegen Responsibilities
 
 Split the responsibilities already present in `src/codegen.rs` without changing

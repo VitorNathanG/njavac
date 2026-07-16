@@ -131,8 +131,8 @@ not the parsing — is where byte-identity is won or lost.
 - [ ] Text blocks (`"""…"""`) — Java 15; compile to a **single `String`
       constant** after javac's incidental-whitespace stripping (see gotchas)
 - [~] Unicode escapes (`\uXXXX`) — **partially done**: decoded *inside* `char`
-      (and string) literals; the general pre-lexer `\uXXXX` pass and non-ASCII
-      source stored as **modified UTF-8** (`"étude"` → `… c3 a9 …`) are still open
+      and string literals, with decoded strings serialized as JVM modified UTF-8;
+      the general pre-lexer `\uXXXX` pass and direct non-ASCII source are still open
 - [x] Escape sequences — done for octal (`\0`–`\377`) and `\s` (Java 15) on top of
       `\t \n \r \" \\ \' \b \f`; the text-block line-continuation `\` before a
       newline remains (text blocks are out of scope)

@@ -504,8 +504,10 @@ those integer identities, so composite lookup never re-hashes string contents.
 Text-ID order has no byte-level meaning: only the separate ordered `entries`
 vector determines pool insertion and serialization order. Both maps use custom
 FxHash purely for speed; hashing never affects output, and serialization resolves
-child entries directly through the frozen integer-keyed intern map. Always re-run
-the bench's correctness pass after changes.
+child entries directly through the frozen integer-keyed intern map. `Utf8` payloads
+are serialized from Java UTF-16 code units with JVM modified UTF-8: NUL is `c0 80`
+and each surrogate is encoded independently. Always re-run the bench's correctness
+pass after changes.
 
 The class-file model uses the owned `Attribute` enum for `Code`,
 `LineNumberTable`, `StackMapTable`, and `SourceFile`. Methods and classes hold
