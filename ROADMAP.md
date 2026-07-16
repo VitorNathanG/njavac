@@ -201,13 +201,6 @@ anything — captured here so they surface proactively instead of waiting until
 someone trips on them. End-of-cycle reflection (CLAUDE.md §Working conventions)
 files its "what would help" items here.
 
-- **Restore verifier-snapshot throughput.** A same-host, same-corpus `make profile`
-  comparison isolates the Phase 2 slowdown to `5614c1e` (sema-owned verifier
-  locals): per-statement snapshot construction and lookup moved the hot pipeline
-  from roughly 17 µs to 25 µs per file. Reduce that allocation/hash overhead without
-  reintroducing codegen's parallel local-state model, then compare profiler mins on
-  the same host and corpus.
-
 - **Formatting: define a sanctioned rustfmt surface.** The repository is not
   normalized to the current host rustfmt, so `cargo fmt --all` rewrites unrelated
   files and obscures focused diffs. Pin the formatter/config (preferably through a

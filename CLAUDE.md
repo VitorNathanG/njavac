@@ -472,10 +472,13 @@ collapse **every** NaN to javac's canonical `0x7fc00000` / `0x7ff8000000000000`
 (what `Float.floatToIntBits` / `Double.doubleToLongBits` write) before interning,
 so all NaN dedup to one entry while `-0.0` (not a NaN) stays distinct from `+0.0`.
 This is load-bearing: a folded `-(0.0f/0.0f)` carries a sign-flipped NaN
-(`0xffc00000`) that only matches javac once canonicalized. The dedup map uses a
-custom FxHash purely for speed; the hash never
-affects output, and serialization is deliberately allocation-free (child indices
-resolved through borrowed lookup tables, not cloned `Entry` keys). Always re-run
+(`0xffc00000`) that only matches javac once canonicalized. Text is deduplicated
+once into pool-local `TextId`s; `Entry` keys and their child references carry
+those integer identities, so composite lookup never re-hashes string contents.
+Text-ID order has no byte-level meaning: only the separate ordered `entries`
+vector determines pool insertion and serialization order. Both maps use custom
+FxHash purely for speed; hashing never affects output, and serialization resolves
+child entries directly through the frozen integer-keyed intern map. Always re-run
 the bench's correctness pass after changes.
 
 The class-file model uses the owned `Attribute` enum for `Code`,

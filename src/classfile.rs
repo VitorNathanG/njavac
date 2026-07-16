@@ -12,18 +12,16 @@ use std::rc::Rc;
 
 use crate::fxhash::FxHashMap;
 
-/// A logical constant-pool entry, keyed by its owned contents so we can dedup
-/// (intern) identical entries. Child references are stored as keys and resolved
-/// to indices at serialization time via the intern map.
-///
-/// The string fields are `Rc<str>`, not `String`: interning clones entries and
-/// synthesizes children (`children()`) constantly, and with `Rc<str>` every such
-/// clone is a refcount bump instead of a heap copy of the bytes. This is purely a
-/// representation choice — `Rc<str>` hashes and compares by content, so dedup and
-/// therefore the emitted pool are byte-identical.
-#[derive(Clone, PartialEq, Eq, Hash)]
-pub enum Entry {
-    Utf8(Rc<str>),
+/// A pool-local identity for one deduplicated string. Composite entries use these
+/// integer identities so their keys never re-hash or compare string contents.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct TextId(u16);
+
+/// A logical constant-pool entry. Child references use pool-local text identities
+/// and are resolved to constant-pool slots at serialization time via `index`.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum Entry {
+    Utf8(TextId),
     /// A CONSTANT_Integer: a 4-byte `int` value. A leaf (no children).
     Integer(i32),
     /// A CONSTANT_Long: an 8-byte `long`. A leaf; **occupies two pool indices**.
@@ -36,33 +34,33 @@ pub enum Entry {
     /// per `Double.doubleToLongBits`. A leaf; **occupies two pool indices**.
     Double(u64),
     /// Class by internal name, e.g. "java/lang/Object". Child: Utf8(name).
-    Class(Rc<str>),
+    Class(TextId),
     /// name + descriptor. Children: Utf8(name), Utf8(desc).
-    NameAndType(Rc<str>, Rc<str>),
+    NameAndType(TextId, TextId),
     /// owner + name + descriptor. Children: Class(owner), NameAndType(name, desc).
-    Fieldref(Rc<str>, Rc<str>, Rc<str>),
-    Methodref(Rc<str>, Rc<str>, Rc<str>),
+    Fieldref(TextId, TextId, TextId),
+    Methodref(TextId, TextId, TextId),
     /// String constant. Child: Utf8(value).
-    StringConst(Rc<str>),
+    StringConst(TextId),
 }
 
 impl Entry {
     /// Direct children in the order javac enqueues them.
-    fn children(&self) -> [Option<Entry>; 2] {
+    fn children(self) -> [Option<Entry>; 2] {
         match self {
             Entry::Utf8(_)
             | Entry::Integer(_)
             | Entry::Long(_)
             | Entry::Float(_)
             | Entry::Double(_) => [None, None],
-            Entry::Class(n) => [Some(Entry::Utf8(n.clone())), None],
+            Entry::Class(n) => [Some(Entry::Utf8(n)), None],
             Entry::NameAndType(n, d) =>
-                [Some(Entry::Utf8(n.clone())), Some(Entry::Utf8(d.clone()))],
+                [Some(Entry::Utf8(n)), Some(Entry::Utf8(d))],
             Entry::Fieldref(o, n, d) | Entry::Methodref(o, n, d) => [
-                Some(Entry::Class(o.clone())),
-                Some(Entry::NameAndType(n.clone(), d.clone())),
+                Some(Entry::Class(o)),
+                Some(Entry::NameAndType(n, d)),
             ],
-            Entry::StringConst(s) => [Some(Entry::Utf8(s.clone())), None],
+            Entry::StringConst(s) => [Some(Entry::Utf8(s)), None],
         }
     }
 
@@ -78,10 +76,11 @@ impl Entry {
 }
 
 pub struct ConstantPool {
+    /// Text storage is independent of pool-entry order: `TextId` is only an
+    /// internal key, while `entries` remains the sole serialization order.
+    texts: Vec<Rc<str>>,
+    text_index: FxHashMap<Rc<str>, TextId>,
     entries: Vec<Entry>,
-    /// The 1-based pool index assigned to `entries[i]`. Diverges from `i + 1`
-    /// once any `Long`/`Double` (which each burn two indices) has been interned.
-    slots: Vec<u16>,
     index: FxHashMap<Entry, u16>,
     /// Reused scratch storage for one breadth-first intern walk.
     queue: VecDeque<Entry>,
@@ -92,11 +91,12 @@ pub struct ConstantPool {
 impl ConstantPool {
     pub fn new() -> Self {
         // Presize for a typical class's pool (~15-40 entries) so interning does not
-        // repeatedly realloc these three containers as entries accumulate.
+        // repeatedly reallocate as entries accumulate.
         const CAP: usize = 48;
         ConstantPool {
+            texts: Vec::with_capacity(CAP),
+            text_index: FxHashMap::with_capacity_and_hasher(CAP, Default::default()),
             entries: Vec::with_capacity(CAP),
-            slots: Vec::with_capacity(CAP),
             index: FxHashMap::with_capacity_and_hasher(CAP, Default::default()),
             queue: VecDeque::with_capacity(4),
             next_index: 1,
@@ -115,8 +115,7 @@ impl ConstantPool {
         debug_assert!(!self.index.contains_key(&e));
         let idx = self.next_index;
         self.next_index += e.width();
-        self.entries.push(e.clone());
-        self.slots.push(idx);
+        self.entries.push(e);
         self.index.insert(e, idx);
         idx
     }
@@ -128,12 +127,12 @@ impl ConstantPool {
             return i;
         }
         debug_assert!(self.queue.is_empty());
-        self.queue.push_back(e.clone());
+        self.queue.push_back(e);
         let root = self.alloc_new(e);
         while let Some(cur) = self.queue.pop_front() {
             for child in cur.children().into_iter().flatten() {
                 if !self.index.contains_key(&child) {
-                    self.queue.push_back(child.clone());
+                    self.queue.push_back(child);
                     self.alloc_new(child);
                 }
             }
@@ -141,9 +140,34 @@ impl ConstantPool {
         root
     }
 
+    /// Deduplicate text once at the constant-pool boundary. Assigning a `TextId`
+    /// has no byte-level effect; only the ordered `Entry::Utf8` insertion does.
+    fn text(&mut self, value: &str) -> TextId {
+        if let Some(&id) = self.text_index.get(value) {
+            return id;
+        }
+        let id = TextId(self.texts.len() as u16);
+        let value: Rc<str> = Rc::from(value);
+        self.texts.push(value.clone());
+        self.text_index.insert(value, id);
+        id
+    }
+
+    fn text_id(&self, value: &str) -> TextId {
+        *self
+            .text_index
+            .get(value)
+            .unwrap_or_else(|| panic!("text not interned: {value}"))
+    }
+
+    fn entry_index(&self, entry: Entry) -> u16 {
+        *self.index.get(&entry).expect("constant-pool entry not interned")
+    }
+
     // Public interning API, one method per operand kind.
     pub fn utf8(&mut self, s: &str) -> u16 {
-        self.intern(Entry::Utf8(Rc::from(s)))
+        let s = self.text(s);
+        self.intern(Entry::Utf8(s))
     }
     pub fn integer(&mut self, v: i32) -> u16 {
         self.intern(Entry::Integer(v))
@@ -164,71 +188,49 @@ impl ConstantPool {
         self.intern(Entry::Double(bits))
     }
     pub fn class(&mut self, internal_name: &str) -> u16 {
-        self.intern(Entry::Class(Rc::from(internal_name)))
+        let internal_name = self.text(internal_name);
+        self.intern(Entry::Class(internal_name))
     }
     pub fn string(&mut self, s: &str) -> u16 {
-        self.intern(Entry::StringConst(Rc::from(s)))
+        let s = self.text(s);
+        self.intern(Entry::StringConst(s))
     }
     pub fn fieldref(&mut self, owner: &str, name: &str, desc: &str) -> u16 {
-        self.intern(Entry::Fieldref(Rc::from(owner), Rc::from(name), Rc::from(desc)))
+        let owner = self.text(owner);
+        let name = self.text(name);
+        let desc = self.text(desc);
+        self.intern(Entry::Fieldref(owner, name, desc))
     }
     pub fn methodref(&mut self, owner: &str, name: &str, desc: &str) -> u16 {
-        self.intern(Entry::Methodref(Rc::from(owner), Rc::from(name), Rc::from(desc)))
+        let owner = self.text(owner);
+        let name = self.text(name);
+        let desc = self.text(desc);
+        self.intern(Entry::Methodref(owner, name, desc))
     }
 
     /// The slot of an already-interned `Class`, for resolving a StackMapTable
     /// `Object` verification type. Panics if the class was never interned — a
     /// frame must not reference a class codegen did not put in the pool.
     pub fn class_index(&self, internal_name: &str) -> u16 {
-        *self
-            .index
-            .get(&Entry::Class(Rc::from(internal_name)))
-            .unwrap_or_else(|| panic!("class not interned: {internal_name}"))
+        let name = self.text_id(internal_name);
+        self.entry_index(Entry::Class(name))
     }
 
     /// The slot of an already-interned `Utf8`. Attribute writing uses this only
     /// after the phase-2 interning walk has frozen the pool.
     pub fn utf8_index(&self, value: &str) -> u16 {
-        *self
-            .index
-            .get(&Entry::Utf8(Rc::from(value)))
-            .unwrap_or_else(|| panic!("Utf8 not interned: {value}"))
+        let value = self.text_id(value);
+        self.entry_index(Entry::Utf8(value))
     }
 
     fn serialize(&self, buf: &mut ByteBuf) {
-        // Resolve child indices through borrowed lookup tables built once from
-        // the ordered entries, so writing never reconstructs or clones an `Entry`
-        // key. Each table maps the child content a composite entry references to
-        // that child's slot.
-        let mut utf8_of: FxHashMap<&str, u16> =
-            FxHashMap::with_capacity_and_hasher(self.entries.len(), Default::default());
-        let mut class_of: FxHashMap<&str, u16> =
-            FxHashMap::with_capacity_and_hasher(16, Default::default());
-        let mut nat_of: FxHashMap<(&str, &str), u16> =
-            FxHashMap::with_capacity_and_hasher(16, Default::default());
-        for (i, e) in self.entries.iter().enumerate() {
-            let slot = self.slots[i];
-            match e {
-                Entry::Utf8(s) => {
-                    utf8_of.insert(&**s, slot);
-                }
-                Entry::Class(n) => {
-                    class_of.insert(&**n, slot);
-                }
-                Entry::NameAndType(n, d) => {
-                    nat_of.insert((&**n, &**d), slot);
-                }
-                _ => {}
-            }
-        }
-
         buf.u16(self.count());
         for e in &self.entries {
             match e {
                 Entry::Utf8(s) => {
                     buf.u8(1);
                     // JVM modified UTF-8. ASCII is identical; good enough for now.
-                    let bytes = s.as_bytes();
+                    let bytes = self.texts[s.0 as usize].as_bytes();
                     buf.u16(bytes.len() as u16);
                     buf.bytes(bytes);
                 }
@@ -252,26 +254,26 @@ impl ConstantPool {
                 }
                 Entry::Class(n) => {
                     buf.u8(7);
-                    buf.u16(utf8_of[&**n]);
+                    buf.u16(self.entry_index(Entry::Utf8(*n)));
                 }
                 Entry::NameAndType(n, d) => {
                     buf.u8(12);
-                    buf.u16(utf8_of[&**n]);
-                    buf.u16(utf8_of[&**d]);
+                    buf.u16(self.entry_index(Entry::Utf8(*n)));
+                    buf.u16(self.entry_index(Entry::Utf8(*d)));
                 }
                 Entry::Fieldref(o, n, d) => {
                     buf.u8(9);
-                    buf.u16(class_of[&**o]);
-                    buf.u16(nat_of[&(&**n, &**d)]);
+                    buf.u16(self.entry_index(Entry::Class(*o)));
+                    buf.u16(self.entry_index(Entry::NameAndType(*n, *d)));
                 }
                 Entry::Methodref(o, n, d) => {
                     buf.u8(10);
-                    buf.u16(class_of[&**o]);
-                    buf.u16(nat_of[&(&**n, &**d)]);
+                    buf.u16(self.entry_index(Entry::Class(*o)));
+                    buf.u16(self.entry_index(Entry::NameAndType(*n, *d)));
                 }
                 Entry::StringConst(s) => {
                     buf.u8(8);
-                    buf.u16(utf8_of[&**s]);
+                    buf.u16(self.entry_index(Entry::Utf8(*s)));
                 }
             }
         }
