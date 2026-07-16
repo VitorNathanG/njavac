@@ -475,9 +475,12 @@ source → lexer::lex → parser::parse → sema::analyze → codegen::generate 
 
 ### Where byte-identity is won or lost
 
-**`src/classfile.rs` (the constant pool) is the linchpin.** javac emits pool
-entries in a specific order, and reproducing it exactly is what makes bytes
-match. Two rules encoded here:
+**`src/classfile.rs` and `src/classfile/` (especially `pool`) are the linchpin.**
+The facade preserves the backend API; `model` owns complete ordered plans, `pool`
+owns encounter-ordered constants, `writer` owns phase-2 interning and exact
+serialization, and `buffer` is their shared byte sink. javac emits pool entries in
+a specific order, and reproducing it exactly is what makes bytes match. Two rules
+encoded here:
 
 - **Two-phase interning.** During code generation, every bytecode operand is
   interned in the exact order the bytecode references it (phase 1); then

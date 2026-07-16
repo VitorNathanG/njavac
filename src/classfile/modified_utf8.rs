@@ -1,4 +1,4 @@
-use super::ByteBuf;
+use super::buffer::ByteBuf;
 
 /// Write one `CONSTANT_Utf8` payload from Java's UTF-16 code units. Modified UTF-8
 /// encodes NUL as `c0 80` and encodes each surrogate separately, so a supplementary
