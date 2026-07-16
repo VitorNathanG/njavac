@@ -506,20 +506,21 @@ fn intern_attributes(attributes: &[Attribute], cp: &mut ConstantPool) {
     }
 }
 
-/// Write an ordered attribute vector. Each body gets its own buffer, which is the
-/// sole source of `attribute_length`.
+/// Write an ordered attribute vector directly into the class buffer. Each body
+/// reserves its length field, writes recursively, then backpatches the measured
+/// byte count; no parallel size model or temporary body buffer can drift.
 fn write_attributes(buf: &mut ByteBuf, attributes: &[Attribute], cp: &ConstantPool) {
     buf.u16(attributes.len() as u16);
     for attribute in attributes {
-        let body = attribute_body(attribute, cp);
         buf.u16(cp.utf8_index(attribute.name()));
-        buf.u32(body.len() as u32);
-        buf.bytes(&body);
+        let length_at = buf.reserve_u32();
+        let body_start = buf.len();
+        write_attribute_body(buf, attribute, cp);
+        buf.patch_u32(length_at, (buf.len() - body_start) as u32);
     }
 }
 
-fn attribute_body(attribute: &Attribute, cp: &ConstantPool) -> Vec<u8> {
-    let mut buf = ByteBuf::new();
+fn write_attribute_body(buf: &mut ByteBuf, attribute: &Attribute, cp: &ConstantPool) {
     match attribute {
         Attribute::Code(code) => {
             buf.u16(code.max_stack);
@@ -527,7 +528,7 @@ fn attribute_body(attribute: &Attribute, cp: &ConstantPool) -> Vec<u8> {
             buf.u32(code.code.len() as u32);
             buf.bytes(&code.code);
             buf.u16(0); // exception_table_length
-            write_attributes(&mut buf, &code.attributes, cp);
+            write_attributes(buf, &code.attributes, cp);
         }
         Attribute::LineNumberTable(line_numbers) => {
             buf.u16(line_numbers.len() as u16);
@@ -540,11 +541,10 @@ fn attribute_body(attribute: &Attribute, cp: &ConstantPool) -> Vec<u8> {
             entry_locals,
             frames,
         } => {
-            write_stack_map_body(&mut buf, frames, entry_locals, cp);
+            write_stack_map_body(buf, frames, entry_locals, cp);
         }
         Attribute::SourceFile(source_file) => buf.u16(cp.utf8_index(source_file)),
     }
-    buf.into_vec()
 }
 
 /// Write a method's StackMapTable attribute body (`number_of_entries` followed by
@@ -683,11 +683,11 @@ fn is_prefix(short: &[VerificationType], long: &[VerificationType]) -> bool {
 /// Big-endian byte buffer.
 pub struct ByteBuf(Vec<u8>);
 impl ByteBuf {
-    pub fn new() -> Self {
-        ByteBuf(Vec::new())
-    }
     pub fn with_capacity(n: usize) -> Self {
         ByteBuf(Vec::with_capacity(n))
+    }
+    pub fn len(&self) -> usize {
+        self.0.len()
     }
     pub fn u8(&mut self, v: u8) {
         self.0.push(v);
@@ -697,6 +697,14 @@ impl ByteBuf {
     }
     pub fn u32(&mut self, v: u32) {
         self.0.extend_from_slice(&v.to_be_bytes());
+    }
+    pub fn reserve_u32(&mut self) -> usize {
+        let offset = self.len();
+        self.u32(0);
+        offset
+    }
+    pub fn patch_u32(&mut self, offset: usize, v: u32) {
+        self.0[offset..offset + 4].copy_from_slice(&v.to_be_bytes());
     }
     pub fn bytes(&mut self, v: &[u8]) {
         self.0.extend_from_slice(v);

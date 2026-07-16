@@ -486,7 +486,8 @@ The class-file model uses the owned `Attribute` enum for `Code`,
 ordered attribute vectors; `CodeAttribute` holds its ordered child vector. Shared
 recursive `intern_attributes` and `write_attributes` traversals make those vectors
 the sole phase-2 interning and writing order, derive counts from vector lengths,
-and measure every body in a temporary buffer.
+and measure every body by reserving then backpatching its length directly in the
+final class buffer.
 
 The **`StackMapTable`** also lives here. Its attribute carries frames as full
 verifier-state snapshots (`entry_locals` + `StackFrame { offset, locals, stack }`);
