@@ -118,37 +118,10 @@ Phase 0's net (fuzzer + differ + single-fixture verify + CI) proves it.
 Landed; see CLAUDE.md §Architecture. Activating block-scoped declarations remains
 language-coverage work tracked by README.md §D, not part of this byte-preserving phase.
 
-### 2.2 Backend: `Attribute` abstraction  *(keystone)*
-- **What.** Introduce an `Attribute` concept (name + `intern_constants(&mut cp)` +
-  `write_body(&mut buf, &cp)`); give `Method`, the `Code` attribute, and
-  `ClassFile` each a `Vec<Attribute>`. Then `attributes_count = vec.len()` and
-  `attribute_length` is *measured* from the body buffer (the pattern
-  `stack_map_body` already uses), eliminating the hand-summed `Code` length
-  arithmetic and the hardcoded counts in `to_bytes`.
-- **Why.** Turns every future attribute (`BootstrapMethods`, `InnerClasses`,
-  `Signature`, `Exceptions`, `ConstantValue`, annotations, the `Code` exception
-  table) from surgery on `to_bytes` into a localized one-variant addition, and
-  collapses the duplicated intern-order-vs-write-order lists into one ordered
-  `Vec`. It is the hard prerequisite for the next real language rung (string
-  concat → `invokedynamic` → `BootstrapMethods`).
-- **Order authority (the keystone's teeth).** Phase-2 interning must be *derived
-  by walking the single ordered `Vec`* — `intern_constants` walks the write plan
-  in the exact order `to_bytes` emits it, so interner and byte-writer share ONE
-  sequence and `attribute_length` is *measured* from the body buffer (as
-  `stack_map_body` already does), not hand-summed. That makes the phase-2 half of
-  the intern-order-vs-write-order hazard (the "Wrong constant-pool / attribute
-  order" known issue, #3) *unrepresentable by construction*, not merely
-  test-catchable. **Scope it honestly:** this closes only phase 2. Phase-1
-  composite/BFS pool *insertion* order (codegen-driven, `classfile.rs`) stays a
-  separate hand-maintained order the keystone does not make unrepresentable — so
-  don't overclaim "impossible."
-- **Effort.** Medium.
-- **Key files.** `classfile.rs` (`ClassFile::to_bytes`, the attribute writers).
-- **Related.** `invokedynamic`/`Dynamic` pool entries break the "every child is a
-  pool entry" invariant (their first component indexes the `BootstrapMethods`
-  attribute, not the pool). The attribute abstraction is where that cross-structure
-  channel gets added: a `BootstrapMethods` collector with `intern_bootstrap(...) ->
-  u16`.
+### 2.2 Backend: `Attribute` abstraction — ✅ DONE
+
+Landed; see CLAUDE.md §"Where byte-identity is won or lost" for the ordered
+attribute model and the remaining phase-1 constant-pool ordering boundary.
 
 ### 2.3 Backend: single `emit(opcode, operands)` chokepoint
 - **What.** Funnel all bytecode emission through one method backed by an
@@ -228,6 +201,13 @@ anything — captured here so they surface proactively instead of waiting until
 someone trips on them. End-of-cycle reflection (CLAUDE.md §Working conventions)
 files its "what would help" items here.
 
+- **Restore verifier-snapshot throughput.** A same-host, same-corpus `make profile`
+  comparison isolates the Phase 2 slowdown to `5614c1e` (sema-owned verifier
+  locals): per-statement snapshot construction and lookup moved the hot pipeline
+  from roughly 17 µs to 25 µs per file. Reduce that allocation/hash overhead without
+  reintroducing codegen's parallel local-state model, then compare profiler mins on
+  the same host and corpus.
+
 - **Formatting: define a sanctioned rustfmt surface.** The repository is not
   normalized to the current host rustfmt, so `cargo fmt --all` rewrites unrelated
   files and obscures focused diffs. Pin the formatter/config (preferably through a
@@ -268,7 +248,7 @@ files its "what would help" items here.
   goto-compaction / materialization tail.
 ## Status
 
-Phases 0–1 and Phase 2.1 landed; Phase 2.2 is next. All tests run through Docker
+Phases 0–1 and Phase 2.1–2.2 landed; Phase 2.3 is next. All tests run through Docker
 via the `Makefile`.
 
 As items land, mark them ✅ in place and record the mechanics at the fix site / in
