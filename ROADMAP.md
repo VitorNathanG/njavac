@@ -25,24 +25,11 @@ are exemplary. What feels "hardcoded" is that every layer bakes in one assumptio
 shaped specifically for straight-line numeric code.
 
 **The load-bearing insight: the dangerous failures as this grows are silent, not
-loud.** Three distinct future bugs all produce wrong *bytes* rather than a crash:
-
-1. **Wrong local slots.** `sema::analyze_method` walks only *top-level*
-   `LocalDecl`s and never reclaims a slot on scope exit; `next` only ever
-   increases. javac *reuses* slots when sibling scopes close. The moment a local
-   lives inside an `if`/loop block, njavac's slot numbers diverge — and
-   `codegen`'s parallel `Gen::locals` snapshot (which "only ever grows, no
-   `chop`") diverges with it. This is the assumption most entangled with
-   byte-identity.
-2. **Wrong `max_stack`.** The operand-stack model is hand-maintained with per-site
-   literal deltas and comments (`self.cur -= 3; // two longs -> one int`). Every
-   new opcode (`dup*`, array load/store, `invoke*` with computed arg/return
-   widths) is another chance to miscount, and a wrong `max_stack` is a silent
-   mismatch.
-3. **Wrong constant-pool / attribute order.** Interning order and writing order
-   are two hand-maintained sequences in `ClassFile::to_bytes` that must agree.
-   Fine at one class attribute (`SourceFile`); fragile at five
-   (`BootstrapMethods`, `InnerClasses`, `Signature`, `Exceptions`, annotations).
+loud.** The initial audit found three immediate byte-level risks: local-slot and
+verifier-state drift, distributed `max_stack` accounting, and parallel
+constant-pool/attribute ordering. Phase 2.1–2.3 close their current concrete forms;
+the remaining work below removes the subset-shaped type and parser boundaries
+before language growth resumes.
 
 That reframes the plan. **The first investment is not a refactor — it is the
 safety net and feedback loop that make the refactors verifiable.** We don't touch
@@ -123,15 +110,11 @@ language-coverage work tracked by README.md §D, not part of this byte-preservin
 Landed; see CLAUDE.md §"Where byte-identity is won or lost" for the ordered
 attribute model and the remaining phase-1 constant-pool ordering boundary.
 
-### 2.3 Backend: single `emit(opcode, operands)` chokepoint
-- **What.** Funnel all bytecode emission through one method backed by an
-  **opcode → stack-effect (in/out words) table**, so `cur`/`max_stack` update in
-  exactly one place instead of per-site literal deltas.
-- **Why.** A wrong `max_stack` is a silent byte mismatch; centralizing the
-  accounting is what stops new opcodes (`dup*`, array, `invoke*`) from silently
-  corrupting it. Directly protects AI-driven iteration.
-- **Effort.** Medium. Same bytes, computed once.
-- **Key files.** `codegen.rs` (all emitters, the `push`/`pop` model).
+### 2.3 Backend: single `emit(opcode, operands)` chokepoint — ✅ DONE
+
+Landed; see CLAUDE.md §"Where byte-identity is won or lost". Full symbolic
+instructions and metadata remain the target described by ARCHITECTURE.md
+§"Symbolic bytecode".
 
 ### 2.4 Front-end: recursive `Type`, collapse `Type`/`ValType`, `#[derive(Debug)]`
 - **What.** Make `Type` recursive (`Primitive | Class(name) | Array(Box<Type>) |
@@ -241,7 +224,7 @@ files its "what would help" items here.
   goto-compaction / materialization tail.
 ## Status
 
-Phases 0–1 and Phase 2.1–2.2 landed; Phase 2.3 is next. All tests run through Docker
+Phases 0–1 and Phase 2.1–2.3 landed; Phase 2.4 is next. All tests run through Docker
 via the `Makefile`.
 
 As items land, mark them ✅ in place and record the mechanics at the fix site / in

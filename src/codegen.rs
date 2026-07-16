@@ -167,6 +167,144 @@ enum Const {
     Double(f64),
 }
 
+#[derive(Clone, Copy)]
+struct StackEffect {
+    pop: u16,
+    push: u16,
+}
+
+impl StackEffect {
+    const fn new(pop: u16, push: u16) -> Self {
+        StackEffect { pop, push }
+    }
+}
+
+/// One already-selected physical JVM instruction form. Lowering chooses exact
+/// forms (`ldc` vs `ldc_w`, short local forms, narrow vs wide `iinc`); the emitter
+/// only encodes that choice and derives its stack effect.
+#[derive(Clone, Copy)]
+enum Instruction {
+    Simple(u8),
+    U8 { opcode: u8, operand: u8 },
+    U16 { opcode: u8, operand: u16 },
+    Iinc { slot: u8, delta: i8 },
+    WideIinc { slot: u16, delta: i16 },
+    Field { opcode: u8, index: u16, push_words: u16 },
+    Invoke {
+        opcode: u8,
+        index: u16,
+        argument_words: u16,
+        return_words: u16,
+    },
+    Branch(u8),
+}
+
+impl Instruction {
+    fn stack_effect(self) -> StackEffect {
+        match self {
+            Instruction::Simple(opcode)
+            | Instruction::U8 { opcode, .. }
+            | Instruction::U16 { opcode, .. } => fixed_stack_effect(opcode),
+            Instruction::Iinc { .. } | Instruction::WideIinc { .. } => StackEffect::new(0, 0),
+            Instruction::Field { opcode: GETSTATIC, push_words, .. } => {
+                StackEffect::new(0, push_words)
+            }
+            Instruction::Field { opcode, .. } => panic!("unsupported field opcode: {opcode:#x}"),
+            Instruction::Invoke { argument_words, return_words, .. } => {
+                StackEffect::new(1 + argument_words, return_words)
+            }
+            Instruction::Branch(opcode) if (IF_ICMPEQ..=IF_ICMPLE).contains(&opcode) => {
+                StackEffect::new(2, 0)
+            }
+            Instruction::Branch(opcode) if (IFEQ..=IFLE).contains(&opcode) => {
+                StackEffect::new(1, 0)
+            }
+            Instruction::Branch(GOTO) => StackEffect::new(0, 0),
+            Instruction::Branch(opcode) => panic!("unsupported branch opcode: {opcode:#x}"),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct InstructionAnchor {
+    pc: u32,
+}
+
+/// Physical per-method bytecode state. This is the single path for initial
+/// instruction encoding, pending-line consumption, and stack accounting.
+struct Emitter {
+    code: Vec<u8>,
+    line_numbers: Vec<(u16, u16)>,
+    pending_line: Option<u16>,
+    at_control_entry: bool,
+    max_stack: u16,
+    cur: u16,
+}
+
+impl Emitter {
+    fn new() -> Self {
+        Emitter {
+            code: Vec::with_capacity(64),
+            line_numbers: Vec::with_capacity(16),
+            pending_line: None,
+            at_control_entry: false,
+            max_stack: 0,
+            cur: 0,
+        }
+    }
+
+    fn emit(&mut self, instruction: Instruction) -> InstructionAnchor {
+        let pc = self.code.len() as u32;
+        if let Some(line) = self.pending_line.take() {
+            if self.line_numbers.last().map(|&(_, l)| l) != Some(line) {
+                self.line_numbers.push((pc as u16, line));
+            }
+        }
+        self.at_control_entry = false;
+
+        match instruction {
+            Instruction::Simple(opcode) => self.code.push(opcode),
+            Instruction::U8 { opcode, operand } => {
+                self.code.push(opcode);
+                self.code.push(operand);
+            }
+            Instruction::U16 { opcode, operand }
+            | Instruction::Field { opcode, index: operand, .. }
+            | Instruction::Invoke { opcode, index: operand, .. } => {
+                self.code.push(opcode);
+                push_u16(&mut self.code, operand);
+            }
+            Instruction::Iinc { slot, delta } => {
+                self.code.push(IINC);
+                self.code.push(slot);
+                self.code.push(delta as u8);
+            }
+            Instruction::WideIinc { slot, delta } => {
+                self.code.push(WIDE);
+                self.code.push(IINC);
+                push_u16(&mut self.code, slot);
+                push_u16(&mut self.code, delta as u16);
+            }
+            Instruction::Branch(opcode) => {
+                self.code.push(opcode);
+                self.code.extend_from_slice(&[0, 0]);
+            }
+        }
+
+        let effect = instruction.stack_effect();
+        self.cur = self
+            .cur
+            .checked_sub(effect.pop)
+            .unwrap_or_else(|| panic!("operand-stack underflow at pc {pc}"));
+        self.cur = self
+            .cur
+            .checked_add(effect.push)
+            .unwrap_or_else(|| panic!("operand-stack overflow at pc {pc}"));
+        self.max_stack = self.max_stack.max(self.cur);
+        InstructionAnchor { pc }
+    }
+}
+
 /// A complete class-file plan plus the phase-1 constant pool built while emitting
 /// bytecode. Serialization owns phase-2 structural interning and final byte layout.
 pub struct ClassPlan {
@@ -345,18 +483,30 @@ fn preflight_cond(
 
 /// The implicit default constructor: `aload_0; invokespecial Object.<init>; return`.
 fn gen_init(cp: &mut ConstantPool, class_line: u16) -> CfMethod {
-    let mut code = Vec::new();
-    code.push(ALOAD_0);
+    let mut emitter = Emitter::new();
+    emitter.pending_line = Some(class_line);
+    emitter.emit(Instruction::Simple(ALOAD_0));
     let init_ref = cp.methodref("java/lang/Object", "<init>", "()V");
-    code.push(INVOKESPECIAL);
-    push_u16(&mut code, init_ref);
-    code.push(RETURN);
+    emitter.emit(Instruction::Invoke {
+        opcode: INVOKESPECIAL,
+        index: init_ref,
+        argument_words: 0,
+        return_words: 0,
+    });
+    emitter.emit(Instruction::Simple(RETURN));
 
     CfMethod::with_code(
         0x0001, // ACC_PUBLIC
         "<init>",
         "()V",
-        CodeAttribute::new(1, 1, code, vec![(0, class_line)], Vec::new(), Vec::new()),
+        CodeAttribute::new(
+            emitter.max_stack,
+            1,
+            emitter.code,
+            emitter.line_numbers,
+            Vec::new(),
+            Vec::new(),
+        ),
     )
 }
 
@@ -367,14 +517,7 @@ fn gen_method(cp: &mut ConstantPool, method: &Method, info: &MethodInfo) -> CfMe
     let mut g = Gen {
         cp,
         info,
-        // Presize the bytecode buffer so per-instruction pushes don't repeatedly
-        // realloc (RawVec::grow_one was the top allocator path in profiling).
-        code: Vec::with_capacity(64),
-        line_numbers: Vec::with_capacity(16),
-        pending_line: None,
-        at_control_entry: false,
-        max_stack: 0,
-        cur: 0,
+        emitter: Emitter::new(),
         semantic_locals: info.entry_frame_locals(),
         labels: Vec::new(),
         fixups: Vec::new(),
@@ -392,16 +535,17 @@ fn gen_method(cp: &mut ConstantPool, method: &Method, info: &MethodInfo) -> CfMe
     g.compact_gotos(); // delete dead / goto-to-next gotos (javac's Code.resolve)
     let live_targets = g.resolve_branches();
     let stack_frames = g.build_frames(&live_targets);
+    let Emitter { code, line_numbers, max_stack, .. } = g.emitter;
 
     CfMethod::with_code(
         0x0009, // ACC_PUBLIC | ACC_STATIC
         method.name.clone(),
         descriptor_of(method),
         CodeAttribute::new(
-            g.max_stack,
+            max_stack,
             info.max_locals,
-            g.code,
-            g.line_numbers,
+            code,
+            line_numbers,
             entry_locals,
             stack_frames,
         ),
@@ -645,16 +789,7 @@ fn cond_stack_test() -> CondItem {
 struct Gen<'a> {
     cp: &'a mut ConstantPool,
     info: &'a MethodInfo,
-    code: Vec<u8>,
-    line_numbers: Vec<(u16, u16)>,
-    /// Source line waiting to attach to the next instruction opcode. A later
-    /// source position overwrites it if no instruction was emitted in between.
-    pending_line: Option<u16>,
-    /// Whether the current pc was just entered by a live branch and no instruction
-    /// has consumed that control-entry state yet.
-    at_control_entry: bool,
-    max_stack: u16,
-    cur: u16,
+    emitter: Emitter,
     /// The current sema-owned verifier-local snapshot. Statement generation only
     /// selects an entry or exit state; it never mutates local state independently.
     semantic_locals: &'a [FrameLocal],
@@ -664,17 +799,21 @@ struct Gen<'a> {
     frames: Vec<FrameReq>,
 }
 
-impl<'a> Gen<'a> {
-    fn push(&mut self, w: u16) {
-        self.cur += w;
-        if self.cur > self.max_stack {
-            self.max_stack = self.cur;
-        }
-    }
-    fn pop(&mut self, w: u16) {
-        self.cur -= w;
-    }
+impl std::ops::Deref for Gen<'_> {
+    type Target = Emitter;
 
+    fn deref(&self) -> &Self::Target {
+        &self.emitter
+    }
+}
+
+impl std::ops::DerefMut for Gen<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.emitter
+    }
+}
+
+impl<'a> Gen<'a> {
     // -------- control flow / labels / frames --------
 
     /// Emit one statement. Each statement starts with an empty operand stack; a
@@ -879,21 +1018,18 @@ impl<'a> Gen<'a> {
                 self.gen_promoted_operand(left, ValType::Long);
                 self.gen_promoted_operand(right, ValType::Long);
                 self.emit_op(LCMP);
-                self.cur -= 3; // two longs (4w) -> one int
                 int_zero_branch(op, true)
             }
             StackTy::Float => {
                 self.gen_promoted_operand(left, ValType::Float);
                 self.gen_promoted_operand(right, ValType::Float);
                 self.emit_op(if matches!(op, CmpOp::Lt | CmpOp::Le) { FCMPG } else { FCMPL });
-                self.cur -= 1; // two floats -> one int
                 int_zero_branch(op, true)
             }
             StackTy::Double => {
                 self.gen_promoted_operand(left, ValType::Double);
                 self.gen_promoted_operand(right, ValType::Double);
                 self.emit_op(if matches!(op, CmpOp::Lt | CmpOp::Le) { DCMPG } else { DCMPL });
-                self.cur -= 3; // two doubles (4w) -> one int
                 int_zero_branch(op, true)
             }
         };
@@ -994,23 +1130,19 @@ impl<'a> Gen<'a> {
             // it here, the value is always 0.
             self.resolve_chain(fj);
             self.emit_op(ICONST_0);
-            self.push(1);
         } else if is_true {
             // `q || true`: statically true with a residual true branch; resolve it,
             // the value is always 1.
             self.resolve_chain(true_chain);
             self.emit_op(ICONST_1);
-            self.push(1);
         } else {
             // General true-first diamond.
             self.resolve_chain(true_chain); // true-entry (frame iff a branch lands)
             self.emit_op(ICONST_1);
-            self.push(1);
             let lmerge = self.branch_to_new(GOTO);
             self.resolve_chain(fj);
             self.cur = 0; // the iconst_1 lives only on the fall-through path
             self.emit_op(ICONST_0);
-            self.push(1);
             self.place_label(lmerge);
             self.add_frame(vec![VerificationType::Integer]);
         }
@@ -1028,9 +1160,7 @@ impl<'a> Gen<'a> {
     /// for `if_icmp<cond>`, 1 for `if<cond>`/`ifne`/`ifeq`). `GOTO` must NOT route
     /// through here (it pops nothing).
     fn emit_test_branch(&mut self, op: u8) -> usize {
-        let l = self.branch_to_new(op);
-        self.pop(if (IF_ICMPEQ..=IF_ICMPLE).contains(&op) { 2 } else { 1 });
-        l
+        self.branch_to_new(op)
     }
 
     /// Merge chain `b` into chain `a` (javac's `Code.mergeChains`): retarget every
@@ -1068,17 +1198,9 @@ impl<'a> Gen<'a> {
         self.pending_line = Some(line);
     }
 
-    /// Emit an instruction's opcode byte, first consuming any pending source line.
-    /// Operand bytes deliberately bypass this method so one instruction can add at
-    /// most one LineNumberTable entry. Consecutive equal lines remain deduplicated.
+    /// Emit one fixed, operand-free instruction through the physical chokepoint.
     fn emit_op(&mut self, opcode: u8) {
-        if let Some(line) = self.pending_line.take() {
-            if self.line_numbers.last().map(|&(_, l)| l) != Some(line) {
-                self.line_numbers.push((self.code.len() as u16, line));
-            }
-        }
-        self.at_control_entry = false;
-        self.code.push(opcode);
+        self.emitter.emit(Instruction::Simple(opcode));
     }
 
     /// Reserve a fresh, not-yet-placed label.
@@ -1094,11 +1216,9 @@ impl<'a> Gen<'a> {
 
     /// Emit a branch opcode with a placeholder 2-byte offset, recording a fixup.
     fn emit_branch_op(&mut self, opcode: u8, label: usize) {
-        let branch_pc = self.code.len() as u32;
-        self.emit_op(opcode);
-        let operand_pos = self.code.len();
-        self.code.push(0);
-        self.code.push(0);
+        let anchor = self.emitter.emit(Instruction::Branch(opcode));
+        let branch_pc = anchor.pc;
+        let operand_pos = branch_pc as usize + 1;
         self.fixups.push(Fixup { branch_pc, operand_pos, label });
     }
 
@@ -1372,9 +1492,11 @@ impl<'a> Gen<'a> {
 
     fn gen_println(&mut self, arg: &Expr) {
         let field = self.cp.fieldref("java/lang/System", "out", "Ljava/io/PrintStream;");
-        self.emit_op(GETSTATIC);
-        push_u16(&mut self.code, field);
-        self.push(1); // PrintStream objectref
+        self.emitter.emit(Instruction::Field {
+            opcode: GETSTATIC,
+            index: field,
+            push_words: 1,
+        });
 
         let ty = self.gen_value(arg);
         let desc = match ty {
@@ -1387,9 +1509,12 @@ impl<'a> Gen<'a> {
             ValType::String => "(Ljava/lang/String;)V",
         };
         let method = self.cp.methodref("java/io/PrintStream", "println", desc);
-        self.emit_op(INVOKEVIRTUAL);
-        push_u16(&mut self.code, method);
-        self.pop(1 + ty.width()); // objectref + arg consumed, void return
+        self.emitter.emit(Instruction::Invoke {
+            opcode: INVOKEVIRTUAL,
+            index: method,
+            argument_words: ty.width(),
+            return_words: 0,
+        });
     }
 
     /// Assign `value` into local `name`, coercing to the local's declared type.
@@ -1416,15 +1541,16 @@ impl<'a> Gen<'a> {
                 let k = to_i32(c);
                 let delta = if op == BinOp::Add { k } else { k.wrapping_neg() };
                 if slot <= 0xff && (-128..=127).contains(&delta) {
-                    self.emit_op(IINC);
-                    self.code.push(slot as u8);
-                    self.code.push(delta as i8 as u8);
+                    self.emitter.emit(Instruction::Iinc {
+                        slot: slot as u8,
+                        delta: delta as i8,
+                    });
                     return;
                 } else if (-32768..=32767).contains(&delta) {
-                    self.emit_op(WIDE);
-                    self.code.push(IINC);
-                    push_u16(&mut self.code, slot);
-                    push_u16(&mut self.code, delta as i16 as u16);
+                    self.emitter.emit(Instruction::WideIinc {
+                        slot,
+                        delta: delta as i16,
+                    });
                     return;
                 } else {
                     // Constant delta overflowing iinc_w: javac emits the POSITIVE
@@ -1435,9 +1561,7 @@ impl<'a> Gen<'a> {
                     self.emit_load(slot, ValType::Int);
                     let (mag, add) = int_delta_magnitude(delta);
                     self.emit_int_const(mag);
-                    self.push(1);
                     self.emit_op(if add { IADD } else { ISUB });
-                    self.pop(1);
                     self.emit_store(slot, ValType::Int);
                     return;
                 }
@@ -1464,9 +1588,7 @@ impl<'a> Gen<'a> {
             // (a `long`/`float`/`double` target keeps the raw `lsub`/`dsub`/`fsub`).
             let (mag, add) = int_delta_magnitude(delta);
             self.emit_int_const(mag);
-            self.push(1);
             self.emit_op(if add { IADD } else { ISUB });
-            self.pop(1);
         } else {
             self.gen_promoted_operand(value, p);
             self.emit_binop(p, op);
@@ -1500,7 +1622,6 @@ impl<'a> Gen<'a> {
         if let Expr::StringLit(s) = expr {
             let idx = self.cp.string(s);
             self.emit_ldc(idx);
-            self.push(1);
             return ValType::String;
         }
         if let Some(c) = fold(expr) {
@@ -1564,12 +1685,10 @@ impl<'a> Gen<'a> {
     fn gen_shift_distance(&mut self, right: &Expr) {
         if let Some(c) = fold(right) {
             self.emit_int_const(to_i32(c)); // (int) narrowing of the constant
-            self.push(1);
         } else {
             let at = self.gen_value(right);
             if at.stack() == StackTy::Long {
                 self.emit_op(L2I);
-                self.pop(1); // long amount narrowed to int
             }
         }
     }
@@ -1614,7 +1733,6 @@ impl<'a> Gen<'a> {
             StackTy::Float => self.emit_float_const(to_f32(c)),
             StackTy::Double => self.emit_double_const(to_f64(c)),
         }
-        self.push(ty.width());
     }
 
     /// Load an `int` constant with the tightest opcode javac would choose.
@@ -1623,12 +1741,10 @@ impl<'a> Gen<'a> {
             -1 => self.emit_op(ICONST_M1),
             0..=5 => self.emit_op(ICONST_0 + v as u8),
             -128..=127 => {
-                self.emit_op(BIPUSH);
-                self.code.push(v as u8);
+                self.emitter.emit(Instruction::U8 { opcode: BIPUSH, operand: v as u8 });
             }
             -32768..=32767 => {
-                self.emit_op(SIPUSH);
-                push_u16(&mut self.code, v as u16);
+                self.emitter.emit(Instruction::U16 { opcode: SIPUSH, operand: v as u16 });
             }
             _ => {
                 let idx = self.cp.integer(v);
@@ -1643,8 +1759,7 @@ impl<'a> Gen<'a> {
             1 => self.emit_op(LCONST_1),
             _ => {
                 let idx = self.cp.long(v);
-                self.emit_op(LDC2_W);
-                push_u16(&mut self.code, idx);
+                self.emitter.emit(Instruction::U16 { opcode: LDC2_W, operand: idx });
             }
         }
     }
@@ -1669,8 +1784,7 @@ impl<'a> Gen<'a> {
             b if b == 1.0f64.to_bits() => self.emit_op(DCONST_1),
             _ => {
                 let idx = self.cp.double(v);
-                self.emit_op(LDC2_W);
-                push_u16(&mut self.code, idx);
+                self.emitter.emit(Instruction::U16 { opcode: LDC2_W, operand: idx });
             }
         }
     }
@@ -1678,11 +1792,9 @@ impl<'a> Gen<'a> {
     /// `ldc`/`ldc_w` of a single-word pool entry (Integer/Float/String).
     fn emit_ldc(&mut self, idx: u16) {
         if idx <= 0xff {
-            self.emit_op(LDC);
-            self.code.push(idx as u8);
+            self.emitter.emit(Instruction::U8 { opcode: LDC, operand: idx as u8 });
         } else {
-            self.emit_op(LDC_W);
-            push_u16(&mut self.code, idx);
+            self.emitter.emit(Instruction::U16 { opcode: LDC_W, operand: idx });
         }
     }
 
@@ -1691,10 +1803,8 @@ impl<'a> Gen<'a> {
         if slot <= 3 {
             self.emit_op(short0 + slot as u8);
         } else {
-            self.emit_op(wide);
-            self.code.push(slot as u8);
+            self.emitter.emit(Instruction::U8 { opcode: wide, operand: slot as u8 });
         }
-        self.push(ty.width());
     }
 
     fn emit_store(&mut self, slot: u16, ty: ValType) {
@@ -1702,20 +1812,16 @@ impl<'a> Gen<'a> {
         if slot <= 3 {
             self.emit_op(short0 + slot as u8);
         } else {
-            self.emit_op(wide);
-            self.code.push(slot as u8);
+            self.emitter.emit(Instruction::U8 { opcode: wide, operand: slot as u8 });
         }
-        self.pop(ty.width());
     }
 
     fn emit_binop(&mut self, p: ValType, op: BinOp) {
         self.emit_op(binop_op(p.stack(), op));
-        self.pop(p.width()); // two operands (2w) collapse to one (w)
     }
 
     fn emit_shift(&mut self, result: ValType, op: BinOp) {
         self.emit_op(shift_op(result.stack(), op));
-        self.pop(1); // value(w) + amount(1) -> value(w)
     }
 
     /// `~x` == `x ^ -1`, with the `-1` loaded per the value's type.
@@ -1723,17 +1829,12 @@ impl<'a> Gen<'a> {
         match p.stack() {
             StackTy::Long => {
                 let idx = self.cp.long(-1);
-                self.emit_op(LDC2_W);
-                push_u16(&mut self.code, idx);
-                self.push(2);
+                self.emitter.emit(Instruction::U16 { opcode: LDC2_W, operand: idx });
                 self.emit_op(LXOR);
-                self.pop(2);
             }
             _ => {
                 self.emit_op(ICONST_M1);
-                self.push(1);
                 self.emit_op(IXOR);
-                self.pop(1);
             }
         }
     }
@@ -1760,16 +1861,51 @@ impl<'a> Gen<'a> {
         } else if fs != to.stack() {
             self.emit_op(cross_conv_op(fs, to.stack()));
         }
-        // Net stack change: one value of `from.width()` becomes one of `to.width()`.
-        let delta = to.width() as i32 - from.width() as i32;
-        self.cur = (self.cur as i32 + delta) as u16;
-        if self.cur > self.max_stack {
-            self.max_stack = self.cur;
-        }
     }
 }
 
 // ---- opcode/table helpers ----
+
+/// Stack effect for every currently emitted fixed-effect opcode. Descriptor-
+/// dependent field/invoke instructions, branches, and `iinc` use typed variants
+/// instead and never enter this table.
+fn fixed_stack_effect(opcode: u8) -> StackEffect {
+    let short = |base: u8| (base..=base + 3).contains(&opcode);
+    match opcode {
+        ICONST_M1..=0x08 | FCONST_0..=FCONST_2 | BIPUSH | SIPUSH | LDC | LDC_W => {
+            StackEffect::new(0, 1)
+        }
+        LCONST_0..=LCONST_1 | DCONST_0..=DCONST_1 | LDC2_W => StackEffect::new(0, 2),
+        ILOAD | FLOAD | ALOAD_0 => StackEffect::new(0, 1),
+        LLOAD | DLOAD => StackEffect::new(0, 2),
+        ISTORE | FSTORE => StackEffect::new(1, 0),
+        LSTORE | DSTORE => StackEffect::new(2, 0),
+
+        IADD | ISUB | IMUL | IDIV | IREM | IAND | IOR | IXOR
+        | FADD | FSUB | FMUL | FDIV | FREM => StackEffect::new(2, 1),
+        LADD | LSUB | LMUL | LDIV | LREM | LAND | LOR | LXOR
+        | DADD | DSUB | DMUL | DDIV | DREM => StackEffect::new(4, 2),
+        INEG | FNEG => StackEffect::new(1, 1),
+        LNEG | DNEG => StackEffect::new(2, 2),
+        ISHL | ISHR | IUSHR => StackEffect::new(2, 1),
+        LSHL | LSHR | LUSHR => StackEffect::new(3, 2),
+
+        I2L | I2D | F2L | F2D => StackEffect::new(1, 2),
+        I2F | F2I | I2B | I2C | I2S => StackEffect::new(1, 1),
+        L2I | L2F | D2I | D2F => StackEffect::new(2, 1),
+        L2D | D2L => StackEffect::new(2, 2),
+
+        LCMP | DCMPL | DCMPG => StackEffect::new(4, 1),
+        FCMPL | FCMPG => StackEffect::new(2, 1),
+        RETURN => StackEffect::new(0, 0),
+
+        _ if short(ILOAD_0) || short(FLOAD_0) => StackEffect::new(0, 1),
+        _ if short(LLOAD_0) || short(DLOAD_0) => StackEffect::new(0, 2),
+        _ if short(ISTORE_0) || short(FSTORE_0) => StackEffect::new(1, 0),
+        _ if short(LSTORE_0) || short(DSTORE_0) => StackEffect::new(2, 0),
+        _ => panic!("opcode has no fixed stack effect: {opcode:#x}"),
+    }
+}
 
 /// Byte length of the instruction at `code[pc]`, over exactly the opcodes this
 /// emitter produces — the compaction pass walks the code with it. Branches are

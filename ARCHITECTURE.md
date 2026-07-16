@@ -467,8 +467,8 @@ into that attribute, not an ordinary constant-pool child; `InvokeDynamic` and
 
 Fields, methods, `Code`, and classes hold ordered `Vec<AttributePlan>` values. One
 walk of that vector is the authority for phase-2 interning and writing. Counts come
-from vector lengths; body lengths come from encoded body buffers, never hand-summed
-arithmetic.
+from vector lengths; body lengths are measured from encoded output ranges and
+backpatched, never hand-summed arithmetic.
 
 An enum is preferred over a trait hierarchy while the supported attribute universe
 is closed and auditable. The writer serializes complete plans and performs no Java

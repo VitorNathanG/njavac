@@ -509,9 +509,15 @@ the slot-0..3 short forms; binary numeric promotion that places each `i2l`/`i2d`
 conversion exactly where javac does (left operand widened before the right is
 pushed, right operand just before the op); the `iinc`/`iinc_w`/full-form boundary
 for compound assignment (decided on the *effective* delta); `~` lowered to
-`… ixor`; a running operand-stack model that counts category-2 values as two
-words; the trailing `return` mapped to the closing-brace line. The load-bearing
-rule: javac **constant-folds literal subtrees** (`100 % 7` → `iconst_2`,
+`… ixor`; the trailing `return` mapped to the closing-brace line. Every initial
+instruction, including the implicit constructor, passes through
+`Emitter::emit(Instruction)`: lowering selects the exact physical form, then this
+single chokepoint encodes its contiguous opcode/operands, consumes the pending
+line, derives its pop/push effect, and updates the category-2-aware running stack
+and `max_stack`. Branch emission returns an instruction anchor for its fixup;
+later branch backpatching and goto compaction remain finalization passes over the
+encoded bytes. The load-bearing rule: javac **constant-folds literal subtrees**
+(`100 % 7` → `iconst_2`,
 `1 + 2L` → `ldc2_w 3L`) with wrapping integer / exact IEEE-754 arithmetic and JLS
 shift masking, but emits real bytecode once a local is involved — so a folded
 constant is bit-identical to the unfolded computation.
