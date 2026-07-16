@@ -391,12 +391,16 @@ only ever *add* time. Single-shot host timing lies; always compare mins.
 
 ## Architecture
 
-The pipeline lives in `src/lib.rs::compile(source, source_file) -> Vec<u8>`:
+The pipeline lives in
+`src/lib.rs::compile(source, source_file) -> CompileResult<Vec<u8>>`:
 
 ```
 source → lexer::lex → parser::parse → sema::analyze → codegen::generate → .class bytes
 ```
 
+- **`diagnostic` / `span`** → the fallible stage contract: half-open source-byte
+  ranges plus stable syntax/unsupported diagnostic codes; internal invariant
+  failures remain Rust panics rather than a diagnostic category.
 - **`lexer`** → flat `Vec<Token>`, each carrying a half-open source-byte `Span`
   plus the existing 1-based line used for a byte-identical `LineNumberTable`.
 - **`ast`** → plain enums, `Box` for recursion; declarations/statements carry

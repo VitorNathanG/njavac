@@ -71,8 +71,11 @@ fn compile_one(input: &str, out_dir: Option<&Path>) -> Result<(), String> {
     // javac's `<ClassName>.class`.
     let class_name = source_file.strip_suffix(".java").unwrap_or(&source_file).to_owned();
 
-    let bytes = std::panic::catch_unwind(|| njavac::compile(&source, &source_file))
-        .map_err(|_| format!("{input}: unsupported (compiler error)"))?;
+    let bytes = match std::panic::catch_unwind(|| njavac::compile(&source, &source_file)) {
+        Ok(Ok(bytes)) => bytes,
+        Ok(Err(diagnostic)) => return Err(diagnostic.render(input, &source)),
+        Err(_) => return Err(format!("{input}: unsupported (compiler error)")),
+    };
 
     // javac's rule: with -d write under that directory, otherwise beside the
     // source (a bare filename has an empty parent, i.e. the current directory).

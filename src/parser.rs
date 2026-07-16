@@ -21,14 +21,15 @@
 use crate::ast::{
     BinOp, Class, CmpOp, CompilationUnit, Expr, LogOp, Method, Param, Stmt, StmtKind, Type,
 };
+use crate::diagnostic::CompileResult;
 use crate::lexer::{Token, TokenKind};
 use crate::span::Span;
 
 /// Parse a token stream (as produced by `lexer::lex`) into a `CompilationUnit`.
 ///
 /// Panics on any syntax error outside the supported subset.
-pub fn parse(tokens: Vec<Token>) -> CompilationUnit {
-    Parser { tokens, pos: 0 }.compilation_unit()
+pub fn parse(tokens: Vec<Token>) -> CompileResult<CompilationUnit> {
+    Ok(Parser { tokens, pos: 0 }.compilation_unit())
 }
 
 struct Parser {

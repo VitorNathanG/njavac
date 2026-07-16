@@ -26,6 +26,7 @@
 
 use crate::ast::{BinOp, Class, CmpOp, Expr, LogOp, Method, Stmt, StmtKind, Type};
 use crate::classfile::{ClassFile, ConstantPool, Method as CfMethod, StackFrame, VerificationType};
+use crate::diagnostic::CompileResult;
 use crate::sema::{self, Analysis, MethodInfo, StackTy, ValType};
 
 // ---- opcodes ----
@@ -164,7 +165,7 @@ enum Const {
 }
 
 /// Compile one parsed+analyzed class into `.class` bytes.
-pub fn generate(class: &Class, analysis: &Analysis, source_file: &str) -> Vec<u8> {
+pub fn generate(class: &Class, analysis: &Analysis, source_file: &str) -> CompileResult<Vec<u8>> {
     #[cfg(debug_assertions)]
     assert_negate_op_consistent();
     let mut cp = ConstantPool::new();
@@ -183,7 +184,7 @@ pub fn generate(class: &Class, analysis: &Analysis, source_file: &str) -> Vec<u8
         source_file: source_file.to_string(),
         methods,
     };
-    class_file.to_bytes(cp)
+    Ok(class_file.to_bytes(cp))
 }
 
 /// The implicit default constructor: `aload_0; invokespecial Object.<init>; return`.

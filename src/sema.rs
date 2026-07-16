@@ -15,6 +15,7 @@
 use std::collections::HashMap;
 
 use crate::ast::{BinOp, CompilationUnit, Expr, Method, StmtKind, Type};
+use crate::diagnostic::CompileResult;
 
 /// The static type of an expression / local in the subset: the eight primitives
 /// plus `String` (only ever a string-literal `println` argument).
@@ -119,9 +120,9 @@ pub struct Analysis {
 }
 
 /// Analyze a parsed compilation unit, assigning local slots for each method.
-pub fn analyze(unit: &CompilationUnit) -> Analysis {
+pub fn analyze(unit: &CompilationUnit) -> CompileResult<Analysis> {
     let methods = unit.class.methods.iter().map(analyze_method).collect();
-    Analysis { methods }
+    Ok(Analysis { methods })
 }
 
 fn analyze_method(method: &Method) -> MethodInfo {

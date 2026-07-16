@@ -8,6 +8,7 @@
 pub mod classfile;
 pub mod classdump;
 pub mod span;
+pub mod diagnostic;
 pub mod lexer;
 pub mod ast;
 pub mod parser;
@@ -22,9 +23,9 @@ pub mod codegen;
 ///
 /// `source_file` is the basename used for the `SourceFile` attribute
 /// (e.g. "Foo.java"); the class name itself comes from the parsed source.
-pub fn compile(source: &str, source_file: &str) -> Vec<u8> {
-    let tokens = lexer::lex(source);
-    let unit = parser::parse(tokens);
-    let analysis = sema::analyze(&unit);
+pub fn compile(source: &str, source_file: &str) -> diagnostic::CompileResult<Vec<u8>> {
+    let tokens = lexer::lex(source)?;
+    let unit = parser::parse(tokens)?;
+    let analysis = sema::analyze(&unit)?;
     codegen::generate(&unit.class, &analysis, source_file)
 }

@@ -3,7 +3,9 @@
 pub(super) fn njavac_compile(src: &str, source_arg: &str) -> Option<Vec<u8>> {
     let src = src.to_string();
     let arg = source_arg.to_string();
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| njavac::compile(&src, &arg))).ok()
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| njavac::compile(&src, &arg)))
+        .ok()
+        .and_then(Result::ok)
 }
 
 /// Exact-byte result for one source accepted or rejected by the two compilers.

@@ -46,26 +46,29 @@ fn main() {
 
     // Warm up caches / branch predictors.
     for (src, name) in &fixtures {
-        black_box(njavac::compile(src, name));
+        black_box(njavac::compile(src, name).expect("valid fixture"));
     }
 
     // Cumulative timings over growing prefixes of the pipeline (min of trials).
     let t_lex = time(rounds, trials, &fixtures, |src, _| {
-        black_box(lexer::lex(src));
+        black_box(lexer::lex(src).expect("valid fixture"));
     });
     let t_parse = time(rounds, trials, &fixtures, |src, _| {
-        black_box(parser::parse(lexer::lex(src)));
+        let tokens = lexer::lex(src).expect("valid fixture");
+        black_box(parser::parse(tokens).expect("valid fixture"));
     });
     let t_sema = time(rounds, trials, &fixtures, |src, _| {
-        let unit = parser::parse(lexer::lex(src));
-        let analysis = sema::analyze(&unit);
+        let tokens = lexer::lex(src).expect("valid fixture");
+        let unit = parser::parse(tokens).expect("valid fixture");
+        let analysis = sema::analyze(&unit).expect("valid fixture");
         black_box((unit, analysis));
     });
     let t_full = time(rounds, trials, &fixtures, |src, name| {
         // Full pipeline including codegen + class-file serialization.
-        let unit = parser::parse(lexer::lex(src));
-        let analysis = sema::analyze(&unit);
-        black_box(codegen::generate(&unit.class, &analysis, name));
+        let tokens = lexer::lex(src).expect("valid fixture");
+        let unit = parser::parse(tokens).expect("valid fixture");
+        let analysis = sema::analyze(&unit).expect("valid fixture");
+        black_box(codegen::generate(&unit.class, &analysis, name).expect("valid fixture"));
     });
 
     let per = |ns: f64| ns / compiles;

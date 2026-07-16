@@ -12,6 +12,7 @@
 //! Character literals decode escapes (including octal and `\uXXXX`) to a UTF-16
 //! code unit. Source is assumed ASCII outside of literal escapes.
 
+use crate::diagnostic::CompileResult;
 use crate::span::Span;
 
 /// A single lexical token plus the 1-based source line it starts on.
@@ -119,8 +120,8 @@ pub enum TokenKind {
 ///
 /// Panics on lexical errors (unterminated string/comment, unknown character,
 /// bad escape). The fixtures are well-formed, so this stays simple.
-pub fn lex(source: &str) -> Vec<Token> {
-    Lexer::new(source).run()
+pub fn lex(source: &str) -> CompileResult<Vec<Token>> {
+    Ok(Lexer::new(source).run())
 }
 
 struct Lexer<'a> {
