@@ -61,12 +61,8 @@ whether byte-identity broke.
 | **3** | Resume language rungs (`&& || ?:`, loops, methods, string concat) | Each is now much cheaper and safer on the extensible foundation. |
 
 The connective thread between phases: **the fuzzer (Phase 0) depends on the
-taxonomy (Phase 1).** Today a genuine njavac bug and a legitimately-unsupported
-construct both surface as the same `catch_unwind` → `"unsupported"`. A fuzzer
-would silently skip a real bug as "just unsupported." So a v1 fuzzer ships in
-Phase 0 using the current reject-by-panic contract, and Phase 1 sharpens it by
-making `Unsupported` (skip) genuinely distinct from an njavac invariant violation
-(a real finding).
+taxonomy (Phase 1).** That integration is now complete: the current oracle contract
+lives in CLAUDE.md §Testing.
 
 ---
 
@@ -104,34 +100,11 @@ from-scratch check. See CLAUDE.md §Testing.
 
 ---
 
-## Phase 1 — Diagnostics foundation
+## Phase 1 — Diagnostics foundation — ✅ DONE
 
-### 1.1 `Diagnostic` + `Span` + a three-way error taxonomy
-- **What.** Introduce `Diagnostic { span, severity, message, code }` and a byte
-  `Span { start, end }` carried on tokens (alongside — not replacing — the `line`,
-  which is still the cheapest source for `LineNumberTable`) and attached to AST
-  nodes. Thread `Result`/a diagnostic sink through `lex`/`parse`/`analyze`/
-  `generate`. Crucially, distinguish three kinds from day one:
-  - **`SyntaxError`** — the user wrote invalid Java.
-  - **`Unsupported`** — valid Java that njavac doesn't support yet (the honest
-    state of a subset compiler).
-  - **`panic!`** — reserved *only* for "njavac invariant violated," i.e. a real
-    bug.
-  Replace the ~12 user-facing panics in `parser`/`sema` and `main`'s
-  `catch_unwind` (which today collapses all three kinds into one opaque
-  `"unsupported (compiler error)"`).
-- **Why.** Two payoffs. (1) It makes the fuzzer sound: `Unsupported` → skip, a
-  `panic`/internal error → a genuine finding, instead of both looking identical.
-  (2) It makes every future rung localizable for a human or an agent: the message
-  says *which of the four stages to open*. It is also the prerequisite that makes
-  parser error-recovery and sema type-checking meaningful.
-- **Effort.** Medium, but almost entirely mechanical. Touches the one explicitly
-  redesignable contract (`compile()`'s signature) and `main`.
-- **Key files.** `parser.rs` (~10 panic sites), `sema.rs` (undeclared-local
-  panics), `lexer.rs` (lexical errors), `main.rs` (`catch_unwind`), `lib.rs`.
-- **Done when.** A malformed source yields a spanned `SyntaxError`, an out-of-scope
-  construct yields `Unsupported`, and `panic!` survives only as an invariant
-  guard.
+`Diagnostic`/`Span` and the three-way returned-syntax/returned-unsupported/internal-
+panic taxonomy now run through every compiler stage, the CLI, and the fuzzer. See
+CLAUDE.md §Architecture for the stage contract and §Testing for the oracle policy.
 
 ---
 
@@ -307,8 +280,8 @@ files its "what would help" items here.
   goto-compaction / materialization tail.
 ## Status
 
-Phase 0 landed (0.1–0.3 and 0.5; 0.4 CI gate deferred by decision); Phase 1–3 not
-started. All tests run through Docker via the `Makefile`.
+Phases 0–1 landed; Phases 2–3 have not started. All tests run through Docker via
+the `Makefile`.
 
 As items land, mark them ✅ in place and record the mechanics at the fix site / in
 CLAUDE.md — never restate them here, and delete a finished bug's backlog entry (per

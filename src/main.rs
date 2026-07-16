@@ -6,17 +6,13 @@
 //! class is written to `<ClassName>.class` — under `-d <dir>` when given,
 //! otherwise beside its source file (javac's default). The class name comes from
 //! the parsed source; in njavac's supported subset it always matches the
-//! basename. As with javac, one source failing does not abort the others; the
-//! process exits non-zero if any did.
+//! basename. As with javac, a returned compile diagnostic for one source does not
+//! abort the others; the process exits non-zero if any source failed.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
-    // A per-file compiler error is reported below via catch_unwind; silence the
-    // default panic dump so the CLI speaks in one voice.
-    std::panic::set_hook(Box::new(|_| {}));
-
     let mut out_dir: Option<PathBuf> = None;
     let mut inputs: Vec<String> = Vec::new();
 
@@ -54,9 +50,8 @@ fn main() -> ExitCode {
 }
 
 /// Compile one source file, writing `<ClassName>.class`. Returns a human-readable
-/// error — an I/O failure or a compiler panic on unsupported input — so the
-/// caller can report it and keep going, the way javac keeps compiling the
-/// remaining sources after one fails.
+/// error from I/O or a returned compile diagnostic, so the caller can report it
+/// and keep going. Internal invariant failures remain ordinary Rust panics.
 fn compile_one(input: &str, out_dir: Option<&Path>) -> Result<(), String> {
     let path = Path::new(input);
     let source = std::fs::read_to_string(path).map_err(|e| format!("{input}: {e}"))?;
@@ -71,11 +66,8 @@ fn compile_one(input: &str, out_dir: Option<&Path>) -> Result<(), String> {
     // javac's `<ClassName>.class`.
     let class_name = source_file.strip_suffix(".java").unwrap_or(&source_file).to_owned();
 
-    let bytes = match std::panic::catch_unwind(|| njavac::compile(&source, &source_file)) {
-        Ok(Ok(bytes)) => bytes,
-        Ok(Err(diagnostic)) => return Err(diagnostic.render(input, &source)),
-        Err(_) => return Err(format!("{input}: unsupported (compiler error)")),
-    };
+    let bytes = njavac::compile(&source, &source_file)
+        .map_err(|diagnostic| diagnostic.render(input, &source))?;
 
     // javac's rule: with -d write under that directory, otherwise beside the
     // source (a bare filename has an empty parent, i.e. the current directory).

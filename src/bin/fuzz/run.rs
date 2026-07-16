@@ -16,7 +16,9 @@ struct Tally {
     byte_divergent: u64,
     behavior_match: u64,
     generator_invalid: u64,
-    njavac_reject: u64,
+    njavac_unsupported: u64,
+    njavac_syntax_error: u64,
+    njavac_internal_panic: u64,
     findings: u64,
     lines: u64,
     javac_time: Duration,
@@ -47,7 +49,7 @@ pub(super) fn run(cfg: &Config) -> ! {
     let mut tally = Tally::default();
     let mut byte_sigs: HashMap<String, SigInfo> = HashMap::new();
     let mut behavior_sigs: HashMap<String, SigInfo> = HashMap::new();
-    let mut reject_dumped = 0u32;
+    let mut unsupported_dumped = 0u32;
 
     println!(
         "fuzz: seed={} count={} batch={} javac-worker={} observer={} (lazy)\n  reproduce this exact run with: make fuzz SEED={}",
@@ -80,13 +82,37 @@ pub(super) fn run(cfg: &Config) -> ! {
             tally.njavac_time += t_njavac.elapsed();
             match classify(want.map(Vec::as_slice), got) {
                 ByteOutcome::GeneratorInvalid => tally.generator_invalid += 1,
-                ByteOutcome::NjavacReject => {
-                    tally.njavac_reject += 1;
-                    if reject_dumped < 20 {
-                        let rd = cfg.out_dir.join("rejects");
-                        let _ = std::fs::create_dir_all(&rd);
-                        let _ = std::fs::write(rd.join(&p.name.java_file), s);
-                        reject_dumped += 1;
+                ByteOutcome::NjavacUnsupported(diagnostic) => {
+                    tally.njavac_unsupported += 1;
+                    if unsupported_dumped < 20 {
+                        let dir = cfg.out_dir.join("unsupported");
+                        let _ = std::fs::create_dir_all(&dir);
+                        let _ = std::fs::write(dir.join(&p.name.java_file), s);
+                        let _ = std::fs::write(
+                            dir.join(format!("{}.diagnostic", p.name.class)),
+                            diagnostic.render(&p.name.source_arg, s),
+                        );
+                        unsupported_dumped += 1;
+                    }
+                }
+                ByteOutcome::NjavacSyntaxError(diagnostic) => {
+                    tally.njavac_syntax_error += 1;
+                    report_compiler_finding(
+                        cfg,
+                        p,
+                        s,
+                        "syntax-error",
+                        &diagnostic.render(&p.name.source_arg, s),
+                    );
+                    if !cfg.keep_going {
+                        finish_and_exit(&tally, cfg.count, &byte_sigs, &behavior_sigs);
+                    }
+                }
+                ByteOutcome::NjavacInternalPanic(detail) => {
+                    tally.njavac_internal_panic += 1;
+                    report_compiler_finding(cfg, p, s, "internal-panic", &detail);
+                    if !cfg.keep_going {
+                        finish_and_exit(&tally, cfg.count, &byte_sigs, &behavior_sigs);
                     }
                 }
                 ByteOutcome::Identical => tally.exact += 1,
@@ -137,10 +163,7 @@ pub(super) fn run(cfg: &Config) -> ! {
                         report_finding(cfg, p, s, rep.as_deref(), &observations);
                     }
                     if !cfg.keep_going {
-                        summary(&tally, cfg.count);
-                        print_sig_breakdown("byte-divergence", &byte_sigs);
-                        print_sig_breakdown("behavior-finding", &behavior_sigs);
-                        std::process::exit(1);
+                        finish_and_exit(&tally, cfg.count, &byte_sigs, &behavior_sigs);
                     }
                 }
             }
@@ -148,25 +171,32 @@ pub(super) fn run(cfg: &Config) -> ! {
 
         n += this;
         println!(
-            "  progress {n}/{}  exact={} behavior-match={} byte-divergent={} gen-invalid={} njavac-reject={} findings={} lines={}",
+            "  progress {n}/{}  exact={} behavior-match={} byte-divergent={} gen-invalid={} njavac-unsupported={} njavac-syntax-error={} njavac-internal-panic={} behavioral-findings={} lines={}",
             cfg.count, tally.exact, tally.behavior_match, tally.byte_divergent,
-            tally.generator_invalid, tally.njavac_reject, tally.findings, tally.lines
+            tally.generator_invalid, tally.njavac_unsupported, tally.njavac_syntax_error,
+            tally.njavac_internal_panic, tally.findings, tally.lines
         );
     }
 
     summary(&tally, cfg.count);
     print_sig_breakdown("byte-divergence", &byte_sigs);
     print_sig_breakdown("behavior-finding", &behavior_sigs);
-    std::process::exit(if tally.findings > 0 { 1 } else { 0 });
+    std::process::exit(if has_hard_findings(&tally) { 1 } else { 0 });
 }
 
 fn summary(t: &Tally, count: u64) {
     debug_assert_eq!(t.byte_divergent, t.behavior_match + t.findings);
-    let processed = t.exact + t.byte_divergent + t.generator_invalid + t.njavac_reject;
+    let processed = t.exact
+        + t.byte_divergent
+        + t.generator_invalid
+        + t.njavac_unsupported
+        + t.njavac_syntax_error
+        + t.njavac_internal_panic;
     println!(
-        "\nfuzz done: {processed}/{count} cases  exact={} behavior-match={} byte-divergent={} gen-invalid={} njavac-reject={} findings={}  ({} lines compiled)",
+        "\nfuzz done: {processed}/{count} cases  exact={} behavior-match={} byte-divergent={} gen-invalid={} njavac-unsupported={} njavac-syntax-error={} njavac-internal-panic={} behavioral-findings={}  ({} lines compiled)",
         t.exact, t.behavior_match, t.byte_divergent, t.generator_invalid,
-        t.njavac_reject, t.findings, t.lines
+        t.njavac_unsupported, t.njavac_syntax_error, t.njavac_internal_panic,
+        t.findings, t.lines
     );
     let (jt, nt, n) = (
         t.javac_time.as_secs_f64(),
@@ -183,6 +213,10 @@ fn summary(t: &Tally, count: u64) {
     if t.findings > 0 {
         println!("  -> {} behavioral finding(s); see the fuzz-out/ dir", t.findings);
     }
+    let compiler_findings = t.njavac_syntax_error + t.njavac_internal_panic;
+    if compiler_findings > 0 {
+        println!("  -> {compiler_findings} compiler finding(s); see the fuzz-out/ dir");
+    }
     if t.byte_divergent > 0 {
         println!(
             "  observer time: {:.3}s across {} byte-divergent program(s)",
@@ -190,4 +224,33 @@ fn summary(t: &Tally, count: u64) {
             t.byte_divergent,
         );
     }
+}
+
+fn report_compiler_finding(cfg: &Config, prog: &Prog, src: &str, kind: &str, detail: &str) {
+    println!(
+        "\nNJAVAC COMPILER FINDING [{kind}]: {} ({})\n{detail}",
+        prog.name.class, prog.name.source_arg,
+    );
+    let dir = cfg.out_dir.join("compiler-findings").join(kind);
+    let _ = std::fs::create_dir_all(&dir);
+    let out_java = dir.join(&prog.name.java_file);
+    let _ = std::fs::write(&out_java, src);
+    let _ = std::fs::write(dir.join(format!("{}.txt", prog.name.class)), detail);
+    println!("  wrote compiler finding to {}", out_java.display());
+}
+
+fn has_hard_findings(t: &Tally) -> bool {
+    t.findings > 0 || t.njavac_syntax_error > 0 || t.njavac_internal_panic > 0
+}
+
+fn finish_and_exit(
+    tally: &Tally,
+    count: u64,
+    byte_sigs: &HashMap<String, SigInfo>,
+    behavior_sigs: &HashMap<String, SigInfo>,
+) -> ! {
+    summary(tally, count);
+    print_sig_breakdown("byte-divergence", byte_sigs);
+    print_sig_breakdown("behavior-finding", behavior_sigs);
+    std::process::exit(1);
 }

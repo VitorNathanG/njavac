@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use crate::generate::{Gen, Rng};
 use crate::javac::{reset_dir, run_javac_one};
 use crate::model::{FExpr, FStmt, PrintArg, Prog};
-use crate::oracle::njavac_compile;
+use crate::oracle::{njavac_compile, selftest_outcome_capture};
 use crate::render::render;
 use crate::Config;
 
@@ -31,7 +31,7 @@ impl MinHarness {
         self.spawns += 1;
         run_javac_one(&self.javac, &out, &srcfile);
         let want = std::fs::read(out.join(format!("{}.class", prog.name.class))).ok();
-        let got = njavac_compile(&src, &prog.name.source_arg);
+        let got = njavac_compile(&src, &prog.name.source_arg).accepted_bytes();
         (want, got)
     }
 
@@ -156,6 +156,11 @@ fn expr_paren_reductions(expr: &FExpr) -> Vec<FExpr> {
 /// bug. This preserves the existing selftest predicate and artifact lifecycle.
 pub(super) fn selftest(cfg: &Config) -> i32 {
     println!("fuzz --selftest: exercising the finding/minimize/report pipeline");
+    if let Err(detail) = selftest_outcome_capture() {
+        eprintln!("SELFTEST FAILED: candidate outcome capture: {detail}");
+        return 1;
+    }
+    println!("  candidate outcome capture/classification passes");
     let mut g = Gen { rng: Rng::new(cfg.seed) };
     let mut h = SelftestHarness { inner: MinHarness::new(&cfg.javac, cfg.seed) };
     for k in 0..200 {

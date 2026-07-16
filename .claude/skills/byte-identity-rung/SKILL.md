@@ -130,11 +130,11 @@ needs `full_frame`; string concat needs `invokedynamic`) — a principled subset
 not an avoidance of work.
 
 When you *do* refuse, refuse **honestly**: out-of-subset input must be **rejected**,
-not compiled to wrong bytes. An `assert!`/`panic!` is caught by the CLI as
-"unsupported (compiler error)" and no `.class` is written. Never weaken a check to
-make something "work" — a wrong byte is worse than an honest refusal. And when a
-refusal *is* the right call, say so explicitly and get the user's agreement rather
-than silently narrowing the rung.
+not compiled to wrong bytes. Return an `Unsupported` diagnostic; reserve
+`assert!`/`panic!` for internal invariant failures. Never weaken a check to make
+something "work" — a wrong byte is worse than an honest refusal. And when a refusal
+*is* the right call, say so explicitly and get the user's agreement rather than
+silently narrowing the rung.
 
 ## 7. Docs in lockstep — in the *same* commit
 - **README**: check off the feature map, update scope prose.

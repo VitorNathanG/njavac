@@ -249,10 +249,12 @@ debugging only and is **not** a sanctioned way to validate byte-identity.
   `.java`, `.diff`, and `.observe` files; they stay raw until minimization has an
   observation-aware predicate. Key facts a future rung's generator MUST preserve:
   - **The oracle contract — one sentence.** *Both compilers accept, their bytes
-    differ, and their observations differ* is the hard-fail signal; byte-only
-    divergences are compatibility telemetry, a javac reject is `generator-invalid`
-    telemetry, and an njavac panic is `njavac-reject` telemetry (not a finding until
-    Phase 1's taxonomy). Observation compares stdout, stderr, and normalized
+    differ, and their observations differ* is the behavioral hard-fail signal;
+    byte-only divergences are compatibility telemetry, a javac reject is
+    `generator-invalid` telemetry regardless of the njavac outcome, a returned
+    `Unsupported` diagnostic is `njavac-unsupported` telemetry, and a returned
+    syntax diagnostic or internal panic after javac accepts is a hard compiler
+    finding. Observation compares stdout, stderr, and normalized
     return/throw/load-failure/timeout state. This is empirical semantic evidence,
     not a proof: wrong unobserved state can remain a false negative.
   - **Harness invariants.** (1) the `ident()` chokepoint: class name

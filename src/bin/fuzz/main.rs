@@ -10,8 +10,9 @@
 //!
 //! Exact bytes remain the first and cheapest comparison. When they differ, a
 //! persistent JVM observer loads each class in a fresh class loader, invokes
-//! `main`, and compares stdout, stderr, and normalized termination. Only an
-//! observation difference is a hard finding; byte-only differences are telemetry.
+//! `main`, and compares stdout, stderr, and normalized termination. For accepted
+//! classes, only an observation difference is a hard finding; byte-only differences
+//! are telemetry. Invalid njavac rejections and internal panics are also findings.
 //!
 //! | outcome                          | meaning                       | action              |
 //! | -------------------------------- | ----------------------------- | ------------------- |
@@ -19,7 +20,9 @@
 //! | both accept, bytes differ, observation equal | compatibility drift   | telemetry           |
 //! | both accept, bytes equal         | exact                         | pass                |
 //! | javac rejects (no `.class`)      | generator emitted bad Java    | `generator-invalid` |
-//! | njavac panics, javac accepted    | valid Java njavac can't do    | `njavac-reject`     |
+//! | javac accepts, njavac returns Unsupported | valid but out of subset | `njavac-unsupported` telemetry |
+//! | javac accepts, njavac returns SyntaxError | invalid njavac rejection | compiler finding    |
+//! | javac accepts, njavac panics     | njavac invariant failure      | compiler finding    |
 //!
 //! The observation layer deliberately provides empirical semantic confidence, not
 //! proof: unobserved state can hide a wrong compilation. The generator therefore
@@ -140,7 +143,8 @@ impl Config {
 }
 
 fn main() {
-    // Speak in one voice: out-of-scope inputs panic by design and are caught.
+    // Candidate panics are captured and reported with their payload as compiler
+    // findings; suppress the hook's duplicate panic report.
     std::panic::set_hook(Box::new(|_| {}));
     let mut cfg = Config::from_args();
 
