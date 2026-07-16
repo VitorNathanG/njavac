@@ -382,33 +382,114 @@ pub struct StackFrame {
     pub stack: Vec<VerificationType>,
 }
 
-/// One method: fully lowered bytecode plus the metadata needed to write it.
+/// One owned class-file attribute. Vector order is serialization order and also
+/// drives phase-2 constant interning.
+pub enum Attribute {
+    Code(CodeAttribute),
+    LineNumberTable(Vec<(u16, u16)>),
+    StackMapTable {
+        entry_locals: Vec<VerificationType>,
+        frames: Vec<StackFrame>,
+    },
+    SourceFile(String),
+}
+
+impl Attribute {
+    fn name(&self) -> &'static str {
+        match self {
+            Attribute::Code(_) => "Code",
+            Attribute::LineNumberTable(_) => "LineNumberTable",
+            Attribute::StackMapTable { .. } => "StackMapTable",
+            Attribute::SourceFile(_) => "SourceFile",
+        }
+    }
+}
+
+/// The body of a `Code` attribute. Exception handlers are not supported yet, so
+/// `exception_table` records the only current state without modeling future rows.
+pub struct CodeAttribute {
+    pub max_stack: u16,
+    pub max_locals: u16,
+    pub code: Vec<u8>,
+    pub exception_table: (),
+    pub attributes: Vec<Attribute>,
+}
+
+impl CodeAttribute {
+    pub fn new(
+        max_stack: u16,
+        max_locals: u16,
+        code: Vec<u8>,
+        line_numbers: Vec<(u16, u16)>,
+        entry_locals: Vec<VerificationType>,
+        stack_frames: Vec<StackFrame>,
+    ) -> Self {
+        let mut attributes = vec![Attribute::LineNumberTable(line_numbers)];
+        if !stack_frames.is_empty() {
+            attributes.push(Attribute::StackMapTable {
+                entry_locals,
+                frames: stack_frames,
+            });
+        }
+        CodeAttribute {
+            max_stack,
+            max_locals,
+            code,
+            exception_table: (),
+            attributes,
+        }
+    }
+}
+
+/// One method with its attributes in class-file order.
 pub struct Method {
     pub access_flags: u16,
     pub name: String,
     pub descriptor: String,
-    pub max_stack: u16,
-    pub max_locals: u16,
-    pub code: Vec<u8>,
-    /// (start_pc, line_number) pairs for the LineNumberTable attribute.
-    pub line_numbers: Vec<(u16, u16)>,
-    /// Verifier state at method entry (the parameter locals). Only the seed for
-    /// the first frame's delta/append computation; never serialized on its own.
-    pub entry_locals: Vec<VerificationType>,
-    /// StackMapTable frames in increasing-offset order. Empty ⇒ the method is
-    /// straight-line and no StackMapTable attribute (nor its Utf8) is emitted.
-    pub stack_frames: Vec<StackFrame>,
+    pub attributes: Vec<Attribute>,
+}
+
+impl Method {
+    pub fn with_code(
+        access_flags: u16,
+        name: impl Into<String>,
+        descriptor: impl Into<String>,
+        code: CodeAttribute,
+    ) -> Self {
+        Method {
+            access_flags,
+            name: name.into(),
+            descriptor: descriptor.into(),
+            attributes: vec![Attribute::Code(code)],
+        }
+    }
 }
 
 pub struct ClassFile {
     pub access_flags: u16,
     pub this_class: String,
     pub super_class: String,
-    pub source_file: String,
     pub methods: Vec<Method>,
+    pub attributes: Vec<Attribute>,
 }
 
 impl ClassFile {
+    pub fn new(
+        access_flags: u16,
+        this_class: impl Into<String>,
+        super_class: impl Into<String>,
+        methods: Vec<Method>,
+        source_file: impl Into<String>,
+    ) -> Self {
+        ClassFile {
+            access_flags,
+            this_class: this_class.into(),
+            super_class: super_class.into(),
+            methods,
+            attributes: vec![Attribute::SourceFile(source_file.into())],
+        }
+    }
+
     /// Serialize the whole file. `cp` must already contain the phase-1
     /// (code-generation) constants, interned in bytecode-reference order by the
     /// caller. Here we add the phase-2 (writing-order) structural constants and
@@ -418,36 +499,14 @@ impl ClassFile {
         let this_idx = cp.class(&self.this_class);
         let super_idx = cp.class(&self.super_class);
 
-        // Per-method structural Utf8s, in declaration order. `StackMapTable` is
-        // interned right after the method's name/descriptor and the standing
-        // `Code`/`LineNumberTable` names, and only when the method has frames —
-        // exactly javac's pool order and its "omit the Utf8 for straight-line
-        // methods" rule.
-        struct MethodIdx {
-            name: u16,
-            descriptor: u16,
-        }
-        let mut method_idx = Vec::new();
+        // Per-method structural Utf8s and recursive attributes, in declaration
+        // and serialization order.
         for m in &self.methods {
-            let name = cp.utf8(&m.name);
-            let descriptor = cp.utf8(&m.descriptor);
-            cp.utf8("Code");
-            cp.utf8("LineNumberTable");
-            let stack_map_attr = (!m.stack_frames.is_empty()).then(|| cp.utf8("StackMapTable"));
-            // Any `Class` a frame names (only `args`'s array type here, and only
-            // when a full_frame lists it) is interned right after the attribute
-            // name — javac's pool order.
-            if stack_map_attr.is_some() {
-                for name in frame_object_classes(&m.stack_frames, &m.entry_locals) {
-                    cp.class(&name);
-                }
-            }
-            method_idx.push(MethodIdx { name, descriptor });
+            cp.utf8(&m.name);
+            cp.utf8(&m.descriptor);
+            intern_attributes(&m.attributes, &mut cp);
         }
-
-        // Class attribute names.
-        cp.utf8("SourceFile");
-        cp.utf8(&self.source_file);
+        intern_attributes(&self.attributes, &mut cp);
 
         // The pool is frozen after the phase-2 walk. Body builders and attribute
         // writers below may only resolve existing entries through immutable lookup.
@@ -467,80 +526,99 @@ impl ClassFile {
         buf.u16(0); // fields_count
 
         buf.u16(self.methods.len() as u16);
-        for (m, mi) in self.methods.iter().zip(&method_idx) {
+        for m in &self.methods {
             buf.u16(m.access_flags);
-            buf.u16(mi.name);
-            buf.u16(mi.descriptor);
-            buf.u16(1); // attributes_count: just Code
-
-            let body = code_body(m, &cp);
-            write_attribute(&mut buf, &cp, "Code", &body);
+            buf.u16(cp.utf8_index(&m.name));
+            buf.u16(cp.utf8_index(&m.descriptor));
+            write_attributes(&mut buf, &m.attributes, &cp);
         }
 
-        buf.u16(1); // class attributes_count: SourceFile
-        let body = source_file_body(&self.source_file, &cp);
-        write_attribute(&mut buf, &cp, "SourceFile", &body);
+        write_attributes(&mut buf, &self.attributes, &cp);
 
         buf.into_vec()
     }
 }
 
-/// Write an attribute header and its already-built body. The body buffer is the
-/// measurement boundary: no caller computes `attribute_length` independently.
-fn write_attribute(buf: &mut ByteBuf, cp: &ConstantPool, name: &str, body: &[u8]) {
-    buf.u16(cp.utf8_index(name));
-    buf.u32(body.len() as u32);
-    buf.bytes(body);
+/// Intern each attribute name followed by exactly the body constants and children
+/// that writing the same recursive vectors will visit.
+fn intern_attributes(attributes: &[Attribute], cp: &mut ConstantPool) {
+    for attribute in attributes {
+        cp.utf8(attribute.name());
+        match attribute {
+            Attribute::Code(code) => intern_attributes(&code.attributes, cp),
+            Attribute::LineNumberTable(_) => {}
+            Attribute::StackMapTable {
+                entry_locals,
+                frames,
+            } => {
+                // Only Object classes present in the selected serialized frame
+                // shapes enter the pool; full snapshots are not the write plan.
+                for name in frame_object_classes(frames, entry_locals) {
+                    cp.class(&name);
+                }
+            }
+            Attribute::SourceFile(source_file) => {
+                cp.utf8(source_file);
+            }
+        }
+    }
 }
 
-fn code_body(method: &Method, cp: &ConstantPool) -> Vec<u8> {
-    let line_body = line_number_table_body(&method.line_numbers);
-    let stack_map_body = (!method.stack_frames.is_empty())
-        .then(|| stack_map_body(&method.stack_frames, &method.entry_locals, cp));
+/// Write an ordered attribute vector. Each body gets its own buffer, which is the
+/// sole source of `attribute_length`.
+fn write_attributes(buf: &mut ByteBuf, attributes: &[Attribute], cp: &ConstantPool) {
+    buf.u16(attributes.len() as u16);
+    for attribute in attributes {
+        let body = attribute_body(attribute, cp);
+        buf.u16(cp.utf8_index(attribute.name()));
+        buf.u32(body.len() as u32);
+        buf.bytes(&body);
+    }
+}
 
+fn attribute_body(attribute: &Attribute, cp: &ConstantPool) -> Vec<u8> {
     let mut buf = ByteBuf::new();
-    buf.u16(method.max_stack);
-    buf.u16(method.max_locals);
-    buf.u32(method.code.len() as u32);
-    buf.bytes(&method.code);
-    buf.u16(0); // exception_table_length
-    buf.u16(1 + stack_map_body.is_some() as u16); // LineNumberTable [+ StackMapTable]
-
-    // LineNumberTable first, then StackMapTable — javac's sub-attribute order.
-    write_attribute(&mut buf, cp, "LineNumberTable", &line_body);
-    if let Some(body) = stack_map_body {
-        write_attribute(&mut buf, cp, "StackMapTable", &body);
+    match attribute {
+        Attribute::Code(code) => {
+            buf.u16(code.max_stack);
+            buf.u16(code.max_locals);
+            buf.u32(code.code.len() as u32);
+            buf.bytes(&code.code);
+            buf.u16(0); // exception_table_length
+            write_attributes(&mut buf, &code.attributes, cp);
+        }
+        Attribute::LineNumberTable(line_numbers) => {
+            buf.u16(line_numbers.len() as u16);
+            for &(pc, line) in line_numbers {
+                buf.u16(pc);
+                buf.u16(line);
+            }
+        }
+        Attribute::StackMapTable {
+            entry_locals,
+            frames,
+        } => {
+            write_stack_map_body(&mut buf, frames, entry_locals, cp);
+        }
+        Attribute::SourceFile(source_file) => buf.u16(cp.utf8_index(source_file)),
     }
     buf.into_vec()
 }
 
-fn line_number_table_body(line_numbers: &[(u16, u16)]) -> Vec<u8> {
-    let mut buf = ByteBuf::new();
-    buf.u16(line_numbers.len() as u16);
-    for &(pc, line) in line_numbers {
-        buf.u16(pc);
-        buf.u16(line);
-    }
-    buf.into_vec()
-}
-
-fn source_file_body(source_file: &str, cp: &ConstantPool) -> Vec<u8> {
-    let mut buf = ByteBuf::new();
-    buf.u16(cp.utf8_index(source_file));
-    buf.into_vec()
-}
-
-/// Serialize a method's StackMapTable attribute *body* (`number_of_entries`
-/// followed by the frames) into a fresh buffer. Returns the bytes so the caller
-/// can both measure (`attribute_length`) and emit them.
+/// Write a method's StackMapTable attribute body (`number_of_entries` followed by
+/// the frames) into the caller's measured attribute-body buffer.
 ///
 /// For each frame the `offset_delta` uses javac's rule — the first frame's delta
 /// is its absolute offset; every later frame's is `offset − prevOffset − 1` (the
 /// −1 inter-frame bias) — and the smallest frame form that expresses the change
 /// from the previous frame's state is chosen (`same` / `same_locals_1_stack_item`
 /// / `append` / `chop`, falling back to `full_frame`), exactly as javac does.
-fn stack_map_body(frames: &[StackFrame], entry_locals: &[VerificationType], cp: &ConstantPool) -> Vec<u8> {
-    let mut buf = ByteBuf::new();
+fn write_stack_map_body(
+    buf: &mut ByteBuf,
+    frames: &[StackFrame],
+    entry_locals: &[VerificationType],
+    cp: &ConstantPool,
+) {
     buf.u16(frames.len() as u16);
 
     let mut prev_offset: Option<u16> = None;
@@ -558,18 +636,18 @@ fn stack_map_body(frames: &[StackFrame], entry_locals: &[VerificationType], cp: 
             }
             FrameShape::SameLocals1(vt) if delta <= 63 => {
                 buf.u8(64 + delta as u8); // same_locals_1_stack_item_frame
-                vt.write(&mut buf, cp);
+                vt.write(buf, cp);
             }
             FrameShape::SameLocals1(vt) => {
                 buf.u8(247); // same_locals_1_stack_item_frame_extended
                 buf.u16(delta);
-                vt.write(&mut buf, cp);
+                vt.write(buf, cp);
             }
             FrameShape::Append(new) => {
                 buf.u8(251 + new.len() as u8); // append_frame (k = 1..=3)
                 buf.u16(delta);
                 for vt in new {
-                    vt.write(&mut buf, cp);
+                    vt.write(buf, cp);
                 }
             }
             FrameShape::Chop(k) => {
@@ -581,11 +659,11 @@ fn stack_map_body(frames: &[StackFrame], entry_locals: &[VerificationType], cp: 
                 buf.u16(delta);
                 buf.u16(f.locals.len() as u16);
                 for vt in &f.locals {
-                    vt.write(&mut buf, cp);
+                    vt.write(buf, cp);
                 }
                 buf.u16(f.stack.len() as u16);
                 for vt in &f.stack {
-                    vt.write(&mut buf, cp);
+                    vt.write(buf, cp);
                 }
             }
         }
@@ -593,7 +671,6 @@ fn stack_map_body(frames: &[StackFrame], entry_locals: &[VerificationType], cp: 
         prev_offset = Some(f.offset);
         prev_locals = &f.locals;
     }
-    buf.into_vec()
 }
 
 /// The frame form javac would pick for the transition from `prev` locals to the

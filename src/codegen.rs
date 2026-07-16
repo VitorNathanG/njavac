@@ -25,7 +25,9 @@
 //! method whose branches all fold stays byte-identical to its straight-line form.
 
 use crate::ast::{BinOp, Class, CmpOp, Expr, LogOp, Method, Name, Stmt, StmtKind, Type};
-use crate::classfile::{ClassFile, ConstantPool, Method as CfMethod, StackFrame, VerificationType};
+use crate::classfile::{
+    ClassFile, CodeAttribute, ConstantPool, Method as CfMethod, StackFrame, VerificationType,
+};
 use crate::diagnostic::{CompileResult, Diagnostic};
 use crate::sema::{self, Analysis, FrameLocal, MethodInfo, StackTy, ValType};
 use crate::span::Span;
@@ -179,13 +181,13 @@ pub fn generate(class: &Class, analysis: &Analysis, source_file: &str) -> Compil
         methods.push(gen_method(&mut cp, m, info));
     }
 
-    let class_file = ClassFile {
-        access_flags: 0x0021, // ACC_PUBLIC | ACC_SUPER
-        this_class: class.name.clone(),
-        super_class: "java/lang/Object".to_string(),
-        source_file: source_file.to_string(),
+    let class_file = ClassFile::new(
+        0x0021, // ACC_PUBLIC | ACC_SUPER
+        class.name.clone(),
+        "java/lang/Object",
         methods,
-    };
+        source_file,
+    );
     Ok(class_file.to_bytes(cp))
 }
 
@@ -332,17 +334,12 @@ fn gen_init(cp: &mut ConstantPool, class_line: u16) -> CfMethod {
     push_u16(&mut code, init_ref);
     code.push(RETURN);
 
-    CfMethod {
-        access_flags: 0x0001, // ACC_PUBLIC
-        name: "<init>".to_string(),
-        descriptor: "()V".to_string(),
-        max_stack: 1,
-        max_locals: 1,
-        code,
-        line_numbers: vec![(0, class_line)],
-        entry_locals: Vec::new(),
-        stack_frames: Vec::new(),
-    }
+    CfMethod::with_code(
+        0x0001, // ACC_PUBLIC
+        "<init>",
+        "()V",
+        CodeAttribute::new(1, 1, code, vec![(0, class_line)], Vec::new(), Vec::new()),
+    )
 }
 
 /// Emit one method body.
@@ -378,17 +375,19 @@ fn gen_method(cp: &mut ConstantPool, method: &Method, info: &MethodInfo) -> CfMe
     let live_targets = g.resolve_branches();
     let stack_frames = g.build_frames(&live_targets);
 
-    CfMethod {
-        access_flags: 0x0009, // ACC_PUBLIC | ACC_STATIC
-        name: method.name.clone(),
-        descriptor: descriptor_of(method),
-        max_stack: g.max_stack,
-        max_locals: info.max_locals,
-        code: g.code,
-        line_numbers: g.line_numbers,
-        entry_locals,
-        stack_frames,
-    }
+    CfMethod::with_code(
+        0x0009, // ACC_PUBLIC | ACC_STATIC
+        method.name.clone(),
+        descriptor_of(method),
+        CodeAttribute::new(
+            g.max_stack,
+            info.max_locals,
+            g.code,
+            g.line_numbers,
+            entry_locals,
+            stack_frames,
+        ),
+    )
 }
 
 /// Build the JVM method descriptor from the parsed signature.

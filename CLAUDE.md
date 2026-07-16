@@ -449,8 +449,10 @@ match. Two rules encoded here:
 
 - **Two-phase interning.** During code generation, every bytecode operand is
   interned in the exact order the bytecode references it (phase 1); then
-  `ClassFile::to_bytes` interns the structural names — `this_class`, per-method
-  name/descriptor/attribute names, `SourceFile` — in writing order (phase 2).
+  `ClassFile::to_bytes` interns `this_class`/`super_class`, per-method
+  names/descriptors, and the structural constants reached by recursively walking
+  the same ordered attribute vectors that writing uses (phase 2). Each attribute
+  name precedes its body constants and children.
 - **Breadth-first composite interning.** A `Methodref` takes its own slot, then
   its `Class` and `NameAndType`, then *their* `Utf8` children (a FIFO queue per
   top-level intern). This BFS order is why the pool matches javac.
@@ -470,9 +472,16 @@ affects output, and serialization is deliberately allocation-free (child indices
 resolved through borrowed lookup tables, not cloned `Entry` keys). Always re-run
 the bench's correctness pass after changes.
 
-The **`StackMapTable`** also lives here. Each method carries its frames as full
+The class-file model uses the owned `Attribute` enum for `Code`,
+`LineNumberTable`, `StackMapTable`, and `SourceFile`. Methods and classes hold
+ordered attribute vectors; `CodeAttribute` holds its ordered child vector. Shared
+recursive `intern_attributes` and `write_attributes` traversals make those vectors
+the sole phase-2 interning and writing order, derive counts from vector lengths,
+and measure every body in a temporary buffer.
+
+The **`StackMapTable`** also lives here. Its attribute carries frames as full
 verifier-state snapshots (`entry_locals` + `StackFrame { offset, locals, stack }`);
-`stack_map_body` derives each frame's `offset_delta` (first = its offset, then
+`write_stack_map_body` derives each frame's `offset_delta` (first = its offset, then
 `offset − prev − 1` — the −1 inter-frame bias) and picks the **smallest** frame
 form (`same`/`same_locals_1_stack_item`(+`_extended`)/`append`/`chop`/`full_frame`)
 via `classify_frame`. The pool ordering rules extend to it: the `"StackMapTable"`
@@ -480,7 +489,7 @@ Utf8 is interned per-method right after `LineNumberTable`, **only when the metho
 has frames** (a method whose branches all fold stays byte-identical to its
 straight-line form); a `full_frame`'s `Object` locals (here just `args`'s
 `[Ljava/lang/String;`) are interned right after that Utf8. Within `Code`, the
-sub-attributes are written **`LineNumberTable` then `StackMapTable`**.
+constructor orders children as **`LineNumberTable` then `StackMapTable`**.
 
 **`src/codegen.rs`** mirrors javac's exact choices with a fully typed emitter:
 the per-type constant-load ladders (`iconst`/`bipush`/`sipush`/`ldc` by
