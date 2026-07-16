@@ -419,7 +419,7 @@ source → lexer::lex → parser::parse → sema::analyze → codegen::generate 
   plus the existing 1-based line used for a byte-identical `LineNumberTable`.
 - **`ast`** → plain enums; declarations/statements carry source spans while
   statements/braces retain their byte-visible line facts. One
-  recursive `Type` (`Primitive` / canonical-internal-name `Class` / `Array`)
+  recursive `Type` (`Void` / `Primitive` / canonical-internal-name `Class` / `Array`)
   represents Java types throughout the AST and sema; its copyable `PrimitiveType`
   leaf drives numeric promotion and opcode selection. `Type` centrally owns slot
   width, recursive descriptor writing, and verifier reference names; there is no

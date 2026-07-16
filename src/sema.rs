@@ -206,6 +206,12 @@ fn validate_class_shape(unit: &CompilationUnit) -> CompileResult<()> {
             "the supported `main` method must be static",
         ));
     }
+    if !method.return_type.is_void() {
+        return Err(Diagnostic::unsupported_semantic(
+            method.name_span,
+            "the supported `main` method must return void",
+        ));
+    }
     if method.params.len() != 1 {
         let span = method.params.get(1).map_or(method.name_span, |param| param.span);
         return Err(Diagnostic::unsupported_semantic(
@@ -767,6 +773,7 @@ impl MethodAnalyzer {
 
 fn frame_local(ty: &Type) -> FrameLocal {
     match ty {
+        Type::Void => panic!("void used as a verifier local"),
         Type::Primitive(PrimitiveType::Long) => FrameLocal::Long,
         Type::Primitive(PrimitiveType::Float) => FrameLocal::Float,
         Type::Primitive(PrimitiveType::Double) => FrameLocal::Double,

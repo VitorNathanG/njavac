@@ -18,6 +18,7 @@ use std::borrow::Cow;
 use crate::span::Span;
 
 pub const JAVA_LANG_STRING: &str = "java/lang/String";
+pub const JAVA_LANG_OBJECT: &str = "java/lang/Object";
 
 /// One source-level name occurrence.
 #[derive(Debug)]
@@ -40,6 +41,9 @@ pub struct Class {
     pub span: Span,
     pub name: String,
     pub name_span: Span,
+    /// Canonical JVM internal name of the superclass. Classes without an explicit
+    /// `extends` clause inherit `java/lang/Object`.
+    pub super_class: String,
     /// Source line of the class declaration (used for the `<init>` line entry).
     pub line: u16,
     /// Source line of the class's closing brace.
@@ -54,6 +58,7 @@ pub struct Method {
     pub name: String,
     pub name_span: Span,
     pub is_static: bool,
+    pub return_type: Type,
     pub params: Vec<Param>,
     pub body: Vec<Stmt>,
     /// Source line of the method's closing brace (target of the trailing return).
@@ -123,6 +128,7 @@ impl PrimitiveType {
 /// recursively retain their element type instead of using a one-off `String[]`.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Type {
+    Void,
     Primitive(PrimitiveType),
     Class(Cow<'static, str>),
     Array(Box<Type>),
@@ -140,8 +146,12 @@ impl Type {
     pub fn as_primitive(&self) -> Option<PrimitiveType> {
         match self {
             Type::Primitive(ty) => Some(*ty),
-            Type::Class(_) | Type::Array(_) => None,
+            Type::Void | Type::Class(_) | Type::Array(_) => None,
         }
+    }
+
+    pub fn is_void(&self) -> bool {
+        matches!(self, Type::Void)
     }
 
     pub fn primitive(&self) -> PrimitiveType {
@@ -161,11 +171,16 @@ impl Type {
     }
 
     pub fn width(&self) -> u16 {
-        self.as_primitive().map_or(1, PrimitiveType::width)
+        match self {
+            Type::Void => panic!("void has no local-slot width"),
+            Type::Primitive(ty) => ty.width(),
+            Type::Class(_) | Type::Array(_) => 1,
+        }
     }
 
     pub fn write_descriptor(&self, out: &mut String) {
         match self {
+            Type::Void => out.push('V'),
             Type::Primitive(ty) => out.push(ty.descriptor()),
             Type::Class(name) => {
                 out.push('L');
@@ -181,7 +196,7 @@ impl Type {
 
     pub fn verifier_name(&self) -> Option<String> {
         match self {
-            Type::Primitive(_) => None,
+            Type::Void | Type::Primitive(_) => None,
             Type::Class(name) => Some(name.to_string()),
             Type::Array(_) => {
                 let mut descriptor = String::new();

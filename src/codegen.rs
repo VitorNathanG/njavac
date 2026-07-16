@@ -714,7 +714,7 @@ pub fn plan(
 
     let mut methods = Vec::new();
     // `<init>` first: its `Methodref` is interned before any of main's operands.
-    methods.push(gen_init(&mut cp, class.line));
+    methods.push(gen_init(&mut cp, &class.super_class, class.line));
     for (m, info) in class.methods.iter().zip(&analysis.methods) {
         methods.push(gen_method(&mut cp, m, info, &unit.exprs));
     }
@@ -722,7 +722,7 @@ pub fn plan(
     let class_file = ClassFile::new(
         0x0021, // ACC_PUBLIC | ACC_SUPER
         class.name.clone(),
-        "java/lang/Object",
+        class.super_class.clone(),
         methods,
         source_file,
     );
@@ -890,12 +890,12 @@ fn preflight_cond(
     }
 }
 
-/// The implicit default constructor: `aload_0; invokespecial Object.<init>; return`.
-fn gen_init(cp: &mut ConstantPool, class_line: u16) -> CfMethod {
+/// The implicit default constructor: `aload_0; invokespecial super.<init>; return`.
+fn gen_init(cp: &mut ConstantPool, super_class: &str, class_line: u16) -> CfMethod {
     let mut emitter = Emitter::new();
     emitter.pending_line = Some(class_line);
     emitter.emit(Instruction::Simple(ALOAD_0));
-    let init_ref = cp.methodref("java/lang/Object", "<init>", "()V");
+    let init_ref = cp.methodref(super_class, "<init>", "()V");
     emitter.emit(Instruction::Invoke {
         opcode: INVOKESPECIAL,
         index: init_ref,
@@ -967,7 +967,8 @@ fn descriptor_of(method: &Method) -> String {
     for p in &method.params {
         p.ty.write_descriptor(&mut d);
     }
-    d.push_str(")V");
+    d.push(')');
+    method.return_type.write_descriptor(&mut d);
     d
 }
 

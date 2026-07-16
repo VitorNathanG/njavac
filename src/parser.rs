@@ -18,7 +18,7 @@
 //!
 use crate::ast::{
     BinOp, BranchBody, Class, CmpOp, CompilationUnit, ExprArena, ExprId, ExprKind, LogOp,
-    Method, Name, Param, PrimitiveType, Stmt, StmtKind, Type,
+    Method, Name, Param, PrimitiveType, Stmt, StmtKind, Type, JAVA_LANG_OBJECT,
 };
 use crate::diagnostic::{CompileResult, Diagnostic};
 use crate::lexer::{Token, TokenKind};
@@ -133,7 +133,15 @@ impl Parser {
         self.expect(&TokenKind::RBrace)?;
 
         let span = start.join(self.previous_span());
-        Ok(Class { span, name, name_span, line, close_line, methods })
+        Ok(Class {
+            span,
+            name,
+            name_span,
+            super_class: JAVA_LANG_OBJECT.to_owned(),
+            line,
+            close_line,
+            methods,
+        })
     }
 
     // `public static void main(String[] args) { <stmts> }`
@@ -142,6 +150,7 @@ impl Parser {
         self.expect(&TokenKind::Public)?;
         self.expect(&TokenKind::Static)?;
         self.expect(&TokenKind::Void)?;
+        let return_type = Type::Void;
         let (name, name_span) = self.expect_ident_spanned()?;
 
         self.expect(&TokenKind::LParen)?;
@@ -157,7 +166,16 @@ impl Parser {
         self.expect(&TokenKind::RBrace)?;
 
         let span = start.join(self.previous_span());
-        Ok(Method { span, name, name_span, is_static: true, params, body, close_line })
+        Ok(Method {
+            span,
+            name,
+            name_span,
+            is_static: true,
+            return_type,
+            params,
+            body,
+            close_line,
+        })
     }
 
     // Formal parameter list. The subset only ever has `String[] args`.
