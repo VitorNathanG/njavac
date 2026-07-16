@@ -1,20 +1,22 @@
 //! Semantic analysis: validation, name/slot resolution, and expression typing.
 //!
-//! Walks `main`'s statements, assigns each local a JVM slot (parameters occupy
-//! the low slots; locals follow in declaration order), and records each local's
-//! type. `long`/`double` are **two slots wide**, so slot indices bump by width —
-//! this is the allocator change the whole numeric subset rests on.
+//! Walks `main`'s statements, resolves every name occurrence to a stable local
+//! ID, and assigns each declaration a JVM slot. Parameters occupy the low slots;
+//! lexical scopes reclaim their slots on exit while `max_locals` retains the
+//! high-water mark. `long`/`double` are **two slots wide**.
 //!
 //! `type_of` computes the static type of any expression, implementing Java's
 //! unary and binary numeric promotion (comparisons and `!` type to `boolean`).
 //! Codegen consults it to pick load/store opcodes, conversion opcodes, `println`
-//! descriptors, constant-load ladders, and comparison branch opcodes. Slot
-//! Validation keeps allocation to method-body declarations and rejects branch-local
-//! declarations until the scoped allocator exists.
+//! descriptors, constant-load ladders, and comparison branch opcodes. Branch-local
+//! declarations remain an explicit unsupported boundary until codegen consumes
+//! scoped verifier-local state.
 
 use std::collections::{HashMap, HashSet};
 
-use crate::ast::{BinOp, CmpOp, CompilationUnit, Expr, Method, Stmt, StmtKind, Type};
+use crate::ast::{
+    BinOp, BranchBody, CmpOp, CompilationUnit, Expr, Method, Name, Stmt, StmtKind, Type,
+};
 use crate::diagnostic::{CompileResult, Diagnostic};
 use crate::span::Span;
 
@@ -88,30 +90,44 @@ pub fn valtype(ty: Type) -> ValType {
     }
 }
 
-/// Analysis result for one method: local slots, local types, and the slot count.
+/// Stable identity of one local declaration within a method.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct LocalId(usize);
+
+/// Semantic information recorded for one parameter or local declaration.
+pub struct LocalInfo {
+    pub name: String,
+    pub declaration: Span,
+    pub ty: ValType,
+    pub slot: u16,
+}
+
+/// Analysis result for one method: ordered locals and occurrence resolution.
 pub struct MethodInfo {
-    /// Slot index for each local (parameters included).
-    pub slots: HashMap<String, u16>,
-    /// Declared type of each local (parameters included).
-    pub types: HashMap<String, ValType>,
-    /// Number of local slots occupied by parameters + declared locals, counting
-    /// `long`/`double` as two. A lower bound on `max_locals`.
-    pub local_count: u16,
+    /// Parameters followed by locals in declaration order.
+    pub locals: Vec<LocalInfo>,
+    resolutions: HashMap<Span, LocalId>,
+    /// High-water local-slot count, counting `long`/`double` as two.
+    pub max_locals: u16,
 }
 
 impl MethodInfo {
-    pub fn slot(&self, name: &str) -> u16 {
-        *self
-            .slots
-            .get(name)
-            .unwrap_or_else(|| panic!("undeclared local: {name}"))
+    pub fn local_id(&self, name: &Name) -> LocalId {
+        *self.resolutions.get(&name.span).unwrap_or_else(|| {
+            panic!("sema did not resolve local occurrence `{}` at {:?}", name.text, name.span)
+        })
     }
 
-    pub fn ty(&self, name: &str) -> ValType {
-        *self
-            .types
-            .get(name)
-            .unwrap_or_else(|| panic!("undeclared local: {name}"))
+    pub fn local(&self, name: &Name) -> &LocalInfo {
+        &self.locals[self.local_id(name).0]
+    }
+
+    pub fn slot(&self, name: &Name) -> u16 {
+        self.local(name).slot
+    }
+
+    pub fn ty(&self, name: &Name) -> ValType {
+        self.local(name).ty
     }
 }
 
@@ -185,47 +201,120 @@ fn validate_class_shape(unit: &CompilationUnit) -> CompileResult<()> {
 
 fn analyze_method(method: &Method) -> CompileResult<MethodInfo> {
     let mut analyzer = MethodAnalyzer {
-        slots: HashMap::new(),
-        types: HashMap::new(),
+        locals: Vec::new(),
+        resolutions: HashMap::new(),
+        scopes: vec![Scope { symbols: HashMap::new(), allocator_base: 0 }],
         assigned: HashSet::new(),
-        next: 0,
+        next_slot: 0,
+        max_locals: 0,
     };
 
     // Parameters take the low slots and are definitely assigned at method entry.
     for param in &method.params {
-        analyzer.declare(&param.name.text, valtype(param.ty), param.name.span)?;
-        analyzer.assigned.insert(param.name.text.clone());
+        let id = analyzer.declare(&param.name, valtype(param.ty))?;
+        analyzer.assigned.insert(id);
     }
     for stmt in &method.body {
         analyzer.validate_stmt(stmt, false)?;
     }
 
     Ok(MethodInfo {
-        slots: analyzer.slots,
-        types: analyzer.types,
-        local_count: analyzer.next,
+        locals: analyzer.locals,
+        resolutions: analyzer.resolutions,
+        max_locals: analyzer.max_locals,
     })
 }
 
+struct Scope {
+    symbols: HashMap<String, LocalId>,
+    allocator_base: u16,
+}
+
 struct MethodAnalyzer {
-    slots: HashMap<String, u16>,
-    types: HashMap<String, ValType>,
-    assigned: HashSet<String>,
-    next: u16,
+    locals: Vec<LocalInfo>,
+    resolutions: HashMap<Span, LocalId>,
+    scopes: Vec<Scope>,
+    assigned: HashSet<LocalId>,
+    next_slot: u16,
+    max_locals: u16,
 }
 
 impl MethodAnalyzer {
-    fn declare(&mut self, name: &str, ty: ValType, span: Span) -> CompileResult<()> {
-        if self.types.contains_key(name) {
-            return Err(Diagnostic::semantic(span, format!("duplicate local `{name}`")));
+    fn enter_scope(&mut self) {
+        self.scopes.push(Scope {
+            symbols: HashMap::new(),
+            allocator_base: self.next_slot,
+        });
+    }
+
+    fn exit_scope(&mut self) {
+        let scope = self.scopes.pop().expect("scope stack underflow");
+        assert!(!self.scopes.is_empty(), "cannot exit the method scope");
+        for id in scope.symbols.values() {
+            self.assigned.remove(id);
         }
-        let next = self.next.checked_add(ty.width()).ok_or_else(|| {
-            Diagnostic::unsupported_semantic(span, "method requires too many local slots")
+        self.next_slot = scope.allocator_base;
+    }
+
+    fn declare(&mut self, name: &Name, ty: ValType) -> CompileResult<LocalId> {
+        if self.scopes.iter().any(|scope| scope.symbols.contains_key(&name.text)) {
+            return Err(Diagnostic::semantic(
+                name.span,
+                format!("duplicate local `{}`", name.text),
+            ));
+        }
+        let next = self.next_slot.checked_add(ty.width()).ok_or_else(|| {
+            Diagnostic::unsupported_semantic(name.span, "method requires too many local slots")
         })?;
-        self.slots.insert(name.to_string(), self.next);
-        self.types.insert(name.to_string(), ty);
-        self.next = next;
-        Ok(())
+        let id = LocalId(self.locals.len());
+        self.locals.push(LocalInfo {
+            name: name.text.clone(),
+            declaration: name.span,
+            ty,
+            slot: self.next_slot,
+        });
+        self.scopes
+            .last_mut()
+            .expect("method scope is missing")
+            .symbols
+            .insert(name.text.clone(), id);
+        self.record_resolution(name, id);
+        self.next_slot = next;
+        self.max_locals = self.max_locals.max(next);
+        Ok(id)
+    }
+
+    fn resolve(&mut self, name: &Name) -> CompileResult<LocalId> {
+        let id = self
+            .scopes
+            .iter()
+            .rev()
+            .find_map(|scope| scope.symbols.get(&name.text).copied())
+            .ok_or_else(|| {
+                Diagnostic::semantic(name.span, format!("undeclared local `{}`", name.text))
+            })?;
+        self.record_resolution(name, id);
+        Ok(id)
+    }
+
+    fn record_resolution(&mut self, name: &Name, id: LocalId) {
+        let previous = self.resolutions.insert(name.span, id);
+        assert!(previous.is_none(), "name occurrence resolved more than once");
+    }
+
+    fn local_type(&self, id: LocalId) -> ValType {
+        self.locals[id.0].ty
+    }
+
+    fn read_local(&mut self, name: &Name) -> CompileResult<(LocalId, ValType)> {
+        let id = self.resolve(name)?;
+        if !self.assigned.contains(&id) {
+            return Err(Diagnostic::semantic(
+                name.span,
+                format!("local `{}` might not have been initialized", name.text),
+            ));
+        }
+        Ok((id, self.local_type(id)))
     }
 
     fn validate_stmt(&mut self, stmt: &Stmt, in_branch: bool) -> CompileResult<()> {
@@ -238,24 +327,25 @@ impl MethodAnalyzer {
                     ));
                 }
                 let target = valtype(*ty);
-                self.declare(&name.text, target, stmt.span)?;
+                let id = self.declare(name, target)?;
                 if let Some(init) = init {
                     let source = self.validate_expr(init, stmt.span)?;
                     self.require_assignable(target, source, init, stmt.span)?;
-                    self.assigned.insert(name.text.clone());
+                    self.assigned.insert(id);
                 }
             }
             StmtKind::Assign { name, value } => {
-                let target = self.local_type(&name.text, stmt.span)?;
+                let id = self.resolve(name)?;
+                let target = self.local_type(id);
                 let source = self.validate_expr(value, stmt.span)?;
                 self.require_assignable(target, source, value, stmt.span)?;
-                self.assigned.insert(name.text.clone());
+                self.assigned.insert(id);
             }
             StmtKind::CompoundAssign { name, op, value } => {
-                let target = self.read_local(&name.text, stmt.span)?;
+                let (id, target) = self.read_local(name)?;
                 let source = self.validate_expr(value, stmt.span)?;
                 self.require_compound(*op, target, source, stmt.span)?;
-                self.assigned.insert(name.text.clone());
+                self.assigned.insert(id);
             }
             StmtKind::Expr(expr) => match expr {
                 Expr::Println(arg) => {
@@ -282,16 +372,12 @@ impl MethodAnalyzer {
 
                 let incoming = self.assigned.clone();
                 self.assigned = incoming.clone();
-                for nested in &then_branch.stmts {
-                    self.validate_stmt(nested, true)?;
-                }
+                self.validate_branch(then_branch)?;
                 let then_assigned = self.assigned.clone();
 
                 self.assigned = incoming.clone();
                 if let Some(else_branch) = else_branch {
-                    for nested in &else_branch.stmts {
-                        self.validate_stmt(nested, true)?;
-                    }
+                    self.validate_branch(else_branch)?;
                 }
                 let else_assigned = self.assigned.clone();
                 self.assigned = then_assigned
@@ -303,7 +389,20 @@ impl MethodAnalyzer {
         Ok(())
     }
 
-    fn validate_expr(&self, expr: &Expr, span: Span) -> CompileResult<ValType> {
+    fn validate_branch(&mut self, body: &BranchBody) -> CompileResult<()> {
+        if body.braced {
+            self.enter_scope();
+        }
+        for stmt in &body.stmts {
+            self.validate_stmt(stmt, true)?;
+        }
+        if body.braced {
+            self.exit_scope();
+        }
+        Ok(())
+    }
+
+    fn validate_expr(&mut self, expr: &Expr, span: Span) -> CompileResult<ValType> {
         let ty = match expr {
             Expr::IntLit(_) => ValType::Int,
             Expr::LongLit(_) => ValType::Long,
@@ -313,10 +412,10 @@ impl MethodAnalyzer {
             Expr::CharLit(_) => ValType::Char,
             Expr::StringLit(_) => ValType::String,
             Expr::Name(name) => {
-                let ty = self.read_local(&name.text, span)?;
+                let (_, ty) = self.read_local(name)?;
                 if ty == ValType::String {
                     return Err(Diagnostic::unsupported_semantic(
-                        span,
+                        name.span,
                         "using the String[] parameter as a value is unsupported",
                     ));
                 }
@@ -492,24 +591,6 @@ impl MethodAnalyzer {
         } else {
             Err(Diagnostic::semantic(span, "invalid compound assignment operands"))
         }
-    }
-
-    fn local_type(&self, name: &str, span: Span) -> CompileResult<ValType> {
-        self.types
-            .get(name)
-            .copied()
-            .ok_or_else(|| Diagnostic::semantic(span, format!("undeclared local `{name}`")))
-    }
-
-    fn read_local(&self, name: &str, span: Span) -> CompileResult<ValType> {
-        let ty = self.local_type(name, span)?;
-        if !self.assigned.contains(name) {
-            return Err(Diagnostic::semantic(
-                span,
-                format!("local `{name}` might not have been initialized"),
-            ));
-        }
-        Ok(ty)
     }
 
     fn require_numeric(&self, ty: ValType, span: Span, context: &str) -> CompileResult<()> {
@@ -827,7 +908,7 @@ pub fn type_of(expr: &Expr, info: &MethodInfo) -> ValType {
         Expr::BoolLit(_) => ValType::Boolean,
         Expr::CharLit(_) => ValType::Char,
         Expr::StringLit(_) => ValType::String,
-        Expr::Name(n) => info.ty(&n.text),
+        Expr::Name(n) => info.ty(n),
         Expr::Neg(e) => unary_promote(type_of(e, info)),
         Expr::BitNot(e) => unary_promote(type_of(e, info)),
         Expr::Not(_) => ValType::Boolean,

@@ -24,7 +24,7 @@
 //! unconditional `goto` are threaded through — both exactly as javac does, so a
 //! method whose branches all fold stays byte-identical to its straight-line form.
 
-use crate::ast::{BinOp, Class, CmpOp, Expr, LogOp, Method, Stmt, StmtKind, Type};
+use crate::ast::{BinOp, Class, CmpOp, Expr, LogOp, Method, Name, Stmt, StmtKind, Type};
 use crate::classfile::{ClassFile, ConstantPool, Method as CfMethod, StackFrame, VerificationType};
 use crate::diagnostic::{CompileResult, Diagnostic};
 use crate::sema::{self, Analysis, MethodInfo, StackTy, ValType};
@@ -205,7 +205,7 @@ fn preflight_stmt(stmt: &Stmt, info: &MethodInfo) -> CompileResult<()> {
     match &stmt.kind {
         StmtKind::LocalDecl { name, init: Some(init), .. }
         | StmtKind::Assign { name, value: init } => {
-            if info.ty(&name.text) == ValType::Boolean {
+            if info.ty(name) == ValType::Boolean {
                 preflight_materialization(init, false, stmt.span, info)?;
             } else {
                 preflight_value(init, false, stmt.span, info)?;
@@ -394,7 +394,7 @@ fn gen_method(cp: &mut ConstantPool, method: &Method, info: &MethodInfo) -> CfMe
         name: method.name.clone(),
         descriptor: descriptor_of(method),
         max_stack: g.max_stack,
-        max_locals: info.local_count.max(1),
+        max_locals: info.max_locals.max(1),
         code: g.code,
         line_numbers: g.line_numbers,
         entry_locals,
@@ -689,12 +689,12 @@ impl<'a> Gen<'a> {
         match &stmt.kind {
             StmtKind::LocalDecl { name, init, .. } => {
                 if let Some(init) = init {
-                    self.store_to(&name.text, init);
+                    self.store_to(name, init);
                 }
             }
-            StmtKind::Assign { name, value } => self.store_to(&name.text, value),
+            StmtKind::Assign { name, value } => self.store_to(name, value),
             StmtKind::CompoundAssign { name, op, value } => {
-                self.gen_compound(&name.text, *op, value)
+                self.gen_compound(name, *op, value)
             }
             StmtKind::Expr(expr) => self.gen_expr_stmt(expr),
             StmtKind::If { .. } => unreachable!("handled above"),
@@ -1351,7 +1351,7 @@ impl<'a> Gen<'a> {
     }
 
     /// Assign `value` into local `name`, coercing to the local's declared type.
-    fn store_to(&mut self, name: &str, value: &Expr) {
+    fn store_to(&mut self, name: &Name, value: &Expr) {
         let target = self.info.ty(name);
         let slot = self.info.slot(name);
         self.gen_coerced(value, target);
@@ -1360,7 +1360,7 @@ impl<'a> Gen<'a> {
 
     /// Compound assignment `name op= value` (also `++`/`--`, which arrive as
     /// `op ∈ {Add,Sub}` with `value == 1`).
-    fn gen_compound(&mut self, name: &str, op: BinOp, value: &Expr) {
+    fn gen_compound(&mut self, name: &Name, op: BinOp, value: &Expr) {
         let target = self.info.ty(name);
         let slot = self.info.slot(name);
 
@@ -1486,8 +1486,8 @@ impl<'a> Gen<'a> {
     fn gen_nonconst(&mut self, expr: &Expr) -> ValType {
         match expr {
             Expr::Name(n) => {
-                let ty = self.info.ty(&n.text);
-                self.emit_load(self.info.slot(&n.text), ty);
+                let ty = self.info.ty(n);
+                self.emit_load(self.info.slot(n), ty);
                 ty
             }
             Expr::Neg(e) => {

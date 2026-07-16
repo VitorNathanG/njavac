@@ -408,10 +408,14 @@ source → lexer::lex → parser::parse → sema::analyze → codegen::generate 
 - **`ast`** → plain enums, `Box` for recursion; declarations/statements carry
   source spans while statements/braces retain their byte-visible line facts.
 - **`parser`** → recursive descent; precedence unary → `* / %` → `+ -`.
-- **`sema`** → supported-class-shape validation, definite assignment and operand
-  family checks, plus local-slot allocation (two-slot `long`/`double` model) and
-  `type_of` implementing unary/binary numeric promotion. Branch-local declarations
-  remain an explicit unsupported boundary until scoped allocation lands.
+- **`sema`** → supported-class-shape validation, operand-family checks, and
+  occurrence-based local resolution: each declaration gets a stable `LocalId`,
+  every `Name` span maps to it, and definite assignment is tracked by ID. Its
+  lexical scope stack reclaims two-slot-aware allocations on braced-scope exit
+  while retaining the `max_locals` high-water mark; unbraced branch bodies share
+  their enclosing scope. Branch-local declarations remain an explicit unsupported
+  boundary until codegen's verifier-local snapshots consume this scope state.
+  `type_of` implements unary/binary numeric promotion from the resolved records.
 - **`codegen`** → typed bytecode + `max_stack`/`max_locals` + `LineNumberTable`,
   via the `classfile` backend.
 - **`main`** is a thin javac-like CLI (`njavac [-d <dir>] <file.java> …`): it
