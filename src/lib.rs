@@ -7,6 +7,7 @@
 
 pub mod classfile;
 pub mod classdump;
+pub mod span;
 pub mod lexer;
 pub mod ast;
 pub mod parser;

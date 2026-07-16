@@ -12,12 +12,16 @@
 //! Character literals decode escapes (including octal and `\uXXXX`) to a UTF-16
 //! code unit. Source is assumed ASCII outside of literal escapes.
 
+use crate::span::Span;
+
 /// A single lexical token plus the 1-based source line it starts on.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Token {
     pub kind: TokenKind,
     /// 1-based source line where the token begins.
     pub line: u16,
+    /// Half-open byte range in the original source text.
+    pub span: Span,
 }
 
 /// The lexical categories of the Tier-2 subset.
@@ -156,9 +160,10 @@ impl<'a> Lexer<'a> {
         loop {
             self.skip_trivia();
             let line = self.line;
+            let start = self.pos;
             let b = match self.peek() {
                 None => {
-                    tokens.push(Token { kind: TokenKind::Eof, line });
+                    tokens.push(Token { kind: TokenKind::Eof, line, span: Span::empty(start) });
                     return tokens;
                 }
                 Some(b) => b,
@@ -177,7 +182,7 @@ impl<'a> Lexer<'a> {
             } else {
                 self.punct()
             };
-            tokens.push(Token { kind, line });
+            tokens.push(Token { kind, line, span: Span::new(start, self.pos) });
         }
     }
 

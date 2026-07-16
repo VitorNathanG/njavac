@@ -13,14 +13,19 @@
 //! (plus the class carries the line of its closing brace) so codegen can build
 //! the LineNumberTable byte-identically to javac.
 
+use crate::span::Span;
+
 /// A whole compilation unit: exactly one top-level class.
 pub struct CompilationUnit {
+    pub span: Span,
     pub class: Class,
 }
 
 /// `public class Name { ... }`.
 pub struct Class {
+    pub span: Span,
     pub name: String,
+    pub name_span: Span,
     /// Source line of the class declaration (used for the `<init>` line entry).
     pub line: u16,
     /// Source line of the class's closing brace.
@@ -30,7 +35,9 @@ pub struct Class {
 
 /// A method declaration, e.g. `public static void main(String[] args)`.
 pub struct Method {
+    pub span: Span,
     pub name: String,
+    pub name_span: Span,
     pub is_static: bool,
     pub params: Vec<Param>,
     pub body: Vec<Stmt>,
@@ -40,7 +47,9 @@ pub struct Method {
 
 /// One formal parameter: a name and its type.
 pub struct Param {
+    pub span: Span,
     pub name: String,
+    pub name_span: Span,
     pub ty: Type,
 }
 
@@ -62,6 +71,7 @@ pub enum Type {
 
 /// A single statement, tagged with the source line it begins on.
 pub struct Stmt {
+    pub span: Span,
     pub line: u16,
     pub kind: StmtKind,
 }

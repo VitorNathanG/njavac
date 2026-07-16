@@ -397,9 +397,10 @@ The pipeline lives in `src/lib.rs::compile(source, source_file) -> Vec<u8>`:
 source → lexer::lex → parser::parse → sema::analyze → codegen::generate → .class bytes
 ```
 
-- **`lexer`** → flat `Vec<Token>`, each carrying a 1-based source line (needed
-  for a byte-identical `LineNumberTable`).
-- **`ast`** → plain enums, `Box` for recursion; statements/braces carry lines.
+- **`lexer`** → flat `Vec<Token>`, each carrying a half-open source-byte `Span`
+  plus the existing 1-based line used for a byte-identical `LineNumberTable`.
+- **`ast`** → plain enums, `Box` for recursion; declarations/statements carry
+  source spans while statements/braces retain their byte-visible line facts.
 - **`parser`** → recursive descent; precedence unary → `* / %` → `+ -`.
 - **`sema`** → local-slot allocation (two-slot `long`/`double` model), per-local
   typing, and `type_of` implementing unary/binary numeric promotion (enough to

@@ -22,6 +22,7 @@ use crate::ast::{
     BinOp, Class, CmpOp, CompilationUnit, Expr, LogOp, Method, Param, Stmt, StmtKind, Type,
 };
 use crate::lexer::{Token, TokenKind};
+use crate::span::Span;
 
 /// Parse a token stream (as produced by `lexer::lex`) into a `CompilationUnit`.
 ///
@@ -45,6 +46,14 @@ impl Parser {
         self.tokens[self.pos].line
     }
 
+    fn span(&self) -> Span {
+        self.tokens[self.pos].span
+    }
+
+    fn previous_span(&self) -> Span {
+        self.tokens[self.pos - 1].span
+    }
+
     fn bump(&mut self) -> Token {
         let t = self.tokens[self.pos].clone();
         // Never advance past the terminating Eof.
@@ -65,10 +74,15 @@ impl Parser {
 
     /// Consume an identifier, returning its name, or panic.
     fn expect_ident(&mut self) -> String {
+        self.expect_ident_spanned().0
+    }
+
+    /// Consume an identifier, returning its name and source span, or panic.
+    fn expect_ident_spanned(&mut self) -> (String, Span) {
         match self.peek().clone() {
             TokenKind::Ident(name) => {
-                self.bump();
-                name
+                let span = self.bump().span;
+                (name, span)
             }
             other => panic!("expected identifier, found {:?}", other),
         }
@@ -81,15 +95,16 @@ impl Parser {
         if !matches!(self.peek(), TokenKind::Eof) {
             panic!("unexpected trailing tokens: {:?}", self.peek());
         }
-        CompilationUnit { class }
+        CompilationUnit { span: class.span, class }
     }
 
     // `public class Name { <methods> }`
     fn class(&mut self) -> Class {
         let line = self.line();
+        let start = self.span();
         self.expect(&TokenKind::Public);
         self.expect(&TokenKind::Class);
-        let name = self.expect_ident();
+        let (name, name_span) = self.expect_ident_spanned();
         self.expect(&TokenKind::LBrace);
 
         let mut methods = Vec::new();
@@ -99,15 +114,17 @@ impl Parser {
         let close_line = self.line();
         self.expect(&TokenKind::RBrace);
 
-        Class { name, line, close_line, methods }
+        let span = start.join(self.previous_span());
+        Class { span, name, name_span, line, close_line, methods }
     }
 
     // `public static void main(String[] args) { <stmts> }`
     fn method(&mut self) -> Method {
+        let start = self.span();
         self.expect(&TokenKind::Public);
         self.expect(&TokenKind::Static);
         self.expect(&TokenKind::Void);
-        let name = self.expect_ident();
+        let (name, name_span) = self.expect_ident_spanned();
 
         self.expect(&TokenKind::LParen);
         let params = self.params();
@@ -121,7 +138,8 @@ impl Parser {
         let close_line = self.line();
         self.expect(&TokenKind::RBrace);
 
-        Method { name, is_static: true, params, body, close_line }
+        let span = start.join(self.previous_span());
+        Method { span, name, name_span, is_static: true, params, body, close_line }
     }
 
     // Formal parameter list. The subset only ever has `String[] args`.
@@ -131,9 +149,11 @@ impl Parser {
             return params;
         }
         loop {
+            let start = self.span();
             let ty = self.param_type();
-            let name = self.expect_ident();
-            params.push(Param { name, ty });
+            let (name, name_span) = self.expect_ident_spanned();
+            let span = start.join(name_span);
+            params.push(Param { span, name, name_span, ty });
             if matches!(self.peek(), TokenKind::Comma) {
                 self.bump();
             } else {
@@ -176,6 +196,7 @@ impl Parser {
     // A single statement.
     fn statement(&mut self) -> Stmt {
         let line = self.line();
+        let start = self.span();
         let kind = if matches!(self.peek(), TokenKind::If) {
             self.if_statement()
         } else if is_primitive_type(self.peek()) {
@@ -193,7 +214,8 @@ impl Parser {
         } else {
             panic!("unexpected statement start: {:?}", self.peek());
         };
-        Stmt { line, kind }
+        let span = start.join(self.previous_span());
+        Stmt { span, line, kind }
     }
 
     // `if (cond) <then> [else <else>]`. Each arm is a brace-block or a single
