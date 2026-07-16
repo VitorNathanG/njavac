@@ -9,6 +9,7 @@ pub mod classfile;
 pub mod classdump;
 pub mod span;
 pub mod diagnostic;
+mod fxhash;
 pub mod lexer;
 pub mod ast;
 pub mod parser;

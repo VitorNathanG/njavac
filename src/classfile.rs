@@ -7,75 +7,10 @@
 //! NameAndType take slots, then *their* Utf8 children, and so on. We
 //! reproduce that with a FIFO queue per top-level intern call.
 
-use std::collections::HashMap;
 use std::collections::VecDeque;
-use std::hash::{BuildHasher, Hasher};
 use std::rc::Rc;
 
-/// A fast, dependency-free FxHash-style hasher for the constant-pool dedup map.
-/// The pool interns dozens of short `String` keys per class, and the default
-/// SipHash dominated codegen time in profiling. FxHash is roughly an order of
-/// magnitude cheaper for short keys; and since the class file depends on the
-/// insertion ORDER of entries (a `Vec`), not on the hash, this changes nothing
-/// about the emitted bytes.
-#[derive(Default)]
-struct FxHasher {
-    hash: u64,
-}
-
-impl FxHasher {
-    #[inline]
-    fn add(&mut self, word: u64) {
-        const K: u64 = 0x51_7c_c1_b7_27_22_0a_95;
-        self.hash = (self.hash.rotate_left(5) ^ word).wrapping_mul(K);
-    }
-}
-
-impl Hasher for FxHasher {
-    #[inline]
-    fn write(&mut self, mut bytes: &[u8]) {
-        while bytes.len() >= 8 {
-            let mut w = [0u8; 8];
-            w.copy_from_slice(&bytes[..8]);
-            self.add(u64::from_le_bytes(w));
-            bytes = &bytes[8..];
-        }
-        if !bytes.is_empty() {
-            let mut w = [0u8; 8];
-            w[..bytes.len()].copy_from_slice(bytes);
-            self.add(u64::from_le_bytes(w));
-        }
-    }
-    #[inline]
-    fn write_u8(&mut self, i: u8) {
-        self.add(i as u64);
-    }
-    #[inline]
-    fn write_u32(&mut self, i: u32) {
-        self.add(i as u64);
-    }
-    #[inline]
-    fn write_usize(&mut self, i: usize) {
-        self.add(i as u64);
-    }
-    #[inline]
-    fn finish(&self) -> u64 {
-        self.hash
-    }
-}
-
-#[derive(Default, Clone)]
-struct FxBuildHasher;
-
-impl BuildHasher for FxBuildHasher {
-    type Hasher = FxHasher;
-    #[inline]
-    fn build_hasher(&self) -> FxHasher {
-        FxHasher::default()
-    }
-}
-
-type FxHashMap<K, V> = HashMap<K, V, FxBuildHasher>;
+use crate::fxhash::FxHashMap;
 
 /// A logical constant-pool entry, keyed by its owned contents so we can dedup
 /// (intern) identical entries. Child references are stored as keys and resolved
@@ -159,7 +94,7 @@ impl ConstantPool {
         ConstantPool {
             entries: Vec::with_capacity(CAP),
             slots: Vec::with_capacity(CAP),
-            index: HashMap::with_capacity_and_hasher(CAP, Default::default()),
+            index: FxHashMap::with_capacity_and_hasher(CAP, Default::default()),
             next_index: 1,
         }
     }
@@ -263,9 +198,12 @@ impl ConstantPool {
         // the ordered entries, so writing never reconstructs or clones an `Entry`
         // key. Each table maps the child content a composite entry references to
         // that child's slot.
-        let mut utf8_of: FxHashMap<&str, u16> = HashMap::with_capacity_and_hasher(self.entries.len(), Default::default());
-        let mut class_of: FxHashMap<&str, u16> = HashMap::with_capacity_and_hasher(16, Default::default());
-        let mut nat_of: FxHashMap<(&str, &str), u16> = HashMap::with_capacity_and_hasher(16, Default::default());
+        let mut utf8_of: FxHashMap<&str, u16> =
+            FxHashMap::with_capacity_and_hasher(self.entries.len(), Default::default());
+        let mut class_of: FxHashMap<&str, u16> =
+            FxHashMap::with_capacity_and_hasher(16, Default::default());
+        let mut nat_of: FxHashMap<(&str, &str), u16> =
+            FxHashMap::with_capacity_and_hasher(16, Default::default());
         for (i, e) in self.entries.iter().enumerate() {
             let slot = self.slots[i];
             match e {
