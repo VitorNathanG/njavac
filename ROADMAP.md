@@ -19,18 +19,7 @@ current mechanics and git history for the changes that built them.
 
 ## Active Sequence
 
-### Separate Existing Codegen Responsibilities
-
-Split the responsibilities already present in `src/codegen.rs` without changing
-behavior or creating the full future module tree. Isolate the symbolic method
-assembler, constant and opcode policy, condition lowering, and statement/value
-lowering behind explicit boundaries. Keep each move independently verifiable.
-
-### Complete the Symbolic Assembler Boundary
-
-Make the assembler the exclusive owner of symbolic method state. Branch-chain
-retargeting and frame requests must go through assembler operations rather than
-direct mutation from Java lowering.
+### Extend the Symbolic Assembler
 
 Complete instruction forms reachable by the current supported surface, one
 fixture-backed bug cycle at a time:

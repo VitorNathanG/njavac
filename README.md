@@ -151,8 +151,8 @@ not the parsing — is where byte-identity is won or lost.
       onto a non-empty stack (e.g. `println(a < b)`, which needs a `full_frame`)
 - [x] Short-circuit `&&` / `||` — done, as `if`/loop conditions and materialized
       into a `boolean` local, via a faithful port of javac's `genCond`/`CondItem`/
-      `mergeChains` jump-chain model (`src/codegen.rs::gen_cond`). Reproduces every
-      constant-operand case byte-for-byte (short-circuit collapse `true||q`,
+      `mergeChains` jump-chain model (`src/codegen/lowering.rs::gen_cond`).
+      Reproduces every constant-operand case byte-for-byte (short-circuit collapse `true||q`,
       residual left-operand code `q&&false`, whole-static-true/false elimination).
       **Still open:** `?:` (the conditional operator) and non-empty-stack
       materialization (`println(a && b)`, which needs a `full_frame`)

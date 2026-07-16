@@ -529,7 +529,12 @@ straight-line form); a `full_frame`'s `Object` locals (here just `args`'s
 `[Ljava/lang/String;`) are interned right after that Utf8. Within `Code`, the
 constructor orders children as **`LineNumberTable` then `StackMapTable`**.
 
-**`src/codegen.rs`** mirrors javac's exact choices with a fully typed emitter:
+**`src/codegen.rs` and `src/codegen/`** mirror javac's exact choices through
+separate lowering and assembly responsibilities. The facade owns class planning;
+`lowering` owns Java-to-JVM emission, `condition` the pure `CondItem` state model,
+`constant` folding, `ops` opcode selection, `preflight` backend capability checks,
+and `instruction`/`assembler` the symbolic physical stream and final layout. The
+fully typed emitter covers:
 the per-type constant-load ladders (`iconst`/`bipush`/`sipush`/`ldc` by
 magnitude; `lconst`/`ldc2_w`; `fconst`/`ldc`; `dconst`/`ldc2_w`, floats compared
 by *bit pattern* so `-0.0` pools separately); per-type load/store families with
