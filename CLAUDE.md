@@ -70,6 +70,12 @@ Apply the same "one home + a pointer" discipline to anything else a change touch
 new fixture subfolder, a CLI flag, an env var, a doc comment now wrong): write it
 once, where a future reader looks first.
 
+**Tidy first, then change behavior.** When a feature needs a structural refactor,
+follow Beck's tidy-first discipline: land the smallest behavior-preserving cleanup
+under the existing gates before implementing the feature, and keep the two changes
+in separate commits. Do not mix module movement, renaming, or abstraction work into
+the behavioral change that motivated it.
+
 **Commit and push directly to `main`; never branch.** This repo does not use
 feature branches — commit straight onto `main` and `git push` to
 `origin/main` (`github.com/VitorNathanG/njavac`, a private repo). Do **not**
@@ -230,7 +236,7 @@ debugging only and is **not** a sanctioned way to validate byte-identity.
 *through Docker* per the policy above:
 
 - **Differential fuzzer (0.1).** `make fuzz [SEED=n COUNT=n BATCH=n]` generates
-  random *in-scope* Java (`src/bin/fuzz.rs`), compiles each with njavac (in-process)
+  random *in-scope* Java (`src/bin/fuzz/`), compiles each with njavac (in-process)
   and the pinned javac (via a **persistent in-memory worker** — see Performance
   below), and byte-compares. **A bare `make fuzz` uses a fresh random
   seed each run** (explores new programs every time) and prints it, so any finding
@@ -264,7 +270,7 @@ debugging only and is **not** a sanctioned way to validate byte-identity.
   - **Performance.** Both compilers now run without a process spawn and without
     touching disk. njavac is in-process; the pinned javac runs in a **persistent
     in-memory worker** (`tools/FuzzJavac.java`, driven by `JavacWorker` in
-    `fuzz.rs`) — ONE hot JVM for the whole run, sources handed over a pipe and
+    `src/bin/fuzz/javac.rs`) — ONE hot JVM for the whole run, sources handed over a pipe and
     `.class` bytes captured in memory (no source files, no class files, no dir
     scans). A whole batch (default 1000) compiles in one worker `getTask`, which
     amortizes javac's compiler `Context` exactly as the old `@argfile` batch did —

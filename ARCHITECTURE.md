@@ -173,7 +173,17 @@ src/
 `-- bin/
     |-- bench.rs
     |-- classdiff.rs
-    |-- fuzz.rs
+    |-- fuzz/
+    |   |-- main.rs
+    |   |-- model.rs
+    |   |-- generate.rs
+    |   |-- render.rs
+    |   |-- javac.rs
+    |   |-- oracle.rs
+    |   |-- run.rs
+    |   |-- finding.rs
+    |   |-- minimize.rs
+    |   `-- verify.rs
     `-- profile.rs
 ```
 
