@@ -76,6 +76,14 @@ under the existing gates before implementing the feature, and keep the two chang
 in separate commits. Do not mix module movement, renaming, or abstraction work into
 the behavioral change that motivated it.
 
+**Stop at model contradictions.** Before extending an uncommitted diff, inspect
+`git status`, its total diff, and the last green commit. If a supposedly
+byte-preserving change produces a broad divergence census, or a new probe disproves
+the current model, stop immediately: return to the last verified boundary and
+redesign from a complete corpus. Do not stack local fixes onto a disproven model.
+Keep one behavior hypothesis and one independently committable change in flight;
+the branch-local spike that reached 2,095 divergences is the cautionary tale.
+
 **Commit and push directly to `main`; never branch.** This repo does not use
 feature branches — commit straight onto `main` and `git push` to
 `origin/main` (`github.com/VitorNathanG/njavac`, a private repo). Do **not**

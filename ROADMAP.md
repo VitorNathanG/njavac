@@ -113,22 +113,10 @@ CLAUDE.md §Architecture for the stage contract and §Testing for the oracle pol
 All of these are **byte-preserving** — they re-express the current output, and
 Phase 0's net (fuzzer + differ + single-fixture verify + CI) proves it.
 
-### 2.1 Sema: scoped symbol table + slot-reclaiming allocator  *(keystone)*
-- **What.** Replace the two flat `HashMap`s and the top-level-only walk with a
-  stack of scopes (`enter_scope`/`exit_scope`/`declare`/`resolve`) and a slot
-  allocator that **reclaims slots on scope exit** (per-method high-water mark with
-  free-on-pop). Make sema a real pass that descends into `if`/loop/block bodies
-  and *emits diagnostics* instead of assuming validity. Fold codegen's parallel
-  `Gen::locals` snapshot into consuming sema's per-scope slot info rather than
-  maintaining its own monotonic copy.
-- **Why.** This is the keystone for language growth: block scope, loops, multiple
-  methods, and eventually fields all sit on it. It is also the one refactor where
-  the current design produces *silent* byte-mismatches (wrong slots, missing
-  `chop_frame`) rather than clean errors — so it must be done, under the safety
-  net, *before* the rungs that need it.
-- **Effort.** Medium–large.
-- **Key files.** `sema.rs` (`analyze_method`, `MethodInfo`), `codegen.rs`
-  (`Gen::locals` and the frame snapshot).
+### 2.1 Sema: scoped symbols + sema-owned verifier locals — ✅ DONE
+
+Landed; see CLAUDE.md §Architecture. Activating block-scoped declarations remains
+language-coverage work tracked by README.md §D, not part of this byte-preserving phase.
 
 ### 2.2 Backend: `Attribute` abstraction  *(keystone)*
 - **What.** Introduce an `Attribute` concept (name + `intern_constants(&mut cp)` +
@@ -280,8 +268,8 @@ files its "what would help" items here.
   goto-compaction / materialization tail.
 ## Status
 
-Phases 0–1 landed; Phases 2–3 have not started. All tests run through Docker via
-the `Makefile`.
+Phases 0–1 and Phase 2.1 landed; Phase 2.2 is next. All tests run through Docker
+via the `Makefile`.
 
 As items land, mark them ✅ in place and record the mechanics at the fix site / in
 CLAUDE.md — never restate them here, and delete a finished bug's backlog entry (per
