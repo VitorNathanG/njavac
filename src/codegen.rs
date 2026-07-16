@@ -167,8 +167,21 @@ enum Const {
     Double(f64),
 }
 
-/// Compile one parsed+analyzed class into `.class` bytes.
-pub fn generate(class: &Class, analysis: &Analysis, source_file: &str) -> CompileResult<Vec<u8>> {
+/// A complete class-file plan plus the phase-1 constant pool built while emitting
+/// bytecode. Serialization owns phase-2 structural interning and final byte layout.
+pub struct ClassPlan {
+    class_file: ClassFile,
+    constant_pool: ConstantPool,
+}
+
+impl ClassPlan {
+    pub fn to_bytes(self) -> Vec<u8> {
+        self.class_file.to_bytes(self.constant_pool)
+    }
+}
+
+/// Build the typed bytecode and class-file model without serializing it.
+pub fn plan(class: &Class, analysis: &Analysis, source_file: &str) -> CompileResult<ClassPlan> {
     preflight_codegen(class, analysis)?;
     #[cfg(debug_assertions)]
     assert_negate_op_consistent();
@@ -188,7 +201,12 @@ pub fn generate(class: &Class, analysis: &Analysis, source_file: &str) -> Compil
         methods,
         source_file,
     );
-    Ok(class_file.to_bytes(cp))
+    Ok(ClassPlan { class_file, constant_pool: cp })
+}
+
+/// Compile one parsed+analyzed class into `.class` bytes.
+pub fn generate(class: &Class, analysis: &Analysis, source_file: &str) -> CompileResult<Vec<u8>> {
+    Ok(plan(class, analysis, source_file)?.to_bytes())
 }
 
 /// Reject the one valid-Java value shape that needs verifier frames the emitter

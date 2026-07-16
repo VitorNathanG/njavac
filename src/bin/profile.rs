@@ -3,7 +3,8 @@
 //! The `bench` bin measures the wall-clock of *process spawns*; for these tiny
 //! inputs that is almost entirely OS process creation + dynamic linking, not
 //! compilation. This bin exercises the compiler IN-PROCESS in a hot loop and
-//! reports ns/compile plus a per-phase breakdown (lex / parse / sema / codegen),
+//! reports ns/compile plus a per-phase breakdown
+//! (lex / parse / sema / codegen / classfile serialization),
 //! so we can see where the compiler's own time actually goes.
 //!
 //!   cargo run --release --bin profile [rounds] [trials] [phase]
@@ -29,7 +30,7 @@ fn main() {
         .is_some_and(|arg| matches!(arg, "-h" | "--help"))
     {
         println!(
-            "usage: profile [rounds] [trials] [all|lex|parse|sema|full]\n\n\
+            "usage: profile [rounds] [trials] [all|lex|parse|sema|codegen|full]\n\n\
              Hot-loop the full fixture corpus through cumulative compiler phases.\n\
              Defaults: {DEFAULT_ROUNDS} rounds, {DEFAULT_TRIALS} trials, all phases."
         );
@@ -41,8 +42,8 @@ fn main() {
     if a.next().is_some() {
         usage_error("too many arguments");
     }
-    if !matches!(phase.as_str(), "all" | "lex" | "parse" | "sema" | "full") {
-        usage_error("phase must be one of: all, lex, parse, sema, full");
+    if !matches!(phase.as_str(), "all" | "lex" | "parse" | "sema" | "codegen" | "full") {
+        usage_error("phase must be one of: all, lex, parse, sema, codegen, full");
     }
 
     let mut paths = Vec::new();
@@ -86,6 +87,12 @@ fn main() {
                 let analysis = sema::analyze(&unit).expect("valid fixture");
                 black_box((unit, analysis));
             }),
+            "codegen" => time("codegen", rounds, trials, &fixtures, |src, name| {
+                let tokens = lexer::lex(src).expect("valid fixture");
+                let unit = parser::parse(tokens).expect("valid fixture");
+                let analysis = sema::analyze(&unit).expect("valid fixture");
+                black_box(codegen::plan(&unit.class, &analysis, name).expect("valid fixture"));
+            }),
             "full" => time("full", rounds, trials, &fixtures, |src, name| {
                 let tokens = lexer::lex(src).expect("valid fixture");
                 let unit = parser::parse(tokens).expect("valid fixture");
@@ -118,6 +125,12 @@ fn main() {
         let analysis = sema::analyze(&unit).expect("valid fixture");
         black_box((unit, analysis));
     });
+    let t_codegen = time("codegen", rounds, trials, &fixtures, |src, name| {
+        let tokens = lexer::lex(src).expect("valid fixture");
+        let unit = parser::parse(tokens).expect("valid fixture");
+        let analysis = sema::analyze(&unit).expect("valid fixture");
+        black_box(codegen::plan(&unit.class, &analysis, name).expect("valid fixture"));
+    });
     let t_full = time("full", rounds, trials, &fixtures, |src, name| {
         // Full pipeline including codegen + class-file serialization.
         let tokens = lexer::lex(src).expect("valid fixture");
@@ -130,14 +143,16 @@ fn main() {
     let lex = per(t_lex);
     let parse = per(t_parse) - per(t_lex);
     let sema = per(t_sema) - per(t_parse);
-    let cgen = per(t_full) - per(t_sema);
+    let cgen = per(t_codegen) - per(t_sema);
+    let emit = per(t_full) - per(t_codegen);
     let full = per(t_full);
 
     println!("phase breakdown (ns per file-compile):");
     row("lex", lex, full);
     row("parse", parse, full);
     row("sema", sema, full);
-    row("codegen+emit", cgen, full);
+    row("codegen", cgen, full);
+    row("classfile emit", emit, full);
     println!("  {:-<38}", "");
     row("total", full, full);
 
@@ -173,7 +188,9 @@ fn positive_arg(arg: Option<&str>, default: usize, name: &str) -> usize {
 }
 
 fn usage_error(message: &str) -> ! {
-    eprintln!("profile: {message}\nusage: profile [rounds] [trials] [all|lex|parse|sema|full]");
+    eprintln!(
+        "profile: {message}\nusage: profile [rounds] [trials] [all|lex|parse|sema|codegen|full]"
+    );
     std::process::exit(2);
 }
 

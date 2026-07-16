@@ -389,11 +389,11 @@ Key points, several of which are non-obvious:
 
 The bench measures wall-clock of *process spawns*; for these tiny inputs that is
 almost entirely OS process creation, not compilation. To profile the compiler
-itself, `profile` calls `compile()` in-process in a hot loop and reports a
-per-phase breakdown (lex / parse / sema / codegen+emit).
+itself, `profile` calls the pipeline in-process in a hot loop and reports a
+per-phase breakdown (lex / parse / sema / codegen plan / classfile serialization).
 
 ```bash
-make profile [ROUNDS=n] [TRIALS=n] [PHASE=all|lex|parse|sema|full]
+make profile [ROUNDS=n] [TRIALS=n] [PHASE=all|lex|parse|sema|codegen|full]
 ```
 
 Each cumulative phase/trial reports progress in ten measured chunks; progress I/O
