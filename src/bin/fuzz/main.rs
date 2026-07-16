@@ -2,30 +2,28 @@
 //!
 //! Generates random **in-scope** Java (`main` bodies over the supported numeric +
 //! branch + short-circuit subset), compiles each program with BOTH the pinned
-//! `javac` and njavac (in-process), and byte-compares. On a mismatch it
-//! auto-minimizes to a `fixtures/`-ready `.java` and localizes the divergence with
-//! the same `classdump::diff_report` the bench uses. Seed-reproducible
-//! (`fuzz <seed>`). Dependency-free (`std` only).
+//! `javac` and njavac (in-process), and byte-compares. Byte divergences pass through
+//! a second layer that executes both classes and compares their observable output
+//! and termination. Seed-reproducible (`fuzz <seed>`). Dependency-free (`std` only).
 //!
-//! ## Why this is sound (no false positives)
+//! ## Two-layer oracle
 //!
-//! The ONLY hard-fail signal is *both compilers accept a program (each emits a
-//! `.class`) and the bytes differ* — which is, by definition, an njavac bug, since
-//! byte-identity-to-javac IS the spec. Everything else is skip/telemetry:
+//! Exact bytes remain the first and cheapest comparison. When they differ, a
+//! persistent JVM observer loads each class in a fresh class loader, invokes
+//! `main`, and compares stdout, stderr, and normalized termination. Only an
+//! observation difference is a hard finding; byte-only differences are telemetry.
 //!
 //! | outcome                          | meaning                       | action              |
 //! | -------------------------------- | ----------------------------- | ------------------- |
-//! | both accept, **bytes differ**    | njavac bug                    | FINDING → minimize  |
-//! | both accept, bytes equal         | correct                       | pass                |
+//! | both accept, bytes and observation differ | behavioral bug         | FINDING             |
+//! | both accept, bytes differ, observation equal | compatibility drift   | telemetry           |
+//! | both accept, bytes equal         | exact                         | pass                |
 //! | javac rejects (no `.class`)      | generator emitted bad Java    | `generator-invalid` |
 //! | njavac panics, javac accepted    | valid Java njavac can't do    | `njavac-reject`     |
 //!
-//! Generator over-reach can never cause a false finding: if njavac *accepts*
-//! out-of-scope code and bytes differ, that's a real bug; if it *rejects*, it's
-//! telemetry. So the generator's in-subset discipline is a **yield** lever, not a
-//! soundness lever. Three harness invariants make the equivalence airtight — the
-//! `ident()` naming chokepoint, the class-set guards, and generating all IR before
-//! compiler interaction.
+//! The observation layer deliberately provides empirical semantic confidence, not
+//! proof: unobserved state can hide a wrong compilation. The generator therefore
+//! prints every mutation and branch choice to maximize the visible execution trace.
 //!
 //! ## Performance
 //!
@@ -40,6 +38,7 @@ mod generate;
 mod javac;
 mod minimize;
 mod model;
+mod observe;
 mod oracle;
 mod render;
 mod run;
@@ -59,10 +58,10 @@ pub(crate) struct Config {
     pub(crate) javac: String,
     pub(crate) out_dir: PathBuf,
     pub(crate) keep_going: bool,
-    pub(crate) no_min: bool,
     pub(crate) dump_sources: bool,
     pub(crate) selftest: bool,
     pub(crate) verify_worker: bool,
+    pub(crate) verify_observer: bool,
 }
 
 impl Config {
@@ -77,10 +76,10 @@ impl Config {
             javac: std::env::var("JAVAC").unwrap_or(default_javac),
             out_dir: PathBuf::from("fuzz-out"),
             keep_going: false,
-            no_min: false,
             dump_sources: false,
             selftest: false,
             verify_worker: false,
+            verify_observer: false,
         };
         let mut positional = 0;
         let mut args = std::env::args().skip(1);
@@ -99,21 +98,21 @@ impl Config {
                     assert_eq!(j, 1, "--jobs > 1 is not implemented in v1 (single-threaded batched)");
                 }
                 "--keep-going" => cfg.keep_going = true,
-                "--no-min" => cfg.no_min = true,
                 "--dump-sources" => cfg.dump_sources = true,
                 "--selftest" => cfg.selftest = true,
                 "--verify-worker" => cfg.verify_worker = true,
+                "--verify-observer" => cfg.verify_observer = true,
                 "-h" | "--help" => {
                     println!(
                         "usage: fuzz [<seed>] [<count>] [--seed N] [--count N] [--batch N] \
-                         [--keep-going] [--no-min] [--out-dir DIR] [--jobs 1] [--dump-sources] \
-                         [--selftest] [--verify-worker] [--javac PATH]\n\
+                         [--keep-going] [--out-dir DIR] [--jobs 1] [--dump-sources] \
+                         [--selftest] [--verify-worker] [--verify-observer] [--javac PATH]\n\
                          \n  <seed> / --seed  pin the seed; OMIT for a fresh random seed each run\
                          \n                   (printed so a finding reproduces with `make fuzz SEED=<n>`)\
                          \n  --keep-going     don't stop at the first finding; enumerate distinct ones\
-                         \n  --no-min         skip minimization (fast enumeration; emits raw repros)\
-                         \n  --verify-worker  prove the in-memory javac worker == the javac CLI byte-for-byte\
-                         \n                   over <count> generated programs (run after any JDK bump)"
+                          \n  --verify-worker  prove the in-memory javac worker == the javac CLI byte-for-byte\
+                          \n                   over <count> generated programs (run after any JDK bump)\
+                          \n  --verify-observer exercise return, throw, invalid-class, difference, and timeout paths"
                     );
                     std::process::exit(0);
                 }
@@ -151,6 +150,9 @@ fn main() {
     }
     if cfg.selftest {
         std::process::exit(minimize::selftest(&cfg));
+    }
+    if cfg.verify_observer {
+        std::process::exit(verify::verify_observer(&cfg));
     }
 
     // Randomize only after deterministic dump/selftest modes have taken the fixed

@@ -1,23 +1,27 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use crate::finding::{finding_sig, print_sig_breakdown, report_finding, SigInfo};
+use crate::finding::{behavior_sig, finding_sig, print_sig_breakdown, report_finding, SigInfo};
 use crate::generate::{Gen, Rng};
 use crate::javac::{assert_batch_classes, derive_java, worker_src_path, JavacWorker};
 use crate::model::Prog;
+use crate::observe::{observer_src_path, ObserveWorker};
 use crate::oracle::{classify, njavac_compile, ByteOutcome};
 use crate::render::render;
 use crate::Config;
 
 #[derive(Default)]
 struct Tally {
-    pass: u64,
+    exact: u64,
+    byte_divergent: u64,
+    behavior_match: u64,
     generator_invalid: u64,
     njavac_reject: u64,
     findings: u64,
     lines: u64,
     javac_time: Duration,
     njavac_time: Duration,
+    observer_time: Duration,
 }
 
 /// A fresh seed for a bare `make fuzz`: wall-clock nanoseconds and pid mixed
@@ -34,16 +38,20 @@ pub(super) fn random_seed() -> u64 {
 }
 
 pub(super) fn run(cfg: &Config) -> ! {
+    let java = derive_java(&cfg.javac);
     let worker_src = worker_src_path();
-    let mut worker = JavacWorker::spawn(&derive_java(&cfg.javac), &worker_src);
+    let observer_src = observer_src_path();
+    let mut worker = JavacWorker::spawn(&java, &worker_src);
+    let mut observer: Option<ObserveWorker> = None;
     let mut g = Gen { rng: Rng::new(cfg.seed) };
     let mut tally = Tally::default();
-    let mut sigs: HashMap<String, SigInfo> = HashMap::new();
+    let mut byte_sigs: HashMap<String, SigInfo> = HashMap::new();
+    let mut behavior_sigs: HashMap<String, SigInfo> = HashMap::new();
     let mut reject_dumped = 0u32;
 
     println!(
-        "fuzz: seed={} count={} batch={} javac-worker={}\n  reproduce this exact run with: make fuzz SEED={}",
-        cfg.seed, cfg.count, cfg.batch, worker_src.display(), cfg.seed
+        "fuzz: seed={} count={} batch={} javac-worker={} observer={} (lazy)\n  reproduce this exact run with: make fuzz SEED={}",
+        cfg.seed, cfg.count, cfg.batch, worker_src.display(), observer_src.display(), cfg.seed
     );
 
     // Generate every batch completely before either compiler sees it. The single
@@ -81,24 +89,57 @@ pub(super) fn run(cfg: &Config) -> ! {
                         reject_dumped += 1;
                     }
                 }
-                ByteOutcome::Identical => tally.pass += 1,
+                ByteOutcome::Identical => tally.exact += 1,
                 ByteOutcome::Divergent { javac: a, njavac: b } => {
-                    tally.findings += 1;
+                    tally.byte_divergent += 1;
                     let rep = njavac::classdump::diff_report(a, &b);
                     let sig = finding_sig(rep.as_deref());
-                    let first = !sigs.contains_key(&sig);
-                    let info = sigs.entry(sig.clone()).or_insert_with(|| SigInfo {
+                    let first_byte = !byte_sigs.contains_key(&sig);
+                    let info = byte_sigs.entry(sig.clone()).or_insert_with(|| SigInfo {
                         count: 0,
                         example: p.name.class.clone(),
                     });
                     info.count += 1;
-                    if first {
-                        println!("\nNEW FINDING [{sig}]: {} ({} vs {} bytes)", p.name.class, a.len(), b.len());
-                        report_finding(cfg, p, s, rep.as_deref());
+                    let observer = observer.get_or_insert_with(|| {
+                        ObserveWorker::spawn(&java, &observer_src)
+                    });
+                    let t_observer = Instant::now();
+                    let observations = observer.observe_pair(&p.name.class, a, &b);
+                    tally.observer_time += t_observer.elapsed();
+                    if observations.reference == observations.candidate {
+                        tally.behavior_match += 1;
+                        if first_byte {
+                            println!(
+                                "\nBYTE DIVERGENCE [{sig}] behavior matches: {} ({} vs {} bytes)",
+                                p.name.class,
+                                a.len(),
+                                b.len(),
+                            );
+                        }
+                        continue;
+                    }
+
+                    tally.findings += 1;
+                    let behavior_sig = behavior_sig(&observations);
+                    let first_behavior = !behavior_sigs.contains_key(&behavior_sig);
+                    let info = behavior_sigs.entry(behavior_sig.clone()).or_insert_with(|| SigInfo {
+                        count: 0,
+                        example: p.name.class.clone(),
+                    });
+                    info.count += 1;
+                    if first_behavior {
+                        println!(
+                            "\nNEW BEHAVIOR FINDING [{behavior_sig}; bytes={sig}]: {} ({} vs {} bytes)",
+                            p.name.class,
+                            a.len(),
+                            b.len(),
+                        );
+                        report_finding(cfg, p, s, rep.as_deref(), &observations);
                     }
                     if !cfg.keep_going {
                         summary(&tally, cfg.count);
-                        print_sig_breakdown(&sigs);
+                        print_sig_breakdown("byte-divergence", &byte_sigs);
+                        print_sig_breakdown("behavior-finding", &behavior_sigs);
                         std::process::exit(1);
                     }
                 }
@@ -107,22 +148,31 @@ pub(super) fn run(cfg: &Config) -> ! {
 
         n += this;
         println!(
-            "  progress {n}/{}  pass={} gen-invalid={} njavac-reject={} findings={} lines={}",
-            cfg.count, tally.pass, tally.generator_invalid, tally.njavac_reject, tally.findings, tally.lines
+            "  progress {n}/{}  exact={} behavior-match={} byte-divergent={} gen-invalid={} njavac-reject={} findings={} lines={}",
+            cfg.count, tally.exact, tally.behavior_match, tally.byte_divergent,
+            tally.generator_invalid, tally.njavac_reject, tally.findings, tally.lines
         );
     }
 
     summary(&tally, cfg.count);
-    print_sig_breakdown(&sigs);
+    print_sig_breakdown("byte-divergence", &byte_sigs);
+    print_sig_breakdown("behavior-finding", &behavior_sigs);
     std::process::exit(if tally.findings > 0 { 1 } else { 0 });
 }
 
 fn summary(t: &Tally, count: u64) {
+    debug_assert_eq!(t.byte_divergent, t.behavior_match + t.findings);
+    let processed = t.exact + t.byte_divergent + t.generator_invalid + t.njavac_reject;
     println!(
-        "\nfuzz done: {count} cases  pass={} gen-invalid={} njavac-reject={} findings={}  ({} lines compiled)",
-        t.pass, t.generator_invalid, t.njavac_reject, t.findings, t.lines
+        "\nfuzz done: {processed}/{count} cases  exact={} behavior-match={} byte-divergent={} gen-invalid={} njavac-reject={} findings={}  ({} lines compiled)",
+        t.exact, t.behavior_match, t.byte_divergent, t.generator_invalid,
+        t.njavac_reject, t.findings, t.lines
     );
-    let (jt, nt, n) = (t.javac_time.as_secs_f64(), t.njavac_time.as_secs_f64(), count.max(1) as f64);
+    let (jt, nt, n) = (
+        t.javac_time.as_secs_f64(),
+        t.njavac_time.as_secs_f64(),
+        processed.max(1) as f64,
+    );
     let ratio = if nt > 0.0 { jt / nt } else { 0.0 };
     println!(
         "  compile time: javac(worker) {jt:.3}s ({:.3} ms/prog, incl. one-time JVM warmup + IPC)  |  \
@@ -131,6 +181,13 @@ fn summary(t: &Tally, count: u64) {
         nt * 1e6 / n,
     );
     if t.findings > 0 {
-        println!("  -> {} byte-mismatch finding(s); see the fuzz-out/ dir", t.findings);
+        println!("  -> {} behavioral finding(s); see the fuzz-out/ dir", t.findings);
+    }
+    if t.byte_divergent > 0 {
+        println!(
+            "  observer time: {:.3}s across {} byte-divergent program(s)",
+            t.observer_time.as_secs_f64(),
+            t.byte_divergent,
+        );
     }
 }

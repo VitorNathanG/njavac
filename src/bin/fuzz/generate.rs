@@ -283,6 +283,21 @@ impl Gen {
         4 + self.rng.below(9) as i32
     }
 
+    fn push_observed(out: &mut Vec<FStmt>, stmt: FStmt, local_count: usize) {
+        let observed = match &stmt {
+            FStmt::Decl { local, .. }
+            | FStmt::Assign { local, .. }
+            | FStmt::Compound { local, .. }
+            | FStmt::IncDec { local, .. } => *local..*local + 1,
+            FStmt::If { .. } => 0..local_count,
+            _ => 0..0,
+        };
+        out.push(stmt);
+        out.extend(observed.map(|local| {
+            FStmt::Println(PrintArg::Expr(FExpr::Local(local)))
+        }));
+    }
+
     fn top_stmt(&mut self, env: &mut Vec<Ty>, depth: u32) -> FStmt {
         let has_local = !env.is_empty();
         let has_numeric = env.iter().any(|t| t.is_numeric());
@@ -372,8 +387,12 @@ impl Gen {
     fn gen_if(&mut self, env: &[Ty], depth: u32) -> FStmt {
         let mut budget = self.fresh_budget();
         let cond = self.expr(env, Boolean, BoolMode::Branch, &mut budget);
-        let then_b = self.branch_body(env, depth + 1);
-        let else_b = if self.rng.boolean() { Some(self.branch_body(env, depth + 1)) } else { None };
+        let mut then_b = self.branch_body(env, depth + 1);
+        let mut else_b = if self.rng.boolean() { Some(self.branch_body(env, depth + 1)) } else { None };
+        then_b.insert(0, FStmt::Println(PrintArg::Str("then".to_string())));
+        if let Some(body) = &mut else_b {
+            body.insert(0, FStmt::Println(PrintArg::Str("else".to_string())));
+        }
         FStmt::If { cond, then_b, else_b }
     }
 
@@ -396,13 +415,14 @@ impl Gen {
                 menu.push(5);
             }
             let choice = *self.rng.pick(&menu.clone());
-            out.push(match choice {
+            let stmt = match choice {
                 1 => self.gen_assign(env),
                 2 => self.gen_compound(env),
                 3 => self.gen_incdec(env),
                 5 => self.gen_if(env, depth),
                 _ => self.gen_println(env),
-            });
+            };
+            Self::push_observed(&mut out, stmt, env.len());
         }
         out
     }
@@ -412,11 +432,12 @@ impl Gen {
         let nstmt = 5 + self.rng.below(10);
         let mut body = Vec::with_capacity(nstmt);
         for i in 0..nstmt {
-            if i < 2 {
-                body.push(self.gen_decl(&mut env));
+            let stmt = if i < 2 {
+                self.gen_decl(&mut env)
             } else {
-                body.push(self.top_stmt(&mut env, 0));
-            }
+                self.top_stmt(&mut env, 0)
+            };
+            Self::push_observed(&mut body, stmt, env.len());
         }
         Prog { name: ident(n), locals: env, body }
     }

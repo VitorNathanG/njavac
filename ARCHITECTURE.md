@@ -179,6 +179,7 @@ src/
     |   |-- generate.rs
     |   |-- render.rs
     |   |-- javac.rs
+    |   |-- observe.rs
     |   |-- oracle.rs
     |   |-- run.rs
     |   |-- finding.rs

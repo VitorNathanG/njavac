@@ -59,8 +59,8 @@ COPY --from=build /out/bench     /usr/local/bin/bench
 # The structural class-file differ, reachable for debugging via `make diff`; it
 # also backs the diff `bench` prints on a mismatch.
 COPY --from=build /out/classdiff /usr/local/bin/classdiff
-# The differential fuzzer (ROADMAP §0.1), reached via `make fuzz` (entrypoint
-# override). It shells out to the pinned $JAVAC set in the jdk base layer.
+# The two-layer differential fuzzer (ROADMAP §0.1), reached via `make fuzz`
+# (entrypoint override). Its source-launched workers use the pinned JDK.
 COPY --from=build /out/fuzz     /usr/local/bin/fuzz
 ENTRYPOINT ["bench", "--njavac", "/usr/local/bin/njavac"]
 CMD ["--njavac-runs", "1000", "--javac-runs", "5", "--warmup", "5"]

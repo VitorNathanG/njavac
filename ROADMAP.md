@@ -73,12 +73,10 @@ making `Unsupported` (skip) genuinely distinct from an njavac invariant violatio
 ## Phase 0 — Enablers
 
 ### 0.1 Differential fuzzer — ✅ DONE *(the highest-leverage item)*
-`make fuzz`: random in-scope Java vs the pinned javac, in-process, byte-compared;
-auto-minimizes a mismatch into a droppable fixture. The only hard-fail signal is *both
-compilers accept, bytes differ* — by definition an njavac bug. The open finding
-backlog is below. The mechanics and the 5-touch "grow it for a new
-rung" list live in CLAUDE.md §Testing; deferred sub-features are in §"Deferred /
-opportunistic improvements".
+`make fuzz`: random in-scope Java through an exact-byte layer followed by persistent
+execution observation for byte divergences. The open behavioral finding backlog is
+below. The mechanics and the 5-touch "grow it for a new rung" list live in CLAUDE.md
+§Testing; deferred sub-features are in §"Deferred / opportunistic improvements".
 
 ### Fuzzer-found bug backlog
 
@@ -283,12 +281,16 @@ files its "what would help" items here.
   against stale goldens. A freshness check (re-record when any fixture is newer than
   the volume) would remove the footgun. `make correctness` already sidesteps it by
   always using live javac.
-- **fuzz: expression-level minimization (v1.1).** The minimizer can now remove one
-  explicit grouping boundary at a time, but findings inside declaration initializers
-  still retain most of their expression tree. Add type-aware node shrinking (replace
-  a `Bin`/`Cmp`/`Logic` node with a same-typed child, drop casts, shrink literals toward
-  0/1), each gated by the existing three-conjunct predicate, so a fixture is directly
-  droppable into `fixtures/`.
+- **fuzz: observation-aware minimization.** Behavioral findings are emitted raw
+  because byte-only minimization can drift to an observationally-equivalent class.
+  Add a predicate that recompiles and re-observes each candidate, then add type-aware
+  expression shrinking (same-typed children, casts, and literals toward 0/1) so a
+  behavioral finding becomes directly droppable into `fixtures/`.
+- **fuzz: strengthen execution isolation with the first JVM-global capability.**
+  Before a generator rung can read `System.in`, exit, create threads, or mutate
+  process-global state, replace the current in-process class-loader boundary with a
+  disposable execution process and a parent-enforced timeout; see CLAUDE.md
+  §Testing for the current boundary.
 - **fuzz: generator-validity smoke gate.** The `v ^= 1.5` generator bug (compound
   bitwise with a float RHS → javac-reject) was caught by eyeballing `--dump-sources`,
   not systematically. A cheap gate asserting `generator-invalid ≈ 0` over a small

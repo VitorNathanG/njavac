@@ -10,9 +10,10 @@
 #   make probe       FILE=Probe.java           # disassemble a probe with the pinned javac (javap -v -p)
 #   make src-diff    FILE=Probe.java           # diff BOTH compilers on one source (byte + classdiff + javap)
 #   make diff        A=a.class B=b.class       # structural class-file diff, in-container
-#   make fuzz        [SEED=n] [COUNT=n]        # differential fuzz vs pinned javac (random seed unless SEED=n)
+#   make fuzz        [SEED=n] [COUNT=n]        # exact + behavioral differential fuzz (random seed unless pinned)
 #   make fuzz-verify [COUNT=n]                 # prove the in-memory javac worker == pinned javac CLI
 #   make fuzz-selftest                         # prove the finding->minimize->report machinery
+#   make fuzz-observe-verify                   # exercise the persistent execution observer
 #   make image                                 # build the pinned image
 #   make check                                 # LOCAL release build (debugging only; NOT a test)
 
@@ -33,7 +34,7 @@ COUNT     ?= 5000
 BATCH     ?=
 FUZZFLAGS ?=
 
-.PHONY: help image probe src-diff verify correctness record bench diff fuzz fuzz-verify fuzz-selftest check
+.PHONY: help image probe src-diff verify correctness record bench diff fuzz fuzz-verify fuzz-selftest fuzz-observe-verify check
 
 help:  ## show this help
 	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | sed -E 's/:.*## /\t/' | sort
@@ -83,7 +84,7 @@ diff: image  ## structural class-file diff in-container: make diff A=x.class B=y
 	@test -n "$(A)" && test -n "$(B)" || { echo "usage: make diff A=a.class B=b.class"; exit 2; }
 	docker run --rm -v "$(CURDIR):/w" -w /w --entrypoint classdiff $(IMAGE) $(A) $(B)
 
-fuzz: image  ## differential fuzz random in-scope Java (random seed unless SEED=n): make fuzz [SEED=n] [COUNT=n] [BATCH=n]
+fuzz: image  ## exact + behavioral fuzz of random in-scope Java: make fuzz [SEED=n] [COUNT=n] [BATCH=n]
 	docker run --rm -v "$(CURDIR):/w" -w /w --entrypoint fuzz $(IMAGE) \
 	  $(if $(SEED),--seed $(SEED),) --count $(COUNT) $(if $(BATCH),--batch $(BATCH),) $(FUZZFLAGS)
 
@@ -93,6 +94,9 @@ fuzz-verify: image  ## prove the in-memory javac worker == pinned javac CLI byte
 
 fuzz-selftest: image  ## prove the finding->minimize->report machinery (no real bug needed)
 	docker run --rm -v "$(CURDIR):/w" -w /w --entrypoint fuzz $(IMAGE) --selftest
+
+fuzz-observe-verify: image  ## exercise the persistent JVM observer and its timeout restart
+	docker run --rm -v "$(CURDIR):/w" -w /w --entrypoint fuzz $(IMAGE) --verify-observer
 
 check:  ## LOCAL release build only — compiler-internal debugging, NOT acceptance
 	cargo build --release

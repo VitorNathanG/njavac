@@ -238,27 +238,32 @@ debugging only and is **not** a sanctioned way to validate byte-identity.
 - **Differential fuzzer (0.1).** `make fuzz [SEED=n COUNT=n BATCH=n]` generates
   random *in-scope* Java (`src/bin/fuzz/`), compiles each with njavac (in-process)
   and the pinned javac (via a **persistent in-memory worker** — see Performance
-  below), and byte-compares. **A bare `make fuzz` uses a fresh random
+  below), then applies a two-layer oracle: exact byte comparison first, and a
+  persistent execution observer only for byte-divergent classes. **A bare `make
+  fuzz` uses a fresh random
   seed each run** (explores new programs every time) and prints it, so any finding
-  reproduces with `make fuzz SEED=<n>`; pass `SEED=n` to pin it. `make fuzz-selftest`
-  exercises the finding→minimize→report machinery (fixed seed, deterministic);
-  `make fuzz-verify` runs the worker's byte-identity gate (see Performance).
-  Findings land in `fuzz-out/` (git-ignored) as a minimized `.java` + a `.diff`. Key
-  facts a future rung's generator MUST preserve:
-  - **The oracle contract — one sentence.** *Both compilers accept and the bytes
-    differ* is the ONLY hard-fail signal (it is, by definition, an njavac bug);
-    a javac reject is `generator-invalid` telemetry, an njavac panic is
-    `njavac-reject` telemetry (not a finding until Phase 1's taxonomy). Corollary:
-    the generator's in-subset discipline is a **yield** lever (keeps javac accepting),
-    never a soundness lever — generator over-reach can't manufacture a false finding.
-  - **Three invariants that keep it sound.** (1) the `ident()` chokepoint: class name
+  reproduces with `make fuzz SEED=<n>`; pass `SEED=n` to pin it. `make fuzz-verify`
+  proves the compile worker matches the javac CLI; `make fuzz-observe-verify`
+  exercises observer return, output difference, exception, invalid-class, timeout,
+  and restart paths. Behavioral findings land in `fuzz-out/` (git-ignored) as raw
+  `.java`, `.diff`, and `.observe` files; they stay raw until minimization has an
+  observation-aware predicate. Key facts a future rung's generator MUST preserve:
+  - **The oracle contract — one sentence.** *Both compilers accept, their bytes
+    differ, and their observations differ* is the hard-fail signal; byte-only
+    divergences are compatibility telemetry, a javac reject is `generator-invalid`
+    telemetry, and an njavac panic is `njavac-reject` telemetry (not a finding until
+    Phase 1's taxonomy). Observation compares stdout, stderr, and normalized
+    return/throw/load-failure/timeout state. This is empirical semantic evidence,
+    not a proof: wrong unobserved state can remain a false negative.
+  - **Harness invariants.** (1) the `ident()` chokepoint: class name
     == filename == `source_file` arg (the `.class` couples to all three via the class
     name, `SourceFile`, and `LineNumberTable`), reused by generation, the worker
-    request, the in-process `compile()`, AND every minimizer candidate; (2)
+    request, and the in-process `compile()`; (2)
     `assert_batch_classes` — the worker returns exactly the batch's class set, so a
     stale or `$`-aux class (a future concat/switch generator over-reaching) is a hard
     error; (3) generate-all-IR-before-any-compile, so a transient hiccup changes
-    tallies but never the seed-determined program sequence.
+    tallies but never the seed-determined program sequence; (4) instrumentation adds
+    no RNG calls, so removing trace statements recovers the same seed-determined IR.
   - **The generator scope boundary.** Declarations only at method-body top level (sema
     allocates slots for top-level decls only). A *branch-boolean* (`< <= > >= == != &&
     || !`, including boolean cast/grouping boundaries) may only be materialized on an
@@ -266,7 +271,11 @@ debugging only and is **not** a sanctioned way to validate byte-identity.
     (literal, local, `&|^`) is used everywhere else. This is the
     `BoolMode`/`ScopeCaps` split; getting it wrong only lowers yield. The renderer is
     precedence-aware: only `FExpr::Paren` emits deliberate grouping, and the
-    minimizer can remove one grouping boundary at a time.
+    self-test minimizer can remove one grouping boundary at a time. Every generated
+    mutation is followed by a local-value print, every branch starts with a
+    `then`/`else` marker, and each `if` is followed by a snapshot of visible locals;
+    complex branch booleans are never printed directly because that would require
+    the unsupported non-empty-stack materialization path.
   - **Performance.** Both compilers now run without a process spawn and without
     touching disk. njavac is in-process; the pinned javac runs in a **persistent
     in-memory worker** (`tools/FuzzJavac.java`, driven by `JavacWorker` in
@@ -283,13 +292,22 @@ debugging only and is **not** a sanctioned way to validate byte-identity.
     bytes), so **`make fuzz-verify` is the gate** — it compiles N programs through
     the worker AND a real CLI spawn and byte-compares; the CLI stays authoritative,
     so **run it after any JDK bump or worker edit** (a divergence means the worker
-    is invalid). `--jobs` is deferred (asserts `==1`). `--keep-going` enumerates
-    distinct finding signatures (normalized structural divergence paths); `--no-min`
-    skips minimization for a fast census; `--dump-sources` prints generated sources
-    (no compile) for a determinism check. **A new rung grows the fuzzer by a 5-touch
+    is invalid). Byte divergences lazily start a second persistent JVM
+    (`tools/FuzzObserve.java`, driven by `ObserveWorker` in
+    `src/bin/fuzz/observe.rs`), which loads each side through a fresh class loader,
+    invokes `main`, captures bounded output, and restarts after a timeout. This
+    in-process isolation is valid for the **current generator**, which cannot access
+    `System.in`, mutate JVM-global state, call `System.exit`, or create threads; the
+    first rung that can do any of those must replace or strengthen the execution
+    boundary before enabling that generator capability. `make fuzz-observe-verify`
+    is the worker gate. `--jobs` is deferred (asserts `==1`). `--keep-going`
+    enumerates structural byte signatures and observation-field signatures;
+    `--dump-sources` prints generated sources (no compile) for a determinism check.
+    **A new rung grows the fuzzer by a 5-touch
     list** (add an `FExpr`/`FStmt` variant, a gen arm, a render arm, a minimize
     pass, a `ScopeCaps` flag) — run `make fuzz` as part of landing it, and
-    `make fuzz-verify` if the rung reaches new class-file territory. The open
+    `make fuzz-verify` if the rung reaches new class-file territory; run
+    `make fuzz-observe-verify` after observer edits. The open
     fuzzer-found bug backlog lives in ROADMAP.md §"Fuzzer-found bug backlog" (kept
     there and not re-characterized here, so this pointer can't go stale).
 
