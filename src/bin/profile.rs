@@ -6,7 +6,7 @@
 //! reports ns/compile plus a per-phase breakdown (lex / parse / sema / codegen),
 //! so we can see where the compiler's own time actually goes.
 //!
-//!   cargo run --release --bin profile [rounds] [trials]
+//!   cargo run --release --bin profile [rounds] [trials] [phase]
 //!
 //! Phase times are measured cumulatively (each phase re-runs the prior ones),
 //! then differenced, so every phase figure is non-negative by construction.
@@ -29,16 +29,20 @@ fn main() {
         .is_some_and(|arg| matches!(arg, "-h" | "--help"))
     {
         println!(
-            "usage: profile [rounds] [trials]\n\n\
+            "usage: profile [rounds] [trials] [all|lex|parse|sema|full]\n\n\
              Hot-loop the full fixture corpus through cumulative compiler phases.\n\
-             Defaults: {DEFAULT_ROUNDS} rounds, {DEFAULT_TRIALS} trials."
+             Defaults: {DEFAULT_ROUNDS} rounds, {DEFAULT_TRIALS} trials, all phases."
         );
         return;
     }
     let rounds = positive_arg(first.as_deref(), DEFAULT_ROUNDS, "rounds");
     let trials = positive_arg(a.next().as_deref(), DEFAULT_TRIALS, "trials");
+    let phase = a.next().unwrap_or_else(|| "all".to_string());
     if a.next().is_some() {
         usage_error("too many arguments");
+    }
+    if !matches!(phase.as_str(), "all" | "lex" | "parse" | "sema" | "full") {
+        usage_error("phase must be one of: all, lex, parse, sema, full");
     }
 
     let mut paths = Vec::new();
@@ -65,6 +69,39 @@ fn main() {
     // Warm up caches / branch predictors.
     for (src, name) in &fixtures {
         black_box(njavac::compile(src, name).expect("valid fixture"));
+    }
+
+    if phase != "all" {
+        let elapsed = match phase.as_str() {
+            "lex" => time("lex", rounds, trials, &fixtures, |src, _| {
+                black_box(lexer::lex(src).expect("valid fixture"));
+            }),
+            "parse" => time("parse", rounds, trials, &fixtures, |src, _| {
+                let tokens = lexer::lex(src).expect("valid fixture");
+                black_box(parser::parse(tokens).expect("valid fixture"));
+            }),
+            "sema" => time("sema", rounds, trials, &fixtures, |src, _| {
+                let tokens = lexer::lex(src).expect("valid fixture");
+                let unit = parser::parse(tokens).expect("valid fixture");
+                let analysis = sema::analyze(&unit).expect("valid fixture");
+                black_box((unit, analysis));
+            }),
+            "full" => time("full", rounds, trials, &fixtures, |src, name| {
+                let tokens = lexer::lex(src).expect("valid fixture");
+                let unit = parser::parse(tokens).expect("valid fixture");
+                let analysis = sema::analyze(&unit).expect("valid fixture");
+                black_box(codegen::generate(&unit.class, &analysis, name).expect("valid fixture"));
+            }),
+            _ => unreachable!(),
+        };
+        report_throughput(
+            elapsed / compiles,
+            elapsed,
+            rounds,
+            total_bytes,
+            total_lines,
+        );
+        return;
     }
 
     // Cumulative timings over growing prefixes of the pipeline (min of trials).
@@ -104,12 +141,22 @@ fn main() {
     println!("  {:-<38}", "");
     row("total", full, full);
 
-    let mb_s = (total_bytes as f64 * rounds as f64) / t_full * 1000.0;
-    let loc_s = (total_lines as f64 * rounds as f64) / t_full * 1e9;
+    report_throughput(full, t_full, rounds, total_bytes, total_lines);
+}
+
+fn report_throughput(
+    ns_per_compile: f64,
+    elapsed: f64,
+    rounds: usize,
+    total_bytes: usize,
+    total_lines: usize,
+) {
+    let mb_s = (total_bytes as f64 * rounds as f64) / elapsed * 1000.0;
+    let loc_s = (total_lines as f64 * rounds as f64) / elapsed * 1e9;
     println!(
         "\nthroughput: {:.2}M compiles/s   {:.0} ns/compile   {:.0} MB/s source   {:.2}M loc/s",
-        1000.0 / full,
-        full,
+        1000.0 / ns_per_compile,
+        ns_per_compile,
         mb_s,
         loc_s / 1e6,
     );
@@ -126,7 +173,7 @@ fn positive_arg(arg: Option<&str>, default: usize, name: &str) -> usize {
 }
 
 fn usage_error(message: &str) -> ! {
-    eprintln!("profile: {message}\nusage: profile [rounds] [trials]");
+    eprintln!("profile: {message}\nusage: profile [rounds] [trials] [all|lex|parse|sema|full]");
     std::process::exit(2);
 }
 
