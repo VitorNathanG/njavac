@@ -330,13 +330,15 @@ impl ConstantPool {
 }
 
 /// A `verification_type_info` in a StackMapTable frame — the verifier's view of
-/// one local or stack slot. Only the variants the numeric+branch subset produces;
-/// the four small integral types (`boolean`/`byte`/`char`/`short`/`int`) all map
-/// to `Integer`. `Object` carries the referenced class's internal name, resolved
-/// to its constant-pool `Class` index when the frame is serialized. A `Long`/
-/// `Double` is a **single** entry even though it occupies two JVM slots.
-#[derive(Clone, PartialEq, Eq)]
+/// one local or stack slot. The four small integral types
+/// (`boolean`/`byte`/`char`/`short`/`int`) all map to `Integer`; `Top` preserves an
+/// interior physical slot for an uninitialized local. `Object` carries the
+/// referenced class's internal name, resolved to its constant-pool `Class` index
+/// when the frame is serialized. A `Long`/`Double` is a **single** entry even
+/// though it occupies two JVM slots.
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub enum VerificationType {
+    Top,          // tag 0
     Integer,      // tag 1
     Float,        // tag 2
     Double,       // tag 3
@@ -347,6 +349,7 @@ pub enum VerificationType {
 impl VerificationType {
     fn write(&self, buf: &mut ByteBuf, cp: &ConstantPool) {
         match self {
+            VerificationType::Top => buf.u8(0),
             VerificationType::Integer => buf.u8(1),
             VerificationType::Float => buf.u8(2),
             VerificationType::Double => buf.u8(3),

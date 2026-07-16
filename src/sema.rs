@@ -8,9 +8,9 @@
 //! `type_of` computes the static type of any expression, implementing Java's
 //! unary and binary numeric promotion (comparisons and `!` type to `boolean`).
 //! Codegen consults it to pick load/store opcodes, conversion opcodes, `println`
-//! descriptors, constant-load ladders, and comparison branch opcodes. Branch-local
-//! declarations remain an explicit unsupported boundary until codegen consumes
-//! scoped verifier-local state.
+//! descriptors, constant-load ladders, and comparison branch opcodes. Sema also
+//! records the verifier-local state at method entry and around every statement;
+//! branch-local declarations remain an explicit unsupported boundary.
 
 use std::collections::{HashMap, HashSet};
 
@@ -98,8 +98,28 @@ pub struct LocalId(usize);
 pub struct LocalInfo {
     pub name: String,
     pub declaration: Span,
+    /// Source-level declared type. `ValType::String` alone cannot distinguish the
+    /// `String[]` parameter from a future String-valued local in verifier frames.
+    pub declared_ty: Type,
     pub ty: ValType,
     pub slot: u16,
+}
+
+/// Sema's classfile-independent view of one verifier-local entry. `Long` and
+/// `Double` each consume two physical local slots but occupy one entry here.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum FrameLocal {
+    Top,
+    Integer,
+    Float,
+    Long,
+    Double,
+    Object(String),
+}
+
+struct StmtFrameLocals {
+    entry: Vec<FrameLocal>,
+    exit: Vec<FrameLocal>,
 }
 
 /// Analysis result for one method: ordered locals and occurrence resolution.
@@ -107,6 +127,8 @@ pub struct MethodInfo {
     /// Parameters followed by locals in declaration order.
     pub locals: Vec<LocalInfo>,
     resolutions: HashMap<Span, LocalId>,
+    entry_frame_locals: Vec<FrameLocal>,
+    stmt_frame_locals: HashMap<Span, StmtFrameLocals>,
     /// High-water local-slot count, counting `long`/`double` as two.
     pub max_locals: u16,
 }
@@ -128,6 +150,26 @@ impl MethodInfo {
 
     pub fn ty(&self, name: &Name) -> ValType {
         self.local(name).ty
+    }
+
+    pub fn entry_frame_locals(&self) -> &[FrameLocal] {
+        &self.entry_frame_locals
+    }
+
+    pub fn stmt_entry_frame_locals(&self, span: Span) -> &[FrameLocal] {
+        &self
+            .stmt_frame_locals
+            .get(&span)
+            .unwrap_or_else(|| panic!("sema did not record statement entry at {span:?}"))
+            .entry
+    }
+
+    pub fn stmt_exit_frame_locals(&self, span: Span) -> &[FrameLocal] {
+        &self
+            .stmt_frame_locals
+            .get(&span)
+            .unwrap_or_else(|| panic!("sema did not record statement exit at {span:?}"))
+            .exit
     }
 }
 
@@ -203,6 +245,7 @@ fn analyze_method(method: &Method) -> CompileResult<MethodInfo> {
     let mut analyzer = MethodAnalyzer {
         locals: Vec::new(),
         resolutions: HashMap::new(),
+        stmt_frame_locals: HashMap::new(),
         scopes: vec![Scope { symbols: HashMap::new(), allocator_base: 0 }],
         assigned: HashSet::new(),
         next_slot: 0,
@@ -211,9 +254,10 @@ fn analyze_method(method: &Method) -> CompileResult<MethodInfo> {
 
     // Parameters take the low slots and are definitely assigned at method entry.
     for param in &method.params {
-        let id = analyzer.declare(&param.name, valtype(param.ty))?;
+        let id = analyzer.declare(&param.name, param.ty)?;
         analyzer.assigned.insert(id);
     }
+    let entry_frame_locals = analyzer.frame_locals();
     for stmt in &method.body {
         analyzer.validate_stmt(stmt, false)?;
     }
@@ -221,6 +265,8 @@ fn analyze_method(method: &Method) -> CompileResult<MethodInfo> {
     Ok(MethodInfo {
         locals: analyzer.locals,
         resolutions: analyzer.resolutions,
+        entry_frame_locals,
+        stmt_frame_locals: analyzer.stmt_frame_locals,
         max_locals: analyzer.max_locals,
     })
 }
@@ -233,6 +279,7 @@ struct Scope {
 struct MethodAnalyzer {
     locals: Vec<LocalInfo>,
     resolutions: HashMap<Span, LocalId>,
+    stmt_frame_locals: HashMap<Span, StmtFrameLocals>,
     scopes: Vec<Scope>,
     assigned: HashSet<LocalId>,
     next_slot: u16,
@@ -256,13 +303,14 @@ impl MethodAnalyzer {
         self.next_slot = scope.allocator_base;
     }
 
-    fn declare(&mut self, name: &Name, ty: ValType) -> CompileResult<LocalId> {
+    fn declare(&mut self, name: &Name, declared_ty: Type) -> CompileResult<LocalId> {
         if self.scopes.iter().any(|scope| scope.symbols.contains_key(&name.text)) {
             return Err(Diagnostic::semantic(
                 name.span,
                 format!("duplicate local `{}`", name.text),
             ));
         }
+        let ty = valtype(declared_ty);
         let next = self.next_slot.checked_add(ty.width()).ok_or_else(|| {
             Diagnostic::unsupported_semantic(name.span, "method requires too many local slots")
         })?;
@@ -270,6 +318,7 @@ impl MethodAnalyzer {
         self.locals.push(LocalInfo {
             name: name.text.clone(),
             declaration: name.span,
+            declared_ty,
             ty,
             slot: self.next_slot,
         });
@@ -306,6 +355,50 @@ impl MethodAnalyzer {
         self.locals[id.0].ty
     }
 
+    /// Build verifier locals from definite assignment and physical slot positions.
+    /// Unassigned interior slots become `Top`; trailing `Top` entries are omitted.
+    /// A category-2 local advances two slots but contributes one verifier entry.
+    fn frame_locals(&self) -> Vec<FrameLocal> {
+        let last_assigned_slot = self
+            .assigned
+            .iter()
+            .map(|id| {
+                let local = &self.locals[id.0];
+                local.slot + local.ty.width()
+            })
+            .max()
+            .unwrap_or(0);
+        let mut starts: Vec<Option<FrameLocal>> = vec![None; last_assigned_slot as usize];
+        for id in &self.assigned {
+            let local = &self.locals[id.0];
+            let previous = starts[local.slot as usize].replace(frame_local(local.declared_ty));
+            assert!(previous.is_none(), "assigned locals overlap at slot {}", local.slot);
+        }
+
+        let mut locals = Vec::new();
+        let mut slot = 0usize;
+        while slot < starts.len() {
+            match starts[slot].take() {
+                Some(frame @ (FrameLocal::Long | FrameLocal::Double)) => {
+                    locals.push(frame);
+                    slot += 2;
+                }
+                Some(frame) => {
+                    locals.push(frame);
+                    slot += 1;
+                }
+                None => {
+                    locals.push(FrameLocal::Top);
+                    slot += 1;
+                }
+            }
+        }
+        while locals.last() == Some(&FrameLocal::Top) {
+            locals.pop();
+        }
+        locals
+    }
+
     fn read_local(&mut self, name: &Name) -> CompileResult<(LocalId, ValType)> {
         let id = self.resolve(name)?;
         if !self.assigned.contains(&id) {
@@ -318,6 +411,7 @@ impl MethodAnalyzer {
     }
 
     fn validate_stmt(&mut self, stmt: &Stmt, in_branch: bool) -> CompileResult<()> {
+        let entry = self.frame_locals();
         match &stmt.kind {
             StmtKind::LocalDecl { ty, name, init } => {
                 if in_branch {
@@ -327,7 +421,7 @@ impl MethodAnalyzer {
                     ));
                 }
                 let target = valtype(*ty);
-                let id = self.declare(name, target)?;
+                let id = self.declare(name, *ty)?;
                 if let Some(init) = init {
                     let source = self.validate_expr(init, stmt.span)?;
                     self.require_assignable(target, source, init, stmt.span)?;
@@ -386,6 +480,11 @@ impl MethodAnalyzer {
                     .collect();
             }
         }
+        let previous = self.stmt_frame_locals.insert(
+            stmt.span,
+            StmtFrameLocals { entry, exit: self.frame_locals() },
+        );
+        assert!(previous.is_none(), "duplicate statement span recorded at {:?}", stmt.span);
         Ok(())
     }
 
@@ -615,6 +714,16 @@ impl MethodAnalyzer {
         } else {
             Err(Diagnostic::semantic(span, format!("{context} requires boolean operands")))
         }
+    }
+}
+
+fn frame_local(ty: Type) -> FrameLocal {
+    match ty {
+        Type::Long => FrameLocal::Long,
+        Type::Float => FrameLocal::Float,
+        Type::Double => FrameLocal::Double,
+        Type::StringArray => FrameLocal::Object("[Ljava/lang/String;".to_string()),
+        Type::Int | Type::Boolean | Type::Char | Type::Byte | Type::Short => FrameLocal::Integer,
     }
 }
 

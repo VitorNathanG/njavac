@@ -27,7 +27,8 @@
 use crate::ast::{BinOp, Class, CmpOp, Expr, LogOp, Method, Name, Stmt, StmtKind, Type};
 use crate::classfile::{ClassFile, ConstantPool, Method as CfMethod, StackFrame, VerificationType};
 use crate::diagnostic::{CompileResult, Diagnostic};
-use crate::sema::{self, Analysis, MethodInfo, StackTy, ValType};
+use crate::sema::{self, Analysis, FrameLocal, MethodInfo, StackTy, ValType};
+use crate::span::Span;
 
 // ---- opcodes ----
 const ICONST_M1: u8 = 0x02;
@@ -346,9 +347,7 @@ fn gen_init(cp: &mut ConstantPool, class_line: u16) -> CfMethod {
 
 /// Emit one method body.
 fn gen_method(cp: &mut ConstantPool, method: &Method, info: &MethodInfo) -> CfMethod {
-    // The verifier's method-entry locals: one entry per parameter (the seed for
-    // stack-map frame deltas). `main`'s single `String[] args` is one `Object`.
-    let entry_locals: Vec<VerificationType> = method.params.iter().map(|p| param_vti(p.ty)).collect();
+    let entry_locals = verification_locals(info.entry_frame_locals());
 
     let mut g = Gen {
         cp,
@@ -361,7 +360,7 @@ fn gen_method(cp: &mut ConstantPool, method: &Method, info: &MethodInfo) -> CfMe
         at_control_entry: false,
         max_stack: 0,
         cur: 0,
-        locals: entry_locals.clone(),
+        semantic_locals: info.entry_frame_locals(),
         labels: Vec::new(),
         fixups: Vec::new(),
         frames: Vec::new(),
@@ -369,16 +368,6 @@ fn gen_method(cp: &mut ConstantPool, method: &Method, info: &MethodInfo) -> CfMe
 
     for stmt in &method.body {
         g.gen_stmt(stmt);
-        // Maintain the running assigned-locals snapshot: a top-level declaration
-        // brings its local into scope for every subsequent branch's frames. (In
-        // this subset such locals are declared with an initializer, so they are
-        // definitely assigned from here on.) The push MUST stay *after* gen_stmt:
-        // a frame emitted while materializing the declaration's own initializer
-        // (e.g. `boolean r = a && b`) snapshots `self.locals` without `r` — that is
-        // exactly what makes javac's frame there `append` without the new local.
-        if let StmtKind::LocalDecl { ty, .. } = &stmt.kind {
-            g.locals.push(local_vti(sema::valtype(*ty)));
-        }
     }
 
     // Every void method ends with an appended `return`, mapped to the closing brace.
@@ -394,7 +383,7 @@ fn gen_method(cp: &mut ConstantPool, method: &Method, info: &MethodInfo) -> CfMe
         name: method.name.clone(),
         descriptor: descriptor_of(method),
         max_stack: g.max_stack,
-        max_locals: info.max_locals.max(1),
+        max_locals: info.max_locals,
         code: g.code,
         line_numbers: g.line_numbers,
         entry_locals,
@@ -649,9 +638,9 @@ struct Gen<'a> {
     at_control_entry: bool,
     max_stack: u16,
     cur: u16,
-    /// The assigned, in-scope locals in slot order (params first), as verifier
-    /// types — the snapshot each branch target's frame captures.
-    locals: Vec<VerificationType>,
+    /// The current sema-owned verifier-local snapshot. Statement generation only
+    /// selects an entry or exit state; it never mutates local state independently.
+    semantic_locals: &'a [FrameLocal],
     /// pc where each label is placed (`u32::MAX` until placed).
     labels: Vec<u32>,
     fixups: Vec<Fixup>,
@@ -676,29 +665,32 @@ impl<'a> Gen<'a> {
     /// an `if` places its own entries (condition, then each nested statement).
     fn gen_stmt(&mut self, stmt: &Stmt) {
         self.cur = 0;
+        self.install_stmt_entry(stmt.span);
         if let StmtKind::If { cond, then_branch, else_branch } = &stmt.kind {
             self.gen_if(
+                stmt.span,
                 stmt.line,
                 cond,
                 &then_branch.stmts,
                 else_branch.as_ref().map(|body| body.stmts.as_slice()),
             );
-            return;
-        }
-        self.mark_line(stmt.line);
-        match &stmt.kind {
-            StmtKind::LocalDecl { name, init, .. } => {
-                if let Some(init) = init {
-                    self.store_to(name, init);
+        } else {
+            self.mark_line(stmt.line);
+            match &stmt.kind {
+                StmtKind::LocalDecl { name, init, .. } => {
+                    if let Some(init) = init {
+                        self.store_to(name, init);
+                    }
                 }
+                StmtKind::Assign { name, value } => self.store_to(name, value),
+                StmtKind::CompoundAssign { name, op, value } => {
+                    self.gen_compound(name, *op, value)
+                }
+                StmtKind::Expr(expr) => self.gen_expr_stmt(expr),
+                StmtKind::If { .. } => unreachable!("handled above"),
             }
-            StmtKind::Assign { name, value } => self.store_to(name, value),
-            StmtKind::CompoundAssign { name, op, value } => {
-                self.gen_compound(name, *op, value)
-            }
-            StmtKind::Expr(expr) => self.gen_expr_stmt(expr),
-            StmtKind::If { .. } => unreachable!("handled above"),
         }
+        self.install_stmt_exit(stmt.span);
     }
 
     /// `if (cond) then [else els]`, a faithful port of javac's `visitIf`. A code-free
@@ -709,7 +701,14 @@ impl<'a> Gen<'a> {
     /// targets. When the condition is statically false only the *then* is dropped
     /// (the else still runs); the trailing `goto`+else block is emitted only when
     /// the else is actually reachable (no spurious `goto`, no dead else).
-    fn gen_if(&mut self, line: u16, cond: &Expr, then_b: &[Stmt], else_b: Option<&[Stmt]>) {
+    fn gen_if(
+        &mut self,
+        stmt_span: Span,
+        line: u16,
+        cond: &Expr,
+        then_b: &[Stmt],
+        else_b: Option<&[Stmt]>,
+    ) {
         let previous_line = self.pending_line;
         let entered_by_branch = self.at_control_entry;
         self.mark_line(line);
@@ -749,6 +748,7 @@ impl<'a> Gen<'a> {
         let else_chain = self.jump_false(c); // emit the false branch(es); may be None
 
         if !is_false {
+            self.install_stmt_entry(stmt_span);
             self.resolve_chain(true_chain); // then-entry (frame iff a branch lands)
             for s in then_b {
                 self.gen_stmt(s);
@@ -762,15 +762,20 @@ impl<'a> Gen<'a> {
             Some(els) if else_chain.is_some() || is_false => {
                 // Skip the else after a live then-body with a trailing goto.
                 let end = if !is_false { Some(self.branch_to_new(GOTO)) } else { None };
+                self.install_stmt_entry(stmt_span);
                 self.resolve_chain(else_chain);
                 for s in els {
                     self.gen_stmt(s);
                 }
                 if let Some(end) = end {
+                    self.install_stmt_exit(stmt_span);
                     self.resolve_chain(Some(end));
                 }
             }
-            _ => self.resolve_chain(else_chain),
+            _ => {
+                self.install_stmt_exit(stmt_span);
+                self.resolve_chain(else_chain);
+            }
         }
     }
 
@@ -1086,9 +1091,17 @@ impl<'a> Gen<'a> {
         self.at_control_entry = true;
         self.frames.push(FrameReq {
             offset: self.code.len() as u16,
-            locals: self.locals.clone(),
+            locals: verification_locals(self.semantic_locals),
             stack,
         });
+    }
+
+    fn install_stmt_entry(&mut self, span: Span) {
+        self.semantic_locals = self.info.stmt_entry_frame_locals(span);
+    }
+
+    fn install_stmt_exit(&mut self, span: Span) {
+        self.semantic_locals = self.info.stmt_exit_frame_locals(span);
     }
 
     /// Backpatch every branch's 2-byte offset now that all labels are placed, and
@@ -1310,7 +1323,13 @@ impl<'a> Gen<'a> {
             if !live.contains(&f.offset) {
                 continue; // a merge that threading turned into pure fall-through
             }
-            if out.last().is_some_and(|p| p.offset == f.offset) {
+            if let Some(previous) = out.last().filter(|p| p.offset == f.offset) {
+                debug_assert_eq!(
+                    (&previous.locals, &previous.stack),
+                    (&f.locals, &f.stack),
+                    "conflicting frame states requested at pc {}",
+                    f.offset
+                );
                 continue; // multiple branches merge at one pc
             }
             out.push(StackFrame { offset: f.offset, locals: f.locals.clone(), stack: f.stack.clone() });
@@ -1909,26 +1928,18 @@ fn assert_negate_op_consistent() {
     }
 }
 
-/// The verifier type of a method parameter.
-fn param_vti(ty: Type) -> VerificationType {
-    match ty {
-        Type::Long => VerificationType::Long,
-        Type::Float => VerificationType::Float,
-        Type::Double => VerificationType::Double,
-        Type::StringArray => VerificationType::Object("[Ljava/lang/String;".to_string()),
-        // int/boolean/char/byte/short all verify as int.
-        _ => VerificationType::Integer,
-    }
-}
-
-/// The verifier type of a local of value type `t` (the sub-int types are `int`).
-fn local_vti(t: ValType) -> VerificationType {
-    match t {
-        ValType::Long => VerificationType::Long,
-        ValType::Float => VerificationType::Float,
-        ValType::Double => VerificationType::Double,
-        _ => VerificationType::Integer,
-    }
+fn verification_locals(locals: &[FrameLocal]) -> Vec<VerificationType> {
+    locals
+        .iter()
+        .map(|local| match local {
+            FrameLocal::Top => VerificationType::Top,
+            FrameLocal::Integer => VerificationType::Integer,
+            FrameLocal::Float => VerificationType::Float,
+            FrameLocal::Long => VerificationType::Long,
+            FrameLocal::Double => VerificationType::Double,
+            FrameLocal::Object(name) => VerificationType::Object(name.clone()),
+        })
+        .collect()
 }
 
 /// The `i2b`/`i2s`/`i2c` javac emits converting an int-computational value of

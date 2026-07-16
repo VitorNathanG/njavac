@@ -413,9 +413,12 @@ source → lexer::lex → parser::parse → sema::analyze → codegen::generate 
   every `Name` span maps to it, and definite assignment is tracked by ID. Its
   lexical scope stack reclaims two-slot-aware allocations on braced-scope exit
   while retaining the `max_locals` high-water mark; unbraced branch bodies share
-  their enclosing scope. Branch-local declarations remain an explicit unsupported
-  boundary until codegen's verifier-local snapshots consume this scope state.
-  `type_of` implements unary/binary numeric promotion from the resolved records.
+  their enclosing scope. From definite-assigned `LocalId`s and physical slots it
+  records method-entry plus per-statement entry/exit verifier-local snapshots;
+  interior unassigned holes are `Top`, category-2 locals occupy one verifier entry
+  but two slots, and trailing `Top` is trimmed. Branch-local declarations remain an
+  explicit unsupported boundary. `type_of` implements unary/binary numeric
+  promotion from the resolved records.
 - **`codegen`** → typed bytecode + `max_stack`/`max_locals` + `LineNumberTable`,
   via the `classfile` backend.
 - **`main`** is a thin javac-like CLI (`njavac [-d <dir>] <file.java> …`): it
@@ -544,12 +547,13 @@ to the next instruction (javac's `Code.resolve` compaction), remapping every
 pc-bearing table (`fixups`, `labels` — *threaded* to the goto's ultimate
 non-goto destination, not collapsed onto the next byte — `line_numbers`, frame
 offsets). It is a no-op on any program javac already matches (empty death set → no
-bytes move). The running-locals snapshot (`Gen::locals`) grows as method-body
-locals are declared and is what each frame captures — the push stays *after*
-`gen_stmt` so a frame inside a declaration's own initializer (`boolean r = a && b`)
-snapshots locals *without* the new local, matching javac. Branch bodies declare no
-locals in this subset, so the snapshot only ever grows (no `chop`). `negate_op` (the
-12-opcode branch involution) is debug-asserted against `int_icmp_branch`/
+bytes move). Codegen selects sema's statement-entry snapshot before emission and
+its exit snapshot afterward; initializer-internal frames therefore exclude the
+declared local, branch-entry chains use the enclosing `if` entry, and final joins
+use its definite-assignment intersection. Codegen never grows a parallel local-state
+model. Branch-local declarations remain unsupported, so scoped `chop` behavior is
+not yet reachable. `negate_op` (the 12-opcode branch involution) is debug-asserted
+against `int_icmp_branch`/
 `int_zero_branch` in `assert_negate_op_consistent` since a drift there would
 silently break every comparison.
 
