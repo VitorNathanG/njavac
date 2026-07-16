@@ -13,8 +13,8 @@
 //! branch-local declarations remain an explicit unsupported boundary.
 
 use crate::ast::{
-    BinOp, BranchBody, CmpOp, CompilationUnit, Expr, Method, Name, PrimitiveType, Stmt,
-    StmtKind, Type,
+    BinOp, BranchBody, CmpOp, CompilationUnit, Expr, ExprKind, Method, Name, PrimitiveType,
+    Stmt, StmtKind, Type,
 };
 use crate::diagnostic::{CompileResult, Diagnostic};
 use crate::fxhash::{FxHashMap, FxHashSet};
@@ -80,6 +80,7 @@ pub struct MethodInfo {
     frame_locals: Vec<Vec<FrameLocal>>,
     entry_frame_locals: usize,
     stmt_frame_locals: FxHashMap<Span, StmtFrameLocals>,
+    expr_types: Vec<Option<Type>>,
     /// High-water local-slot count, counting `long`/`double` as two.
     pub max_locals: u16,
 }
@@ -105,6 +106,13 @@ impl MethodInfo {
 
     pub fn declared_type(&self, name: &Name) -> &Type {
         &self.local(name).ty
+    }
+
+    pub fn expr_type(&self, expr: &Expr) -> &Type {
+        self.expr_types
+            .get(expr.id.0)
+            .and_then(Option::as_ref)
+            .unwrap_or_else(|| panic!("sema did not record expression type for {:?}", expr.id))
     }
 
     pub fn entry_frame_locals(&self) -> &[FrameLocal] {
@@ -208,6 +216,7 @@ fn analyze_method(method: &Method) -> CompileResult<MethodInfo> {
         scopes: vec![Scope { symbols: FxHashMap::default(), allocator_base: 0 }],
         assigned: FxHashSet::default(),
         frame_locals,
+        expr_types: Vec::new(),
         current_frame_locals: 0,
         next_slot: 0,
         max_locals: 0,
@@ -230,6 +239,7 @@ fn analyze_method(method: &Method) -> CompileResult<MethodInfo> {
         frame_locals: analyzer.frame_locals,
         entry_frame_locals,
         stmt_frame_locals: analyzer.stmt_frame_locals,
+        expr_types: analyzer.expr_types,
         max_locals: analyzer.max_locals,
     })
 }
@@ -248,6 +258,7 @@ struct MethodAnalyzer {
     /// Arena of immutable snapshots, extended only when `assigned` changes.
     frame_locals: Vec<Vec<FrameLocal>>,
     current_frame_locals: usize,
+    expr_types: Vec<Option<Type>>,
     next_slot: u16,
     max_locals: u16,
 }
@@ -420,8 +431,8 @@ impl MethodAnalyzer {
                 self.require_compound(*op, &target, &source, stmt.span)?;
                 self.mark_assigned(id);
             }
-            StmtKind::Expr(expr) => match expr {
-                Expr::Println(arg) => {
+            StmtKind::Expr(expr) => match &expr.kind {
+                ExprKind::Println(arg) => {
                     let ty = self.validate_expr(arg, stmt.span)?;
                     if ty.is_string() && !is_string_value(arg) {
                         return Err(Diagnostic::unsupported_semantic(
@@ -488,15 +499,15 @@ impl MethodAnalyzer {
     }
 
     fn validate_expr(&mut self, expr: &Expr, span: Span) -> CompileResult<Type> {
-        let ty = match expr {
-            Expr::IntLit(_) => PrimitiveType::Int.into(),
-            Expr::LongLit(_) => PrimitiveType::Long.into(),
-            Expr::FloatLit(_) => PrimitiveType::Float.into(),
-            Expr::DoubleLit(_) => PrimitiveType::Double.into(),
-            Expr::BoolLit(_) => PrimitiveType::Boolean.into(),
-            Expr::CharLit(_) => PrimitiveType::Char.into(),
-            Expr::StringLit(_) => Type::string(),
-            Expr::Name(name) => {
+        let ty = match &expr.kind {
+            ExprKind::IntLit(_) => PrimitiveType::Int.into(),
+            ExprKind::LongLit(_) => PrimitiveType::Long.into(),
+            ExprKind::FloatLit(_) => PrimitiveType::Float.into(),
+            ExprKind::DoubleLit(_) => PrimitiveType::Double.into(),
+            ExprKind::BoolLit(_) => PrimitiveType::Boolean.into(),
+            ExprKind::CharLit(_) => PrimitiveType::Char.into(),
+            ExprKind::StringLit(_) => Type::string(),
+            ExprKind::Name(name) => {
                 let (_, ty) = self.read_local(name)?;
                 if ty.as_primitive().is_none() {
                     return Err(Diagnostic::unsupported_semantic(
@@ -506,23 +517,23 @@ impl MethodAnalyzer {
                 }
                 ty
             }
-            Expr::Neg(inner) => {
+            ExprKind::Neg(inner) => {
                 let ty = self.validate_expr(inner, span)?;
                 self.require_numeric(&ty, span, "unary `-`")?;
                 unary_promote(ty.primitive()).into()
             }
-            Expr::BitNot(inner) => {
+            ExprKind::BitNot(inner) => {
                 let ty = self.validate_expr(inner, span)?;
                 self.require_integral(&ty, span, "unary `~`")?;
                 unary_promote(ty.primitive()).into()
             }
-            Expr::Not(inner) => {
+            ExprKind::Not(inner) => {
                 let ty = self.validate_expr(inner, span)?;
                 self.require_boolean(&ty, span, "unary `!`")?;
                 PrimitiveType::Boolean.into()
             }
-            Expr::Paren(inner) => self.validate_expr(inner, span)?,
-            Expr::Cast { ty, expr } => {
+            ExprKind::Paren(inner) => self.validate_expr(inner, span)?,
+            ExprKind::Cast { ty, expr } => {
                 let source = self.validate_expr(expr, span)?;
                 let target = ty.clone();
                 if !((is_numeric(&source) && is_numeric(&target))
@@ -532,31 +543,38 @@ impl MethodAnalyzer {
                 }
                 target
             }
-            Expr::Binary { op, left, right } => {
+            ExprKind::Binary { op, left, right } => {
                 let left_ty = self.validate_expr(left, span)?;
                 let right_ty = self.validate_expr(right, span)?;
                 self.validate_binary(*op, &left_ty, &right_ty, right, span)?
             }
-            Expr::Compare { op, left, right } => {
+            ExprKind::Compare { op, left, right } => {
                 let left_ty = self.validate_expr(left, span)?;
                 let right_ty = self.validate_expr(right, span)?;
                 self.validate_compare(*op, &left_ty, &right_ty, span)?;
                 PrimitiveType::Boolean.into()
             }
-            Expr::Logical { left, right, .. } => {
+            ExprKind::Logical { left, right, .. } => {
                 let left_ty = self.validate_expr(left, span)?;
                 let right_ty = self.validate_expr(right, span)?;
                 self.require_boolean(&left_ty, span, "logical operator")?;
                 self.require_boolean(&right_ty, span, "logical operator")?;
                 PrimitiveType::Boolean.into()
             }
-            Expr::Println(_) => {
+            ExprKind::Println(_) => {
                 return Err(Diagnostic::semantic(
                     span,
                     "System.out.println does not produce a value",
                 ));
             }
         };
+        if self.expr_types.len() <= expr.id.0 {
+            self.expr_types.resize_with(expr.id.0 + 1, || None);
+        }
+        match &self.expr_types[expr.id.0] {
+            Some(previous) => assert_eq!(previous, &ty, "expression type changed between visits"),
+            None => self.expr_types[expr.id.0] = Some(ty.clone()),
+        }
         Ok(ty)
     }
 
@@ -752,24 +770,27 @@ fn is_assignment_convertible(target: &Type, source: &Type) -> bool {
 /// deliberately left to a later constant-analysis stage, so existing valid folded
 /// initializers are not rejected here.
 fn is_constant_expression(expr: &Expr) -> bool {
-    match expr {
-        Expr::IntLit(_)
-        | Expr::LongLit(_)
-        | Expr::FloatLit(_)
-        | Expr::DoubleLit(_)
-        | Expr::BoolLit(_)
-        | Expr::CharLit(_)
-        | Expr::StringLit(_) => true,
-        Expr::Neg(inner) | Expr::BitNot(inner) | Expr::Not(inner) | Expr::Paren(inner) => {
+    match &expr.kind {
+        ExprKind::IntLit(_)
+        | ExprKind::LongLit(_)
+        | ExprKind::FloatLit(_)
+        | ExprKind::DoubleLit(_)
+        | ExprKind::BoolLit(_)
+        | ExprKind::CharLit(_)
+        | ExprKind::StringLit(_) => true,
+        ExprKind::Neg(inner)
+        | ExprKind::BitNot(inner)
+        | ExprKind::Not(inner)
+        | ExprKind::Paren(inner) => {
             is_constant_expression(inner)
         }
-        Expr::Cast { expr, .. } => is_constant_expression(expr),
-        Expr::Binary { left, right, .. }
-        | Expr::Compare { left, right, .. }
-        | Expr::Logical { left, right, .. } => {
+        ExprKind::Cast { expr, .. } => is_constant_expression(expr),
+        ExprKind::Binary { left, right, .. }
+        | ExprKind::Compare { left, right, .. }
+        | ExprKind::Logical { left, right, .. } => {
             is_constant_expression(left) && is_constant_expression(right)
         }
-        Expr::Name(_) | Expr::Println(_) => false,
+        ExprKind::Name(_) | ExprKind::Println(_) => false,
     }
 }
 
@@ -848,37 +869,37 @@ impl NumericConst {
 }
 
 fn eval_numeric_constant(expr: &Expr) -> Option<NumericConst> {
-    Some(match expr {
-        Expr::IntLit(value) => NumericConst::Int(*value),
-        Expr::LongLit(value) => NumericConst::Long(*value),
-        Expr::FloatLit(value) => NumericConst::Float(*value),
-        Expr::DoubleLit(value) => NumericConst::Double(*value),
-        Expr::CharLit(value) => NumericConst::Int(*value as i32),
-        Expr::Neg(inner) => match eval_numeric_constant(inner)? {
+    Some(match &expr.kind {
+        ExprKind::IntLit(value) => NumericConst::Int(*value),
+        ExprKind::LongLit(value) => NumericConst::Long(*value),
+        ExprKind::FloatLit(value) => NumericConst::Float(*value),
+        ExprKind::DoubleLit(value) => NumericConst::Double(*value),
+        ExprKind::CharLit(value) => NumericConst::Int(*value as i32),
+        ExprKind::Neg(inner) => match eval_numeric_constant(inner)? {
             NumericConst::Int(value) => NumericConst::Int(value.wrapping_neg()),
             NumericConst::Long(value) => NumericConst::Long(value.wrapping_neg()),
             NumericConst::Float(value) => NumericConst::Float(-value),
             NumericConst::Double(value) => NumericConst::Double(-value),
         },
-        Expr::BitNot(inner) => match eval_numeric_constant(inner)? {
+        ExprKind::BitNot(inner) => match eval_numeric_constant(inner)? {
             NumericConst::Int(value) => NumericConst::Int(!value),
             NumericConst::Long(value) => NumericConst::Long(!value),
             NumericConst::Float(_) | NumericConst::Double(_) => return None,
         },
-        Expr::Paren(inner) => eval_numeric_constant(inner)?,
-        Expr::Cast { ty, expr } => eval_numeric_constant(expr)?.cast(ty.primitive())?,
-        Expr::Binary { op, left, right } => {
+        ExprKind::Paren(inner) => eval_numeric_constant(inner)?,
+        ExprKind::Cast { ty, expr } => eval_numeric_constant(expr)?.cast(ty.primitive())?,
+        ExprKind::Binary { op, left, right } => {
             let left = eval_numeric_constant(left)?;
             let right = eval_numeric_constant(right)?;
             eval_numeric_binary(*op, left, right)?
         }
-        Expr::BoolLit(_)
-        | Expr::StringLit(_)
-        | Expr::Name(_)
-        | Expr::Not(_)
-        | Expr::Compare { .. }
-        | Expr::Logical { .. }
-        | Expr::Println(_) => return None,
+        ExprKind::BoolLit(_)
+        | ExprKind::StringLit(_)
+        | ExprKind::Name(_)
+        | ExprKind::Not(_)
+        | ExprKind::Compare { .. }
+        | ExprKind::Logical { .. }
+        | ExprKind::Println(_) => return None,
     })
 }
 
@@ -970,9 +991,9 @@ fn eval_numeric_binary(op: BinOp, left: NumericConst, right: NumericConst) -> Op
 }
 
 fn is_string_value(expr: &Expr) -> bool {
-    match expr {
-        Expr::StringLit(_) => true,
-        Expr::Paren(inner) => is_string_value(inner),
+    match &expr.kind {
+        ExprKind::StringLit(_) => true,
+        ExprKind::Paren(inner) => is_string_value(inner),
         _ => false,
     }
 }
@@ -1005,40 +1026,7 @@ pub fn binary_promote(a: PrimitiveType, b: PrimitiveType) -> PrimitiveType {
     }
 }
 
-/// The static type of an expression, implementing promotion. `Println` is a
-/// `void` call and never appears as a value operand.
-pub fn type_of(expr: &Expr, info: &MethodInfo) -> Type {
-    match expr {
-        Expr::IntLit(_) => PrimitiveType::Int.into(),
-        Expr::LongLit(_) => PrimitiveType::Long.into(),
-        Expr::FloatLit(_) => PrimitiveType::Float.into(),
-        Expr::DoubleLit(_) => PrimitiveType::Double.into(),
-        Expr::BoolLit(_) => PrimitiveType::Boolean.into(),
-        Expr::CharLit(_) => PrimitiveType::Char.into(),
-        Expr::StringLit(_) => Type::string(),
-        Expr::Name(n) => info.declared_type(n).clone(),
-        Expr::Neg(e) => unary_promote(type_of(e, info).primitive()).into(),
-        Expr::BitNot(e) => unary_promote(type_of(e, info).primitive()).into(),
-        Expr::Not(_) => PrimitiveType::Boolean.into(),
-        Expr::Paren(e) => type_of(e, info),
-        Expr::Compare { .. } => PrimitiveType::Boolean.into(),
-        Expr::Logical { .. } => PrimitiveType::Boolean.into(),
-        Expr::Cast { ty, .. } => ty.clone(),
-        Expr::Binary { op, left, right } => {
-            let lt = type_of(left, info);
-            let rt = type_of(right, info);
-            // `&`/`|`/`^` on two booleans is boolean (non-short-circuit logical).
-            if matches!(op, BinOp::And | BinOp::Or | BinOp::Xor)
-                && lt.is_boolean()
-                && rt.is_boolean()
-            {
-                PrimitiveType::Boolean.into()
-            } else if op.is_shift() {
-                unary_promote(lt.primitive()).into()
-            } else {
-                binary_promote(lt.primitive(), rt.primitive()).into()
-            }
-        }
-        Expr::Println(_) => unreachable!("println does not have a value type"),
-    }
+/// The static type recorded during semantic validation.
+pub fn type_of<'a>(expr: &Expr, info: &'a MethodInfo) -> &'a Type {
+    info.expr_type(expr)
 }

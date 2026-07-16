@@ -247,9 +247,22 @@ pub enum StmtKind {
     Expr(Expr),
 }
 
-/// An expression. `Box` breaks the recursion for the compound forms.
+/// Stable parser-assigned identity for one expression node.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct ExprId(pub usize);
+
+/// One expression node. Identity is independent of source spans and remains
+/// stable as semantic facts move into dense tables and storage moves to an arena.
 #[derive(Debug)]
-pub enum Expr {
+pub struct Expr {
+    pub id: ExprId,
+    pub kind: ExprKind,
+}
+
+/// Expression payload. `Box` currently breaks recursion; a later storage change
+/// can replace child boxes with `ExprId` without changing semantic identity.
+#[derive(Debug)]
+pub enum ExprKind {
     /// An `int` literal, already parsed to its 32-bit value.
     IntLit(i32),
     /// A `long` literal (`123L`).

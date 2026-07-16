@@ -25,7 +25,8 @@
 //! method whose branches all fold stays byte-identical to its straight-line form.
 
 use crate::ast::{
-    BinOp, Class, CmpOp, Expr, LogOp, Method, Name, PrimitiveType, Stmt, StmtKind, Type,
+    BinOp, Class, CmpOp, Expr, ExprKind, LogOp, Method, Name, PrimitiveType, Stmt, StmtKind,
+    Type,
 };
 use crate::classfile::{
     ClassFile, CodeAttribute, ConstantPool, Method as CfMethod, StackFrame, VerificationType,
@@ -378,11 +379,13 @@ fn preflight_stmt(stmt: &Stmt, info: &MethodInfo) -> CompileResult<()> {
             // the RHS code-free; `preflight_value` applies that same fold first.
             preflight_value(value, true, stmt.span, info)?;
         }
-        StmtKind::Expr(Expr::Println(arg)) => {
-            // `getstatic System.out` leaves the receiver live while evaluating arg.
-            preflight_value(arg, true, stmt.span, info)?;
-        }
-        StmtKind::Expr(_) => unreachable!("sema accepted a non-println expression statement"),
+        StmtKind::Expr(expr) => match &expr.kind {
+            ExprKind::Println(arg) => {
+                // `getstatic System.out` leaves the receiver live while evaluating arg.
+                preflight_value(arg, true, stmt.span, info)?;
+            }
+            _ => unreachable!("sema accepted a non-println expression statement"),
+        },
         StmtKind::If { cond, then_branch, else_branch } => {
             preflight_cond(cond, false, stmt.span, info)?;
             for nested in &then_branch.stmts {
@@ -404,30 +407,30 @@ fn preflight_value(
     span: crate::span::Span,
     info: &MethodInfo,
 ) -> CompileResult<()> {
-    if matches!(expr, Expr::StringLit(_)) || fold(expr).is_some() {
+    if matches!(&expr.kind, ExprKind::StringLit(_)) || fold(expr).is_some() {
         return Ok(());
     }
-    match expr {
-        Expr::Name(_) => Ok(()),
-        Expr::Neg(inner) | Expr::BitNot(inner) | Expr::Paren(inner) => {
+    match &expr.kind {
+        ExprKind::Name(_) => Ok(()),
+        ExprKind::Neg(inner) | ExprKind::BitNot(inner) | ExprKind::Paren(inner) => {
             preflight_value(inner, base_live, span, info)
         }
-        Expr::Cast { expr, .. } => preflight_value(expr, base_live, span, info),
-        Expr::Binary { left, right, .. } => {
+        ExprKind::Cast { expr, .. } => preflight_value(expr, base_live, span, info),
+        ExprKind::Binary { left, right, .. } => {
             preflight_value(left, base_live, span, info)?;
             preflight_value(right, true, span, info)
         }
-        Expr::Compare { .. } | Expr::Not(_) | Expr::Logical { .. } => {
+        ExprKind::Compare { .. } | ExprKind::Not(_) | ExprKind::Logical { .. } => {
             preflight_materialization(expr, base_live, span, info)
         }
-        Expr::IntLit(_)
-        | Expr::LongLit(_)
-        | Expr::FloatLit(_)
-        | Expr::DoubleLit(_)
-        | Expr::BoolLit(_)
-        | Expr::CharLit(_) => Ok(()),
-        Expr::Println(_) => unreachable!("sema accepted println as a value"),
-        Expr::StringLit(_) => unreachable!("handled above"),
+        ExprKind::IntLit(_)
+        | ExprKind::LongLit(_)
+        | ExprKind::FloatLit(_)
+        | ExprKind::DoubleLit(_)
+        | ExprKind::BoolLit(_)
+        | ExprKind::CharLit(_) => Ok(()),
+        ExprKind::Println(_) => unreachable!("sema accepted println as a value"),
+        ExprKind::StringLit(_) => unreachable!("handled above"),
     }
 }
 
@@ -458,16 +461,18 @@ fn preflight_cond(
     if lowering_const(expr).is_some() {
         return Ok(());
     }
-    match expr {
-        Expr::Not(inner) | Expr::Paren(inner) => preflight_cond(inner, base_live, span, info),
-        Expr::Cast { ty, expr } if ty.is_boolean() => {
+    match &expr.kind {
+        ExprKind::Not(inner) | ExprKind::Paren(inner) => {
+            preflight_cond(inner, base_live, span, info)
+        }
+        ExprKind::Cast { ty, expr } if ty.is_boolean() => {
             preflight_materialization(expr, base_live, span, info)
         }
-        Expr::Compare { left, right, .. } => {
+        ExprKind::Compare { left, right, .. } => {
             preflight_value(left, base_live, span, info)?;
             preflight_value(right, true, span, info)
         }
-        Expr::Logical { op, left, right } => {
+        ExprKind::Logical { op, left, right } => {
             preflight_cond(left, base_live, span, info)?;
             let left_decides = fold(left).is_some_and(|value| match op {
                 LogOp::And => to_i32(value) == 0,
@@ -479,7 +484,7 @@ fn preflight_cond(
                 preflight_cond(right, base_live, span, info)
             }
         }
-        other => preflight_value(other, base_live, span, info),
+        _ => preflight_value(expr, base_live, span, info),
     }
 }
 
@@ -942,15 +947,15 @@ impl<'a> Gen<'a> {
         if let Some(c) = lowering_const(e) {
             return if to_i32(c) != 0 { cond_true() } else { cond_false() };
         }
-        match e {
-            Expr::Not(inner) => self.gen_cond(inner).negate(),
-            Expr::Paren(inner) => self.gen_cond(inner).parenthesize(),
-            Expr::Cast { ty, expr } if ty.is_boolean() => {
+        match &e.kind {
+            ExprKind::Not(inner) => self.gen_cond(inner).negate(),
+            ExprKind::Paren(inner) => self.gen_cond(inner).parenthesize(),
+            ExprKind::Cast { ty, expr } if ty.is_boolean() => {
                 self.gen_bool_value(expr);
                 cond_stack_test()
             }
-            Expr::Compare { op, left, right } => self.gen_compare_cond(*op, left, right),
-            Expr::Logical { op: LogOp::And, left, right } => {
+            ExprKind::Compare { op, left, right } => self.gen_compare_cond(*op, left, right),
+            ExprKind::Logical { op: LogOp::And, left, right } => {
                 let lc = self.gen_cond(left).as_logical_left();
                 if lc.is_false() {
                     return lc.mark_shortcut(); // false && _ : right is dead
@@ -964,7 +969,7 @@ impl<'a> Gen<'a> {
                 rc.carry_prefix(&lc, crossed_join);
                 rc
             }
-            Expr::Logical { op: LogOp::Or, left, right } => {
+            ExprKind::Logical { op: LogOp::Or, left, right } => {
                 let lc = self.gen_cond(left).as_logical_left();
                 if lc.is_true() {
                     return lc.mark_shortcut(); // true || _ : right is dead
@@ -980,8 +985,8 @@ impl<'a> Gen<'a> {
             }
             // A bare boolean value (a local, or `&`/`|`/`^` on booleans): load its
             // 0/1 onto the stack, pending an `ifne`(true)/`ifeq`(false) test.
-            other => {
-                self.gen_value(other); // pushes 0/1 (cur += 1)
+            _ => {
+                self.gen_value(e); // pushes 0/1 (cur += 1)
                 cond_stack_test()
             }
         }
@@ -1479,8 +1484,8 @@ impl<'a> Gen<'a> {
 
     /// `System.out.println(arg)`.
     fn gen_expr_stmt(&mut self, expr: &Expr) {
-        match expr {
-            Expr::Println(arg) => self.gen_println(arg),
+        match &expr.kind {
+            ExprKind::Println(arg) => self.gen_println(arg),
             other => panic!("unsupported expression statement: {other:?}"),
         }
     }
@@ -1624,12 +1629,12 @@ impl<'a> Gen<'a> {
         // Value-mode parentheses are transparent. Handle them before the
         // primitive-only path so a parenthesized String literal keeps its class
         // type instead of being projected to `PrimitiveType`.
-        if let Expr::Paren(inner) = expr {
+        if let ExprKind::Paren(inner) = &expr.kind {
             return self.gen_value(inner);
         }
         // A string literal is the one non-numeric value form (only ever a
         // `println` argument); it loads via `ldc` of a `String` constant.
-        if let Expr::StringLit(s) = expr {
+        if let ExprKind::StringLit(s) = &expr.kind {
             let idx = self.cp.string(s);
             self.emit_ldc(idx);
             return Type::string();
@@ -1638,7 +1643,7 @@ impl<'a> Gen<'a> {
             let t = sema::type_of(expr, self.info);
             let primitive = t.primitive();
             self.load_const(const_convert(c, primitive), primitive);
-            t
+            t.clone()
         } else {
             self.gen_nonconst(expr).into()
         }
@@ -1658,33 +1663,35 @@ impl<'a> Gen<'a> {
 
     /// Emit a non-constant expression, returning its static type.
     fn gen_nonconst(&mut self, expr: &Expr) -> PrimitiveType {
-        match expr {
-            Expr::Name(n) => {
+        match &expr.kind {
+            ExprKind::Name(n) => {
                 let ty = self.info.ty(n);
                 self.emit_load(self.info.slot(n), ty);
                 ty
             }
-            Expr::Neg(e) => {
+            ExprKind::Neg(e) => {
                 self.gen_value(e);
                 let p = sema::unary_promote(sema::type_of(e, self.info).primitive());
                 self.emit_op(neg_op(p.stack()));
                 p
             }
-            Expr::BitNot(e) => {
+            ExprKind::BitNot(e) => {
                 self.gen_value(e);
                 let p = sema::unary_promote(sema::type_of(e, self.info).primitive());
                 self.emit_bitnot(p);
                 p
             }
-            Expr::Paren(e) => self.gen_value(e).primitive(),
-            Expr::Cast { ty, expr } => {
+            ExprKind::Paren(e) => self.gen_value(e).primitive(),
+            ExprKind::Cast { ty, expr } => {
                 let s = self.gen_value(expr).primitive();
                 let target = ty.primitive();
                 self.emit_convert(s, target);
                 target
             }
-            Expr::Binary { op, left, right } => self.gen_binary(*op, left, right),
-            Expr::Compare { .. } | Expr::Not(_) | Expr::Logical { .. } => self.gen_bool_value(expr),
+            ExprKind::Binary { op, left, right } => self.gen_binary(*op, left, right),
+            ExprKind::Compare { .. } | ExprKind::Not(_) | ExprKind::Logical { .. } => {
+                self.gen_bool_value(expr)
+            }
             other => panic!("not a value expression: {other:?}"),
         }
     }
@@ -2151,22 +2158,22 @@ fn lowering_const(expr: &Expr) -> Option<Const> {
 }
 
 fn fold_impl(expr: &Expr, strict_logical: bool) -> Option<Const> {
-    Some(match expr {
-        Expr::IntLit(v) => Const::Int(*v),
-        Expr::LongLit(v) => Const::Long(*v),
-        Expr::FloatLit(v) => Const::Float(*v),
-        Expr::DoubleLit(v) => Const::Double(*v),
-        Expr::BoolLit(b) => Const::Int(*b as i32),
-        Expr::CharLit(v) => Const::Int(*v as i32),
-        Expr::StringLit(_) | Expr::Name(_) | Expr::Println(_) => return None,
-        Expr::Neg(e) => neg_const(fold_impl(e, strict_logical)?),
-        Expr::BitNot(e) => bitnot_const(fold_impl(e, strict_logical)?),
-        Expr::Not(e) => Const::Int((to_i32(fold_impl(e, strict_logical)?) == 0) as i32),
-        Expr::Paren(e) => fold_impl(e, strict_logical)?,
-        Expr::Cast { ty, expr } => {
+    Some(match &expr.kind {
+        ExprKind::IntLit(v) => Const::Int(*v),
+        ExprKind::LongLit(v) => Const::Long(*v),
+        ExprKind::FloatLit(v) => Const::Float(*v),
+        ExprKind::DoubleLit(v) => Const::Double(*v),
+        ExprKind::BoolLit(b) => Const::Int(*b as i32),
+        ExprKind::CharLit(v) => Const::Int(*v as i32),
+        ExprKind::StringLit(_) | ExprKind::Name(_) | ExprKind::Println(_) => return None,
+        ExprKind::Neg(e) => neg_const(fold_impl(e, strict_logical)?),
+        ExprKind::BitNot(e) => bitnot_const(fold_impl(e, strict_logical)?),
+        ExprKind::Not(e) => Const::Int((to_i32(fold_impl(e, strict_logical)?) == 0) as i32),
+        ExprKind::Paren(e) => fold_impl(e, strict_logical)?,
+        ExprKind::Cast { ty, expr } => {
             const_convert(fold_impl(expr, strict_logical)?, ty.primitive())
         }
-        Expr::Binary { op, left, right } => {
+        ExprKind::Binary { op, left, right } => {
             let (l, r) = (
                 fold_impl(left, strict_logical)?,
                 fold_impl(right, strict_logical)?,
@@ -2181,7 +2188,7 @@ fn fold_impl(expr: &Expr, strict_logical: bool) -> Option<Const> {
             }
             eval_binary(*op, l, r)
         }
-        Expr::Compare { op, left, right } => {
+        ExprKind::Compare { op, left, right } => {
             Const::Int(
                 eval_compare(
                     *op,
@@ -2195,7 +2202,7 @@ fn fold_impl(expr: &Expr, strict_logical: bool) -> Option<Const> {
         // statically decided (`q && false`) — the left must still be evaluated, so we
         // return `None` and let `gen_cond` emit it. When the left decides, return its
         // verdict WITHOUT folding the right; otherwise the tree reduces to the right.
-        Expr::Logical { op, left, right } => {
+        ExprKind::Logical { op, left, right } => {
             let lb = to_i32(fold_impl(left, strict_logical)?) != 0;
             if strict_logical {
                 let rb = to_i32(fold_impl(right, true)?) != 0;

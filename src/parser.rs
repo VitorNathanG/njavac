@@ -17,8 +17,8 @@
 //! can rebuild the `LineNumberTable` byte-identically to javac.
 //!
 use crate::ast::{
-    BinOp, BranchBody, Class, CmpOp, CompilationUnit, Expr, LogOp, Method, Name, Param,
-    PrimitiveType, Stmt, StmtKind, Type,
+    BinOp, BranchBody, Class, CmpOp, CompilationUnit, Expr, ExprId, ExprKind, LogOp, Method,
+    Name, Param, PrimitiveType, Stmt, StmtKind, Type,
 };
 use crate::diagnostic::{CompileResult, Diagnostic};
 use crate::lexer::{Token, TokenKind};
@@ -26,15 +26,21 @@ use crate::span::Span;
 
 /// Parse a token stream (as produced by `lexer::lex`) into a `CompilationUnit`.
 pub fn parse(tokens: Vec<Token>) -> CompileResult<CompilationUnit> {
-    Parser { tokens, pos: 0 }.compilation_unit()
+    Parser { tokens, pos: 0, next_expr_id: 0 }.compilation_unit()
 }
 
 struct Parser {
     tokens: Vec<Token>,
     pos: usize,
+    next_expr_id: usize,
 }
 
 impl Parser {
+    fn expr(&mut self, kind: ExprKind) -> Expr {
+        let id = ExprId(self.next_expr_id);
+        self.next_expr_id += 1;
+        Expr { id, kind }
+    }
     fn peek(&self) -> &TokenKind {
         &self.tokens[self.pos].kind
     }
@@ -225,7 +231,8 @@ impl Parser {
             self.bump();
             let name = self.expect_name()?;
             self.expect(&TokenKind::Semicolon)?;
-            StmtKind::CompoundAssign { name, op, value: Expr::IntLit(1) }
+            let value = self.expr(ExprKind::IntLit(1));
+            StmtKind::CompoundAssign { name, op, value }
         } else if let TokenKind::Ident(name) = self.peek() {
             if is_unsupported_statement_keyword(name) {
                 return Err(Diagnostic::unsupported_syntax(
@@ -329,7 +336,8 @@ impl Parser {
                 let op = if matches!(self.peek(), TokenKind::PlusPlus) { BinOp::Add } else { BinOp::Sub };
                 self.bump();
                 self.expect(&TokenKind::Semicolon)?;
-                Ok(StmtKind::CompoundAssign { name, op, value: Expr::IntLit(1) })
+                let value = self.expr(ExprKind::IntLit(1));
+                Ok(StmtKind::CompoundAssign { name, op, value })
             }
             _ => {
                 let expr = self.expression()?;
@@ -365,7 +373,8 @@ impl Parser {
             }
             self.bump();
             let right = self.expression_bp(right_bp)?;
-            left = op.apply(left, right);
+            let kind = op.apply(left, right);
+            left = self.expr(kind);
         }
         Ok(left)
     }
@@ -375,21 +384,25 @@ impl Parser {
         let expr = match self.peek() {
             TokenKind::Minus => {
                 self.bump();
-                Expr::Neg(Box::new(self.unary()?))
+                let inner = self.unary()?;
+                self.expr(ExprKind::Neg(Box::new(inner)))
             }
             TokenKind::Tilde => {
                 self.bump();
-                Expr::BitNot(Box::new(self.unary()?))
+                let inner = self.unary()?;
+                self.expr(ExprKind::BitNot(Box::new(inner)))
             }
             TokenKind::Bang => {
                 self.bump();
-                Expr::Not(Box::new(self.unary()?))
+                let inner = self.unary()?;
+                self.expr(ExprKind::Not(Box::new(inner)))
             }
             TokenKind::LParen if self.is_cast() => {
                 self.bump(); // (
                 let ty = self.primitive_type()?;
                 self.expect(&TokenKind::RParen)?;
-                Expr::Cast { ty, expr: Box::new(self.unary()?) }
+                let inner = self.unary()?;
+                self.expr(ExprKind::Cast { ty, expr: Box::new(inner) })
             }
             _ => return self.primary(),
         };
@@ -407,18 +420,18 @@ impl Parser {
     fn primary(&mut self) -> CompileResult<Expr> {
         let token = self.bump();
         let expr = match token.kind {
-            TokenKind::IntLit(v) => Expr::IntLit(v),
-            TokenKind::LongLit(v) => Expr::LongLit(v),
-            TokenKind::FloatLit(v) => Expr::FloatLit(v),
-            TokenKind::DoubleLit(v) => Expr::DoubleLit(v),
-            TokenKind::CharLit(v) => Expr::CharLit(v),
-            TokenKind::True => Expr::BoolLit(true),
-            TokenKind::False => Expr::BoolLit(false),
-            TokenKind::StringLit(s) => Expr::StringLit(s),
+            TokenKind::IntLit(v) => self.expr(ExprKind::IntLit(v)),
+            TokenKind::LongLit(v) => self.expr(ExprKind::LongLit(v)),
+            TokenKind::FloatLit(v) => self.expr(ExprKind::FloatLit(v)),
+            TokenKind::DoubleLit(v) => self.expr(ExprKind::DoubleLit(v)),
+            TokenKind::CharLit(v) => self.expr(ExprKind::CharLit(v)),
+            TokenKind::True => self.expr(ExprKind::BoolLit(true)),
+            TokenKind::False => self.expr(ExprKind::BoolLit(false)),
+            TokenKind::StringLit(s) => self.expr(ExprKind::StringLit(s)),
             TokenKind::LParen => {
                 let inner = self.expression()?;
                 self.expect(&TokenKind::RParen)?;
-                Expr::Paren(Box::new(inner))
+                self.expr(ExprKind::Paren(Box::new(inner)))
             }
             // `System.out.println(arg)` — the only call shape in the subset.
             TokenKind::Ident(name) if name == "System" => {
@@ -441,9 +454,11 @@ impl Parser {
                 self.expect(&TokenKind::LParen)?;
                 let arg = self.expression()?;
                 self.expect(&TokenKind::RParen)?;
-                Expr::Println(Box::new(arg))
+                self.expr(ExprKind::Println(Box::new(arg)))
             }
-            TokenKind::Ident(name) => Expr::Name(Name { text: name, span: token.span }),
+            TokenKind::Ident(name) => {
+                self.expr(ExprKind::Name(Name { text: name, span: token.span }))
+            }
             other => {
                 return Err(Diagnostic::parse(
                     token.span,
@@ -463,13 +478,13 @@ enum InfixOp {
 }
 
 impl InfixOp {
-    fn apply(self, left: Expr, right: Expr) -> Expr {
+    fn apply(self, left: Expr, right: Expr) -> ExprKind {
         let left = Box::new(left);
         let right = Box::new(right);
         match self {
-            InfixOp::Binary(op) => Expr::Binary { op, left, right },
-            InfixOp::Compare(op) => Expr::Compare { op, left, right },
-            InfixOp::Logical(op) => Expr::Logical { op, left, right },
+            InfixOp::Binary(op) => ExprKind::Binary { op, left, right },
+            InfixOp::Compare(op) => ExprKind::Compare { op, left, right },
+            InfixOp::Logical(op) => ExprKind::Logical { op, left, right },
         }
     }
 }

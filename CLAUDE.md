@@ -423,7 +423,9 @@ source → lexer::lex → parser::parse → sema::analyze → codegen::generate 
   represents Java types throughout the AST and sema; its copyable `PrimitiveType`
   leaf drives numeric promotion and opcode selection. `Type` centrally owns slot
   width, recursive descriptor writing, and verifier reference names; there is no
-  parallel semantic value-type enum.
+  parallel semantic value-type enum. Every expression has a parser-assigned stable
+  `ExprId`; its payload lives in `ExprKind`, preparing child storage to move from
+  boxes to arena indices without changing semantic identity.
 - **`parser`** → recursive descent for declarations/statements and a single
   precedence-climbing loop for expressions; `infix_binding_power` is the ordered
   operator/associativity table.
@@ -438,8 +440,9 @@ source → lexer::lex → parser::parse → sema::analyze → codegen::generate 
   but two slots, and trailing `Top` is trimmed. Snapshots are shared immutable
   slices and rebuilt only when definite assignment changes, so statements whose
   verifier state is unchanged reuse one snapshot. Branch-local declarations remain
-  an explicit unsupported boundary. `type_of` returns the unified `Type` and
-  implements unary/binary numeric promotion from the resolved records.
+  an explicit unsupported boundary. Expression types are computed once during
+  validation into a dense `ExprId`-indexed table; `type_of` is an indexed read of
+  the unified `Type`, with unary/binary numeric promotion already resolved.
 - **`codegen`** → typed bytecode + `max_stack`/`max_locals` + `LineNumberTable`,
   via the `classfile` backend.
 - **`main`** is a thin javac-like CLI (`njavac [-d <dir>] <file.java> …`): it
