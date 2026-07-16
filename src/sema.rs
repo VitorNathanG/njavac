@@ -13,8 +13,8 @@
 //! branch-local declarations remain an explicit unsupported boundary.
 
 use crate::ast::{
-    BinOp, BranchBody, CmpOp, CompilationUnit, ExprArena, ExprId, ExprKind, Method, Name,
-    PrimitiveType, Stmt, StmtKind, Type,
+    BinOp, BranchBody, CallArgs, CmpOp, CompilationUnit, ExprArena, ExprId, ExprKind, Method,
+    Name, PrimitiveType, Stmt, StmtKind, Type,
 };
 use crate::diagnostic::{CompileResult, Diagnostic};
 use crate::fxhash::{FxHashMap, FxHashSet};
@@ -82,8 +82,24 @@ pub struct MethodInfo {
     stmt_frame_locals: FxHashMap<Span, StmtFrameLocals>,
     expr_type_base: Option<usize>,
     expr_types: Vec<Option<Type>>,
+    calls: Vec<(ExprId, ResolvedCall)>,
     /// High-water local-slot count, counting `long`/`double` as two.
     pub max_locals: u16,
+}
+
+/// Classfile-independent identity of a method selected by sema. Source spelling
+/// never reaches codegen; the payload records the selected overload.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum ResolvedCall {
+    Println { parameter_type: Type },
+}
+
+impl ResolvedCall {
+    pub fn return_type(&self) -> Type {
+        match self {
+            ResolvedCall::Println { .. } => Type::Void,
+        }
+    }
 }
 
 impl MethodInfo {
@@ -119,6 +135,14 @@ impl MethodInfo {
             .get(index)
             .and_then(Option::as_ref)
             .unwrap_or_else(|| panic!("sema did not record expression type for {expr:?}"))
+    }
+
+    pub fn call(&self, expr: ExprId) -> &ResolvedCall {
+        self.calls
+            .iter()
+            .find(|(id, _)| *id == expr)
+            .map(|(_, call)| call)
+            .unwrap_or_else(|| panic!("sema did not resolve call {expr:?}"))
     }
 
     pub fn entry_frame_locals(&self) -> &[FrameLocal] {
@@ -240,6 +264,7 @@ fn analyze_method(method: &Method, exprs: &ExprArena) -> CompileResult<MethodInf
         frame_locals,
         expr_type_base: None,
         expr_types: Vec::new(),
+        calls: Vec::new(),
         current_frame_locals: 0,
         next_slot: 0,
         max_locals: 0,
@@ -264,6 +289,7 @@ fn analyze_method(method: &Method, exprs: &ExprArena) -> CompileResult<MethodInf
         stmt_frame_locals: analyzer.stmt_frame_locals,
         expr_type_base: analyzer.expr_type_base,
         expr_types: analyzer.expr_types,
+        calls: analyzer.calls,
         max_locals: analyzer.max_locals,
     })
 }
@@ -284,6 +310,7 @@ struct MethodAnalyzer {
     current_frame_locals: usize,
     expr_type_base: Option<usize>,
     expr_types: Vec<Option<Type>>,
+    calls: Vec<(ExprId, ResolvedCall)>,
     next_slot: u16,
     max_locals: u16,
 }
@@ -461,23 +488,16 @@ impl MethodAnalyzer {
                 self.require_compound(*op, &target, &source, stmt.span)?;
                 self.mark_assigned(id);
             }
-            StmtKind::Expr(expr) => match &exprs[*expr] {
-                ExprKind::Println(arg) => {
-                    let ty = self.validate_expr(*arg, stmt.span, exprs)?;
-                    if ty.is_string() && !is_string_value(exprs, *arg) {
-                        return Err(Diagnostic::unsupported_semantic(
-                            stmt.span,
-                            "only string literals are supported as String values",
-                        ));
-                    }
-                }
-                _ => {
+            StmtKind::Expr(expr) => {
+                if !matches!(&exprs[*expr], ExprKind::Call { .. }) {
                     return Err(Diagnostic::semantic(
                         stmt.span,
                         "only a method invocation may be used as an expression statement",
                     ));
                 }
-            },
+                let ty = self.validate_expr(*expr, stmt.span, exprs)?;
+                debug_assert!(ty.is_void(), "supported expression statement returns a value");
+            }
             StmtKind::If { cond, then_branch, else_branch } => {
                 let ty = self.validate_expr(*cond, stmt.span, exprs)?;
                 if !ty.is_boolean() {
@@ -534,6 +554,7 @@ impl MethodAnalyzer {
         span: Span,
         exprs: &ExprArena,
     ) -> CompileResult<Type> {
+        let mut resolved_call = None;
         let ty = match &exprs[expr] {
             ExprKind::IntLit(_) => PrimitiveType::Int.into(),
             ExprKind::LongLit(_) => PrimitiveType::Long.into(),
@@ -551,6 +572,12 @@ impl MethodAnalyzer {
                     ));
                 }
                 ty
+            }
+            ExprKind::Select { .. } => {
+                return Err(Diagnostic::semantic(
+                    span,
+                    "a qualified name is only supported as a method-call target",
+                ));
             }
             ExprKind::Neg(inner) => {
                 let ty = self.validate_expr(*inner, span, exprs)?;
@@ -596,11 +623,11 @@ impl MethodAnalyzer {
                 self.require_boolean(&right_ty, span, "logical operator")?;
                 PrimitiveType::Boolean.into()
             }
-            ExprKind::Println(_) => {
-                return Err(Diagnostic::semantic(
-                    span,
-                    "System.out.println does not produce a value",
-                ));
+            ExprKind::Call { target, args } => {
+                let call = self.resolve_call(*target, args, span, exprs)?;
+                let return_type = call.return_type();
+                resolved_call = Some(call);
+                return_type
             }
         };
         let base = *self.expr_type_base.get_or_insert(expr.index());
@@ -615,7 +642,59 @@ impl MethodAnalyzer {
             Some(previous) => assert_eq!(previous, &ty, "expression type changed between visits"),
             None => self.expr_types[index] = Some(ty.clone()),
         }
+        if let Some(call) = resolved_call {
+            if let Some((_, previous)) = self.calls.iter().find(|(id, _)| *id == expr) {
+                assert_eq!(previous, &call, "call resolution changed between visits");
+            } else {
+                self.calls.push((expr, call));
+            }
+        }
         Ok(ty)
+    }
+
+    /// Resolve the current subset's library call after parsing has preserved it as
+    /// an ordinary dotted invocation. The selected parameter type records overload
+    /// resolution (`byte`/`short` use `println(int)`).
+    fn resolve_call(
+        &mut self,
+        target: ExprId,
+        args: &CallArgs,
+        span: Span,
+        exprs: &ExprArena,
+    ) -> CompileResult<ResolvedCall> {
+        if !qualified_name_is(exprs, target, &["System", "out", "println"]) {
+            return Err(Diagnostic::unsupported_semantic(
+                qualified_name_span(exprs, target).unwrap_or(span),
+                "only System.out.println(...) calls are supported",
+            ));
+        }
+        if args.len() != 1 {
+            return Err(Diagnostic::unsupported_semantic(
+                span,
+                "System.out.println requires exactly one argument in the supported subset",
+            ));
+        }
+
+        let argument_expr = args.first.expect("one call argument checked above");
+        let argument = self.validate_expr(argument_expr, span, exprs)?;
+        if argument.is_string() && !is_string_value(exprs, argument_expr) {
+            return Err(Diagnostic::unsupported_semantic(
+                span,
+                "only string literals are supported as String values",
+            ));
+        }
+        let parameter = match argument.as_primitive() {
+            Some(PrimitiveType::Byte | PrimitiveType::Short) => PrimitiveType::Int.into(),
+            Some(_) => argument,
+            None if argument.is_string() => argument,
+            None => {
+                return Err(Diagnostic::unsupported_semantic(
+                    span,
+                    "unsupported println argument type",
+                ));
+            }
+        };
+        Ok(ResolvedCall::Println { parameter_type: parameter })
     }
 
     fn validate_binary(
@@ -833,7 +912,7 @@ fn is_constant_expression(exprs: &ExprArena, expr: ExprId) -> bool {
         | ExprKind::Logical { left, right, .. } => {
             is_constant_expression(exprs, *left) && is_constant_expression(exprs, *right)
         }
-        ExprKind::Name(_) | ExprKind::Println(_) => false,
+        ExprKind::Name(_) | ExprKind::Select { .. } | ExprKind::Call { .. } => false,
     }
 }
 
@@ -941,10 +1020,11 @@ fn eval_numeric_constant(exprs: &ExprArena, expr: ExprId) -> Option<NumericConst
         ExprKind::BoolLit(_)
         | ExprKind::StringLit(_)
         | ExprKind::Name(_)
+        | ExprKind::Select { .. }
         | ExprKind::Not(_)
         | ExprKind::Compare { .. }
         | ExprKind::Logical { .. }
-        | ExprKind::Println(_) => return None,
+        | ExprKind::Call { .. } => return None,
     })
 }
 
@@ -1040,6 +1120,23 @@ fn is_string_value(exprs: &ExprArena, expr: ExprId) -> bool {
         ExprKind::StringLit(_) => true,
         ExprKind::Paren(inner) => is_string_value(exprs, *inner),
         _ => false,
+    }
+}
+
+fn qualified_name_is(exprs: &ExprArena, expr: ExprId, parts: &[&str]) -> bool {
+    match (&exprs[expr], parts) {
+        (ExprKind::Name(name), [part]) => name.text == *part,
+        (ExprKind::Select { qualifier, name }, [prefix @ .., part]) => {
+            name.text == *part && qualified_name_is(exprs, *qualifier, prefix)
+        }
+        _ => false,
+    }
+}
+
+fn qualified_name_span(exprs: &ExprArena, expr: ExprId) -> Option<Span> {
+    match &exprs[expr] {
+        ExprKind::Name(name) | ExprKind::Select { name, .. } => Some(name.span),
+        _ => None,
     }
 }
 

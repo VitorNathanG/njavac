@@ -17,7 +17,7 @@
 //! can rebuild the `LineNumberTable` byte-identically to javac.
 //!
 use crate::ast::{
-    BinOp, BranchBody, Class, CmpOp, CompilationUnit, ExprArena, ExprId, ExprKind, LogOp,
+    BinOp, BranchBody, CallArgs, Class, CmpOp, CompilationUnit, ExprArena, ExprId, ExprKind, LogOp,
     Method, Name, Param, PrimitiveType, Stmt, StmtKind, Type, JAVA_LANG_OBJECT,
 };
 use crate::diagnostic::{CompileResult, Diagnostic};
@@ -432,7 +432,7 @@ impl Parser {
         is_primitive_type(self.peek_kind(1)) && matches!(self.peek_kind(2), TokenKind::RParen)
     }
 
-    // primary -> literal | '(' expression ')' | System.out.println(arg) | name
+    // primary -> literal | '(' expression ')' | qualified-call | name
     fn primary(&mut self) -> CompileResult<ExprId> {
         let token = self.bump();
         let expr = match token.kind {
@@ -449,32 +449,7 @@ impl Parser {
                 self.expect(&TokenKind::RParen)?;
                 self.expr(ExprKind::Paren(inner))
             }
-            // `System.out.println(arg)` — the only call shape in the subset.
-            TokenKind::Ident(name) if name == "System" => {
-                self.expect(&TokenKind::Dot)?;
-                let (out, out_span) = self.expect_ident_spanned()?;
-                if out != "out" {
-                    return Err(Diagnostic::parse(
-                        out_span,
-                        format!("expected System.out, found System.{out}"),
-                    ));
-                }
-                self.expect(&TokenKind::Dot)?;
-                let (println, println_span) = self.expect_ident_spanned()?;
-                if println != "println" {
-                    return Err(Diagnostic::parse(
-                        println_span,
-                        format!("expected System.out.println, found System.out.{println}"),
-                    ));
-                }
-                self.expect(&TokenKind::LParen)?;
-                let arg = self.expression()?;
-                self.expect(&TokenKind::RParen)?;
-                self.expr(ExprKind::Println(arg))
-            }
-            TokenKind::Ident(name) => {
-                self.expr(ExprKind::Name(Name { text: name, span: token.span }))
-            }
+            TokenKind::Ident(name) => self.name_or_call(Name { text: name, span: token.span })?,
             other => {
                 return Err(Diagnostic::parse(
                     token.span,
@@ -483,6 +458,47 @@ impl Parser {
             }
         };
         Ok(expr)
+    }
+
+    /// Parse a local name or a dotted method invocation without resolving any
+    /// component. Sema owns the supported-target and overload decisions.
+    fn name_or_call(&mut self, first: Name) -> CompileResult<ExprId> {
+        let mut target = self.expr(ExprKind::Name(first));
+        let mut qualified = false;
+        while matches!(self.peek(), TokenKind::Dot) {
+            self.bump();
+            let name = self.expect_name()?;
+            target = self.expr(ExprKind::Select {
+                qualifier: target,
+                name,
+            });
+            qualified = true;
+        }
+        if !matches!(self.peek(), TokenKind::LParen) {
+            if !qualified {
+                return Ok(target);
+            }
+            return Err(Diagnostic::parse(
+                self.previous_span(),
+                "a qualified name is only supported as a method-call target",
+            ));
+        }
+
+        self.bump();
+        let mut first = None;
+        let mut rest = Vec::new();
+        if !matches!(self.peek(), TokenKind::RParen) {
+            first = Some(self.expression()?);
+            while matches!(self.peek(), TokenKind::Comma) {
+                self.bump();
+                rest.push(self.expression()?);
+            }
+        }
+        self.expect(&TokenKind::RParen)?;
+        Ok(self.expr(ExprKind::Call {
+            target,
+            args: CallArgs { first, rest },
+        }))
     }
 }
 

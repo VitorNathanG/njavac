@@ -321,6 +321,12 @@ pub enum ExprKind {
     StringLit(String),
     /// A reference to a local variable by name.
     Name(Name),
+    /// One dotted-name selection used structurally in a call target. Sema resolves
+    /// the complete chain; this is not yet a general field-access value.
+    Select {
+        qualifier: ExprId,
+        name: Name,
+    },
     /// Unary minus, e.g. `-x`. A literal operand is constant-folded by codegen.
     Neg(ExprId),
     /// Unary bitwise complement `~x` (int/long).
@@ -358,8 +364,30 @@ pub enum ExprKind {
         left: ExprId,
         right: ExprId,
     },
-    /// `System.out.println(arg)`.
-    Println(ExprId),
+    /// A method invocation. The parser preserves the dotted target as source names;
+    /// semantic analysis resolves its receiver, owner, signature, and return type.
+    Call {
+        target: ExprId,
+        args: CallArgs,
+    },
+}
+
+/// Call arguments optimized for the current one-argument surface while retaining
+/// a direct growth path for later overloads without changing `ExprKind::Call`.
+#[derive(Debug)]
+pub struct CallArgs {
+    pub first: Option<ExprId>,
+    pub rest: Vec<ExprId>,
+}
+
+impl CallArgs {
+    pub fn len(&self) -> usize {
+        usize::from(self.first.is_some()) + self.rest.len()
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = ExprId> + '_ {
+        self.first.iter().copied().chain(self.rest.iter().copied())
+    }
 }
 
 /// The two short-circuit logical operators. Their operands are `boolean`; the

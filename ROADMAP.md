@@ -123,18 +123,10 @@ Landed; see CLAUDE.md §Architecture.
 
 Landed; see CLAUDE.md §Architecture.
 
-### 2.6 De-hardcode the `main`/println/void/Object shape
-- **What.** Parameterize `gen_init` on the superclass (not hardwired `Object`),
-  model method return types instead of appending `)V`, and turn `System.out.println`
-  from a bespoke `ExprKind::Println` statement into an ordinary method-call expression
-  resolved in sema (deleting the parser's name-resolution-in-the-parser layering
-  violation).
-- **Why.** Small and mechanical, but it's what turns "one `main`" into "a real
-  class with methods" — the unlock for the multiple-methods rung.
-- **Effort.** Small.
-- **Key files.** `codegen.rs` (`gen_init`, `descriptor_of`, `gen_expr_stmt`,
-  `gen_println`), `parser.rs` (`primary`'s `System.out.println` walk),
-  `ast.rs`/`sema.rs` (return types and a general `Call` node).
+### 2.6 De-hardcode the `main`/println/void/Object shape — ✅ DONE
+
+Landed; see CLAUDE.md §Architecture for modeled superclass/return types and
+sema-resolved method calls.
 
 ---
 
@@ -209,8 +201,8 @@ files its "what would help" items here.
   goto-compaction / materialization tail.
 ## Status
 
-Phases 0–1 and Phase 2.1–2.5 landed; Phase 2.6 is next. All tests run through Docker
-via the `Makefile`.
+Phases 0–2 landed. The ordered language rungs live in README.md; all tests run
+through Docker via the `Makefile`.
 
 As items land, mark them ✅ in place and record the mechanics at the fix site / in
 CLAUDE.md — never restate them here, and delete a finished bug's backlog entry (per

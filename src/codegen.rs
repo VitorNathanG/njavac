@@ -32,7 +32,7 @@ use crate::classfile::{
     ClassFile, CodeAttribute, ConstantPool, Method as CfMethod, StackFrame, VerificationType,
 };
 use crate::diagnostic::{CompileResult, Diagnostic};
-use crate::sema::{self, Analysis, FrameLocal, MethodInfo, StackTy};
+use crate::sema::{self, Analysis, FrameLocal, MethodInfo, ResolvedCall, StackTy};
 use crate::span::Span;
 
 // ---- opcodes ----
@@ -775,11 +775,13 @@ fn preflight_stmt(stmt: &Stmt, info: &MethodInfo, exprs: &ExprArena) -> CompileR
             preflight_value(*value, true, stmt.span, info, exprs)?;
         }
         StmtKind::Expr(expr) => match &exprs[*expr] {
-            ExprKind::Println(arg) => {
-                // `getstatic System.out` leaves the receiver live while evaluating arg.
-                preflight_value(*arg, true, stmt.span, info, exprs)?;
+            ExprKind::Call { args, .. } => {
+                // The resolved receiver remains live while every argument is evaluated.
+                for arg in args.iter() {
+                    preflight_value(arg, true, stmt.span, info, exprs)?;
+                }
             }
-            _ => unreachable!("sema accepted a non-println expression statement"),
+            _ => unreachable!("sema accepted a non-call expression statement"),
         },
         StmtKind::If {
             cond,
@@ -812,6 +814,7 @@ fn preflight_value(
     }
     match &exprs[expr] {
         ExprKind::Name(_) => Ok(()),
+        ExprKind::Select { .. } => unreachable!("sema accepted a selection as a value"),
         ExprKind::Neg(inner) | ExprKind::BitNot(inner) | ExprKind::Paren(inner) => {
             preflight_value(*inner, base_live, span, info, exprs)
         }
@@ -829,7 +832,7 @@ fn preflight_value(
         | ExprKind::DoubleLit(_)
         | ExprKind::BoolLit(_)
         | ExprKind::CharLit(_) => Ok(()),
-        ExprKind::Println(_) => unreachable!("sema accepted println as a value"),
+        ExprKind::Call { .. } => unreachable!("sema accepted a void call as a value"),
         ExprKind::StringLit(_) => unreachable!("handled above"),
     }
 }
@@ -964,8 +967,8 @@ fn gen_method(
 /// Build the JVM method descriptor from the parsed signature.
 fn descriptor_of(method: &Method) -> String {
     let mut d = String::from("(");
-    for p in &method.params {
-        p.ty.write_descriptor(&mut d);
+    for parameter in &method.params {
+        parameter.ty.write_descriptor(&mut d);
     }
     d.push(')');
     method.return_type.write_descriptor(&mut d);
@@ -1655,42 +1658,55 @@ impl<'a> Gen<'a> {
 
     // -------- statements --------
 
-    /// `System.out.println(arg)`.
     fn gen_expr_stmt(&mut self, expr: ExprId) {
         match &self.exprs[expr] {
-            ExprKind::Println(arg) => self.gen_println(*arg),
+            ExprKind::Call { args, .. } => {
+                let result = self.gen_call(expr, args);
+                assert!(result.is_void(), "value-returning expression statement is unsupported");
+            }
             other => panic!("unsupported expression statement: {other:?}"),
         }
     }
 
-    fn gen_println(&mut self, arg: ExprId) {
-        let field = self
-            .cp
-            .fieldref("java/lang/System", "out", "Ljava/io/PrintStream;");
-        self.emitter.emit(Instruction::Field {
-            opcode: GETSTATIC,
-            index: field,
-            push_words: 1,
-        });
-
-        let ty = self.gen_value(arg);
-        let desc = match ty.as_primitive() {
-            Some(PrimitiveType::Int | PrimitiveType::Byte | PrimitiveType::Short) => "(I)V",
-            Some(PrimitiveType::Long) => "(J)V",
-            Some(PrimitiveType::Float) => "(F)V",
-            Some(PrimitiveType::Double) => "(D)V",
-            Some(PrimitiveType::Char) => "(C)V",
-            Some(PrimitiveType::Boolean) => "(Z)V",
-            None if ty.is_string() => "(Ljava/lang/String;)V",
-            None => unreachable!("unsupported println reference type"),
-        };
-        let method = self.cp.methodref("java/io/PrintStream", "println", desc);
-        self.emitter.emit(Instruction::Invoke {
-            opcode: INVOKEVIRTUAL,
-            index: method,
-            argument_words: ty.width(),
-            return_words: 0,
-        });
+    fn gen_call(&mut self, expr: ExprId, args: &crate::ast::CallArgs) -> Type {
+        let call = self.info.call(expr).clone();
+        match call {
+            ResolvedCall::Println { parameter_type } => {
+                let field = self
+                    .cp
+                    .fieldref("java/lang/System", "out", "Ljava/io/PrintStream;");
+                self.emitter.emit(Instruction::Field {
+                    opcode: GETSTATIC,
+                    index: field,
+                    push_words: 1,
+                });
+                assert_eq!(args.len(), 1, "resolved call arity changed");
+                for arg in args.iter() {
+                    self.gen_value(arg);
+                }
+                let descriptor = match parameter_type.as_primitive() {
+                    Some(PrimitiveType::Int) => "(I)V",
+                    Some(PrimitiveType::Long) => "(J)V",
+                    Some(PrimitiveType::Float) => "(F)V",
+                    Some(PrimitiveType::Double) => "(D)V",
+                    Some(PrimitiveType::Char) => "(C)V",
+                    Some(PrimitiveType::Boolean) => "(Z)V",
+                    Some(PrimitiveType::Byte | PrimitiveType::Short) => {
+                        unreachable!("sema did not select println(int)")
+                    }
+                    None if parameter_type.is_string() => "(Ljava/lang/String;)V",
+                    None => unreachable!("unsupported resolved println parameter"),
+                };
+                let method = self.cp.methodref("java/io/PrintStream", "println", descriptor);
+                self.emitter.emit(Instruction::Invoke {
+                    opcode: INVOKEVIRTUAL,
+                    index: method,
+                    argument_words: parameter_type.width(),
+                    return_words: 0,
+                });
+                Type::Void
+            }
+        }
     }
 
     /// Assign `value` into local `name`, coercing to the local's declared type.
@@ -2384,7 +2400,10 @@ fn fold_impl(exprs: &ExprArena, expr: ExprId, strict_logical: bool) -> Option<Co
         ExprKind::DoubleLit(v) => Const::Double(*v),
         ExprKind::BoolLit(b) => Const::Int(*b as i32),
         ExprKind::CharLit(v) => Const::Int(*v as i32),
-        ExprKind::StringLit(_) | ExprKind::Name(_) | ExprKind::Println(_) => return None,
+        ExprKind::StringLit(_)
+        | ExprKind::Name(_)
+        | ExprKind::Select { .. }
+        | ExprKind::Call { .. } => return None,
         ExprKind::Neg(e) => neg_const(fold_impl(exprs, *e, strict_logical)?),
         ExprKind::BitNot(e) => bitnot_const(fold_impl(exprs, *e, strict_logical)?),
         ExprKind::Not(e) => Const::Int((to_i32(fold_impl(exprs, *e, strict_logical)?) == 0) as i32),

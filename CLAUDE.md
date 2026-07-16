@@ -423,13 +423,16 @@ source → lexer::lex → parser::parse → sema::analyze → codegen::generate 
   represents Java types throughout the AST and sema; its copyable `PrimitiveType`
   leaf drives numeric promotion and opcode selection. `Type` centrally owns slot
   width, recursive descriptor writing, and verifier reference names; there is no
-  parallel semantic value-type enum. Every expression is a stable parser-assigned
-  `ExprId`; `CompilationUnit` owns the append-only `ExprArena` of `ExprKind`
+  parallel semantic value-type enum. Classes carry their canonical superclass and
+  methods carry their return `Type`, so constructor calls and descriptors consume
+  modeled facts rather than appending `Object`/`V`. Every expression is a stable
+  parser-assigned `ExprId`; `CompilationUnit` owns the append-only `ExprArena` of `ExprKind`
   payloads, statement roots and recursive children are IDs, and sema/codegen resolve
   those IDs through the arena while semantic types remain a parallel dense table.
 - **`parser`** → recursive descent for declarations/statements and a single
   precedence-climbing loop for expressions; `infix_binding_power` is the ordered
-  operator/associativity table.
+  operator/associativity table. Dotted invocation syntax remains structural
+  `Name`/`Select`/`Call`; the parser does not resolve `System.out.println`.
 - **`sema`** → supported-class-shape validation, operand-family checks, and
   occurrence-based local resolution: each declaration gets a stable `LocalId`,
   every `Name` span maps to it, and definite assignment is tracked by ID. Its
@@ -443,7 +446,10 @@ source → lexer::lex → parser::parse → sema::analyze → codegen::generate 
   verifier state is unchanged reuse one snapshot. Branch-local declarations remain
   an explicit unsupported boundary. Expression types are computed once during
   validation into a dense `ExprId`-indexed table; `type_of` is an indexed read of
-  the unified `Type`, with unary/binary numeric promotion already resolved.
+  the unified `Type`, with unary/binary numeric promotion already resolved. Method
+  invocations are resolved here too: a compact per-method table maps generic call
+  expressions to the selected library method and overload, which codegen consumes
+  without inspecting source names.
 - **`codegen`** → typed bytecode + `max_stack`/`max_locals` + `LineNumberTable`,
   via the `classfile` backend.
 - **`main`** is a thin javac-like CLI (`njavac [-d <dir>] <file.java> …`): it
