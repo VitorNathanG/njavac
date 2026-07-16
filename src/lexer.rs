@@ -16,7 +16,7 @@ use crate::diagnostic::{CompileResult, Diagnostic};
 use crate::span::Span;
 
 /// A single lexical token plus the 1-based source line it starts on.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Debug, PartialEq)]
 pub struct Token {
     pub kind: TokenKind,
     /// 1-based source line where the token begins.
@@ -30,7 +30,7 @@ pub struct Token {
 /// Note: `PartialEq` (not `Eq`) because the float literal variants carry
 /// `f32`/`f64`. The parser only ever compares against non-literal kinds, so
 /// partial equality is sufficient.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Debug, PartialEq)]
 pub enum TokenKind {
     // Keywords.
     Public,

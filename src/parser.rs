@@ -53,7 +53,12 @@ impl Parser {
     }
 
     fn bump(&mut self) -> Token {
-        let t = self.tokens[self.pos].clone();
+        let token = &mut self.tokens[self.pos];
+        let t = Token {
+            kind: std::mem::replace(&mut token.kind, TokenKind::Eof),
+            line: token.line,
+            span: token.span,
+        };
         // Never advance past the terminating Eof.
         if !matches!(t.kind, TokenKind::Eof) {
             self.pos += 1;
@@ -82,15 +87,15 @@ impl Parser {
 
     /// Consume an identifier, returning its name and source span.
     fn expect_ident_spanned(&mut self) -> CompileResult<(String, Span)> {
-        match self.peek().clone() {
-            TokenKind::Ident(name) => {
-                let span = self.bump().span;
-                Ok((name, span))
-            }
-            other => Err(Diagnostic::parse(
+        if matches!(self.peek(), TokenKind::Ident(_)) {
+            let token = self.bump();
+            let TokenKind::Ident(name) = token.kind else { unreachable!() };
+            Ok((name, token.span))
+        } else {
+            Err(Diagnostic::parse(
                 self.span(),
-                format!("expected identifier, found {:?}", other),
-            )),
+                format!("expected identifier, found {:?}", self.peek()),
+            ))
         }
     }
 
@@ -174,13 +179,11 @@ impl Parser {
 
     // A parameter type: a primitive or `String[]`.
     fn param_type(&mut self) -> CompileResult<Type> {
-        if let TokenKind::Ident(name) = self.peek().clone() {
-            if name == "String" {
-                self.bump();
-                self.expect(&TokenKind::LBracket)?;
-                self.expect(&TokenKind::RBracket)?;
-                return Ok(Type::StringArray);
-            }
+        if matches!(self.peek(), TokenKind::Ident(name) if name == "String") {
+            self.bump();
+            self.expect(&TokenKind::LBracket)?;
+            self.expect(&TokenKind::RBracket)?;
+            return Ok(Type::StringArray);
         }
         self.primitive_type()
     }
@@ -515,48 +518,23 @@ impl Parser {
 
     // primary -> literal | '(' expression ')' | System.out.println(arg) | name
     fn primary(&mut self) -> CompileResult<Expr> {
-        let expr = match self.peek().clone() {
-            TokenKind::IntLit(v) => {
-                self.bump();
-                Expr::IntLit(v)
-            }
-            TokenKind::LongLit(v) => {
-                self.bump();
-                Expr::LongLit(v)
-            }
-            TokenKind::FloatLit(v) => {
-                self.bump();
-                Expr::FloatLit(v)
-            }
-            TokenKind::DoubleLit(v) => {
-                self.bump();
-                Expr::DoubleLit(v)
-            }
-            TokenKind::CharLit(v) => {
-                self.bump();
-                Expr::CharLit(v)
-            }
-            TokenKind::True => {
-                self.bump();
-                Expr::BoolLit(true)
-            }
-            TokenKind::False => {
-                self.bump();
-                Expr::BoolLit(false)
-            }
-            TokenKind::StringLit(s) => {
-                self.bump();
-                Expr::StringLit(s)
-            }
+        let token = self.bump();
+        let expr = match token.kind {
+            TokenKind::IntLit(v) => Expr::IntLit(v),
+            TokenKind::LongLit(v) => Expr::LongLit(v),
+            TokenKind::FloatLit(v) => Expr::FloatLit(v),
+            TokenKind::DoubleLit(v) => Expr::DoubleLit(v),
+            TokenKind::CharLit(v) => Expr::CharLit(v),
+            TokenKind::True => Expr::BoolLit(true),
+            TokenKind::False => Expr::BoolLit(false),
+            TokenKind::StringLit(s) => Expr::StringLit(s),
             TokenKind::LParen => {
-                self.bump();
                 let inner = self.expression()?;
                 self.expect(&TokenKind::RParen)?;
                 Expr::Paren(Box::new(inner))
             }
             // `System.out.println(arg)` — the only call shape in the subset.
             TokenKind::Ident(name) if name == "System" => {
-                self.bump();
                 self.expect(&TokenKind::Dot)?;
                 let (out, out_span) = self.expect_ident_spanned()?;
                 if out != "out" {
@@ -578,13 +556,10 @@ impl Parser {
                 self.expect(&TokenKind::RParen)?;
                 Expr::Println(Box::new(arg))
             }
-            TokenKind::Ident(name) => {
-                let span = self.bump().span;
-                Expr::Name(Name { text: name, span })
-            }
+            TokenKind::Ident(name) => Expr::Name(Name { text: name, span: token.span }),
             other => {
                 return Err(Diagnostic::parse(
-                    self.span(),
+                    token.span,
                     format!("unexpected token in expression: {:?}", other),
                 ));
             }
