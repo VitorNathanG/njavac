@@ -16,20 +16,16 @@
 //! Each statement is tagged with the 1-based source line it begins on so codegen
 //! can rebuild the `LineNumberTable` byte-identically to javac.
 //!
-//! The parser panics on malformed input; the fixtures are well-formed.
-
 use crate::ast::{
     BinOp, Class, CmpOp, CompilationUnit, Expr, LogOp, Method, Param, Stmt, StmtKind, Type,
 };
-use crate::diagnostic::CompileResult;
+use crate::diagnostic::{CompileResult, Diagnostic};
 use crate::lexer::{Token, TokenKind};
 use crate::span::Span;
 
 /// Parse a token stream (as produced by `lexer::lex`) into a `CompilationUnit`.
-///
-/// Panics on any syntax error outside the supported subset.
 pub fn parse(tokens: Vec<Token>) -> CompileResult<CompilationUnit> {
-    Ok(Parser { tokens, pos: 0 }.compilation_unit())
+    Parser { tokens, pos: 0 }.compilation_unit()
 }
 
 struct Parser {
@@ -64,95 +60,105 @@ impl Parser {
         t
     }
 
-    /// Consume a token whose kind equals `expected`, or panic.
-    fn expect(&mut self, expected: &TokenKind) {
+    /// Consume a token whose kind equals `expected`.
+    fn expect(&mut self, expected: &TokenKind) -> CompileResult<()> {
         if self.peek() == expected {
             self.bump();
+            Ok(())
         } else {
-            panic!("expected {:?}, found {:?}", expected, self.peek());
+            Err(Diagnostic::parse(
+                self.span(),
+                format!("expected {:?}, found {:?}", expected, self.peek()),
+            ))
         }
     }
 
-    /// Consume an identifier, returning its name, or panic.
-    fn expect_ident(&mut self) -> String {
-        self.expect_ident_spanned().0
+    /// Consume an identifier, returning its name.
+    fn expect_ident(&mut self) -> CompileResult<String> {
+        Ok(self.expect_ident_spanned()?.0)
     }
 
-    /// Consume an identifier, returning its name and source span, or panic.
-    fn expect_ident_spanned(&mut self) -> (String, Span) {
+    /// Consume an identifier, returning its name and source span.
+    fn expect_ident_spanned(&mut self) -> CompileResult<(String, Span)> {
         match self.peek().clone() {
             TokenKind::Ident(name) => {
                 let span = self.bump().span;
-                (name, span)
+                Ok((name, span))
             }
-            other => panic!("expected identifier, found {:?}", other),
+            other => Err(Diagnostic::parse(
+                self.span(),
+                format!("expected identifier, found {:?}", other),
+            )),
         }
     }
 
     // compilation unit -> public class
-    fn compilation_unit(&mut self) -> CompilationUnit {
-        let class = self.class();
+    fn compilation_unit(&mut self) -> CompileResult<CompilationUnit> {
+        let class = self.class()?;
         // Everything after the top-level class must be end of input.
         if !matches!(self.peek(), TokenKind::Eof) {
-            panic!("unexpected trailing tokens: {:?}", self.peek());
+            return Err(Diagnostic::parse(
+                self.span(),
+                format!("unexpected trailing token: {:?}", self.peek()),
+            ));
         }
-        CompilationUnit { span: class.span, class }
+        Ok(CompilationUnit { span: class.span, class })
     }
 
     // `public class Name { <methods> }`
-    fn class(&mut self) -> Class {
+    fn class(&mut self) -> CompileResult<Class> {
         let line = self.line();
         let start = self.span();
-        self.expect(&TokenKind::Public);
-        self.expect(&TokenKind::Class);
-        let (name, name_span) = self.expect_ident_spanned();
-        self.expect(&TokenKind::LBrace);
+        self.expect(&TokenKind::Public)?;
+        self.expect(&TokenKind::Class)?;
+        let (name, name_span) = self.expect_ident_spanned()?;
+        self.expect(&TokenKind::LBrace)?;
 
         let mut methods = Vec::new();
         while !matches!(self.peek(), TokenKind::RBrace) {
-            methods.push(self.method());
+            methods.push(self.method()?);
         }
         let close_line = self.line();
-        self.expect(&TokenKind::RBrace);
+        self.expect(&TokenKind::RBrace)?;
 
         let span = start.join(self.previous_span());
-        Class { span, name, name_span, line, close_line, methods }
+        Ok(Class { span, name, name_span, line, close_line, methods })
     }
 
     // `public static void main(String[] args) { <stmts> }`
-    fn method(&mut self) -> Method {
+    fn method(&mut self) -> CompileResult<Method> {
         let start = self.span();
-        self.expect(&TokenKind::Public);
-        self.expect(&TokenKind::Static);
-        self.expect(&TokenKind::Void);
-        let (name, name_span) = self.expect_ident_spanned();
+        self.expect(&TokenKind::Public)?;
+        self.expect(&TokenKind::Static)?;
+        self.expect(&TokenKind::Void)?;
+        let (name, name_span) = self.expect_ident_spanned()?;
 
-        self.expect(&TokenKind::LParen);
-        let params = self.params();
-        self.expect(&TokenKind::RParen);
+        self.expect(&TokenKind::LParen)?;
+        let params = self.params()?;
+        self.expect(&TokenKind::RParen)?;
 
-        self.expect(&TokenKind::LBrace);
+        self.expect(&TokenKind::LBrace)?;
         let mut body = Vec::new();
         while !matches!(self.peek(), TokenKind::RBrace) {
-            body.push(self.statement());
+            body.push(self.statement()?);
         }
         let close_line = self.line();
-        self.expect(&TokenKind::RBrace);
+        self.expect(&TokenKind::RBrace)?;
 
         let span = start.join(self.previous_span());
-        Method { span, name, name_span, is_static: true, params, body, close_line }
+        Ok(Method { span, name, name_span, is_static: true, params, body, close_line })
     }
 
     // Formal parameter list. The subset only ever has `String[] args`.
-    fn params(&mut self) -> Vec<Param> {
+    fn params(&mut self) -> CompileResult<Vec<Param>> {
         let mut params = Vec::new();
         if matches!(self.peek(), TokenKind::RParen) {
-            return params;
+            return Ok(params);
         }
         loop {
             let start = self.span();
-            let ty = self.param_type();
-            let (name, name_span) = self.expect_ident_spanned();
+            let ty = self.param_type()?;
+            let (name, name_span) = self.expect_ident_spanned()?;
             let span = start.join(name_span);
             params.push(Param { span, name, name_span, ty });
             if matches!(self.peek(), TokenKind::Comma) {
@@ -161,24 +167,24 @@ impl Parser {
                 break;
             }
         }
-        params
+        Ok(params)
     }
 
     // A parameter type: a primitive or `String[]`.
-    fn param_type(&mut self) -> Type {
+    fn param_type(&mut self) -> CompileResult<Type> {
         if let TokenKind::Ident(name) = self.peek().clone() {
             if name == "String" {
                 self.bump();
-                self.expect(&TokenKind::LBracket);
-                self.expect(&TokenKind::RBracket);
-                return Type::StringArray;
+                self.expect(&TokenKind::LBracket)?;
+                self.expect(&TokenKind::RBracket)?;
+                return Ok(Type::StringArray);
             }
         }
         self.primitive_type()
     }
 
-    /// Consume a primitive type keyword, or panic.
-    fn primitive_type(&mut self) -> Type {
+    /// Consume a primitive type keyword.
+    fn primitive_type(&mut self) -> CompileResult<Type> {
         let ty = match self.peek() {
             TokenKind::Int => Type::Int,
             TokenKind::Long => Type::Long,
@@ -188,115 +194,129 @@ impl Parser {
             TokenKind::Char => Type::Char,
             TokenKind::Byte => Type::Byte,
             TokenKind::Short => Type::Short,
-            other => panic!("expected a type, found {:?}", other),
+            other => {
+                return Err(Diagnostic::parse(
+                    self.span(),
+                    format!("expected a type, found {:?}", other),
+                ));
+            }
         };
         self.bump();
-        ty
+        Ok(ty)
     }
 
     // A single statement.
-    fn statement(&mut self) -> Stmt {
+    fn statement(&mut self) -> CompileResult<Stmt> {
         let line = self.line();
         let start = self.span();
         let kind = if matches!(self.peek(), TokenKind::If) {
-            self.if_statement()
+            self.if_statement()?
         } else if is_primitive_type(self.peek()) {
-            self.local_decl()
+            self.local_decl()?
         } else if matches!(self.peek(), TokenKind::PlusPlus | TokenKind::MinusMinus) {
             // Prefix `++x;` / `--x;` — in statement position the produced value is
             // discarded, so pre/post is irrelevant.
             let op = if matches!(self.peek(), TokenKind::PlusPlus) { BinOp::Add } else { BinOp::Sub };
             self.bump();
-            let name = self.expect_ident();
-            self.expect(&TokenKind::Semicolon);
+            let name = self.expect_ident()?;
+            self.expect(&TokenKind::Semicolon)?;
             StmtKind::CompoundAssign { name, op, value: Expr::IntLit(1) }
-        } else if matches!(self.peek(), TokenKind::Ident(_)) {
-            self.ident_statement()
+        } else if let TokenKind::Ident(name) = self.peek() {
+            if is_unsupported_statement_keyword(name) {
+                return Err(Diagnostic::unsupported_syntax(
+                    self.span(),
+                    format!("unsupported Java statement: {name}"),
+                ));
+            }
+            self.ident_statement()?
         } else {
-            panic!("unexpected statement start: {:?}", self.peek());
+            return Err(Diagnostic::parse(
+                self.span(),
+                format!("unexpected statement start: {:?}", self.peek()),
+            ));
         };
         let span = start.join(self.previous_span());
-        Stmt { span, line, kind }
+        Ok(Stmt { span, line, kind })
     }
 
     // `if (cond) <then> [else <else>]`. Each arm is a brace-block or a single
     // statement; `else if` falls out naturally as an `If` in the else arm.
-    fn if_statement(&mut self) -> StmtKind {
-        self.expect(&TokenKind::If);
-        self.expect(&TokenKind::LParen);
-        let cond = self.expression();
-        self.expect(&TokenKind::RParen);
-        let then_branch = self.block_or_statement();
+    fn if_statement(&mut self) -> CompileResult<StmtKind> {
+        self.expect(&TokenKind::If)?;
+        self.expect(&TokenKind::LParen)?;
+        let cond = self.expression()?;
+        self.expect(&TokenKind::RParen)?;
+        let then_branch = self.block_or_statement()?;
         let else_branch = if matches!(self.peek(), TokenKind::Else) {
             self.bump();
-            Some(self.block_or_statement())
+            Some(self.block_or_statement()?)
         } else {
             None
         };
-        StmtKind::If { cond, then_branch, else_branch }
+        Ok(StmtKind::If { cond, then_branch, else_branch })
     }
 
     // A brace-delimited block, or a single statement (Java allows both after
     // `if (...)`/`else`). Returned as a statement list either way.
-    fn block_or_statement(&mut self) -> Vec<Stmt> {
+    fn block_or_statement(&mut self) -> CompileResult<Vec<Stmt>> {
         if matches!(self.peek(), TokenKind::LBrace) {
             self.bump();
             let mut stmts = Vec::new();
             while !matches!(self.peek(), TokenKind::RBrace) {
-                stmts.push(self.statement());
+                stmts.push(self.statement()?);
             }
-            self.expect(&TokenKind::RBrace);
-            stmts
+            self.expect(&TokenKind::RBrace)?;
+            Ok(stmts)
         } else {
-            vec![self.statement()]
+            Ok(vec![self.statement()?])
         }
     }
 
     // `<ty> name = init;` (initializer optional).
-    fn local_decl(&mut self) -> StmtKind {
-        let ty = self.primitive_type();
-        let name = self.expect_ident();
+    fn local_decl(&mut self) -> CompileResult<StmtKind> {
+        let ty = self.primitive_type()?;
+        let name = self.expect_ident()?;
         let init = if matches!(self.peek(), TokenKind::Assign) {
             self.bump();
-            Some(self.expression())
+            Some(self.expression()?)
         } else {
             None
         };
-        self.expect(&TokenKind::Semicolon);
-        StmtKind::LocalDecl { ty, name, init }
+        self.expect(&TokenKind::Semicolon)?;
+        Ok(StmtKind::LocalDecl { ty, name, init })
     }
 
     // A statement beginning with an identifier: plain/compound assignment,
     // post-`++`/`--`, or an expression statement (`System.out.println(...)`).
-    fn ident_statement(&mut self) -> StmtKind {
+    fn ident_statement(&mut self) -> CompileResult<StmtKind> {
         // `System.out.println(...)` is the only expression statement; it is an
         // identifier followed by `.`, so anything with a `.` next is that form.
         match self.peek_kind(1) {
             TokenKind::Assign => {
-                let name = self.expect_ident();
-                self.expect(&TokenKind::Assign);
-                let value = self.expression();
-                self.expect(&TokenKind::Semicolon);
-                StmtKind::Assign { name, value }
+                let name = self.expect_ident()?;
+                self.expect(&TokenKind::Assign)?;
+                let value = self.expression()?;
+                self.expect(&TokenKind::Semicolon)?;
+                Ok(StmtKind::Assign { name, value })
             }
             k if compound_op(k).is_some() => {
-                let name = self.expect_ident();
+                let name = self.expect_ident()?;
                 let op = compound_op(&self.bump().kind).unwrap();
-                let value = self.expression();
-                self.expect(&TokenKind::Semicolon);
-                StmtKind::CompoundAssign { name, op, value }
+                let value = self.expression()?;
+                self.expect(&TokenKind::Semicolon)?;
+                Ok(StmtKind::CompoundAssign { name, op, value })
             }
             TokenKind::PlusPlus | TokenKind::MinusMinus => {
-                let name = self.expect_ident();
+                let name = self.expect_ident()?;
                 let op = if matches!(self.peek(), TokenKind::PlusPlus) { BinOp::Add } else { BinOp::Sub };
                 self.bump();
-                self.expect(&TokenKind::Semicolon);
-                StmtKind::CompoundAssign { name, op, value: Expr::IntLit(1) }
+                self.expect(&TokenKind::Semicolon)?;
+                Ok(StmtKind::CompoundAssign { name, op, value: Expr::IntLit(1) })
             }
             _ => {
-                let expr = self.expression();
-                self.expect(&TokenKind::Semicolon);
-                StmtKind::Expr(expr)
+                let expr = self.expression()?;
+                self.expect(&TokenKind::Semicolon)?;
+                Ok(StmtKind::Expr(expr))
             }
         }
     }
@@ -309,65 +329,65 @@ impl Parser {
 
     // ---- expressions, loosest precedence first ----
 
-    fn expression(&mut self) -> Expr {
+    fn expression(&mut self) -> CompileResult<Expr> {
         self.logical_or()
     }
 
     // `||` — the loosest binary level, below `&&`. Left-associative
     // (`a || b || c` = `Or(Or(a, b), c)`, matching javac's genCond nesting).
-    fn logical_or(&mut self) -> Expr {
-        let mut left = self.logical_and();
+    fn logical_or(&mut self) -> CompileResult<Expr> {
+        let mut left = self.logical_and()?;
         while matches!(self.peek(), TokenKind::PipePipe) {
             self.bump();
-            let right = self.logical_and();
+            let right = self.logical_and()?;
             left = logical(LogOp::Or, left, right);
         }
-        left
+        Ok(left)
     }
 
     // `&&` — below `||`, above the bitwise `|`.
-    fn logical_and(&mut self) -> Expr {
-        let mut left = self.bit_or();
+    fn logical_and(&mut self) -> CompileResult<Expr> {
+        let mut left = self.bit_or()?;
         while matches!(self.peek(), TokenKind::AmpAmp) {
             self.bump();
-            let right = self.bit_or();
+            let right = self.bit_or()?;
             left = logical(LogOp::And, left, right);
         }
-        left
+        Ok(left)
     }
 
-    fn bit_or(&mut self) -> Expr {
-        let mut left = self.bit_xor();
+    fn bit_or(&mut self) -> CompileResult<Expr> {
+        let mut left = self.bit_xor()?;
         while matches!(self.peek(), TokenKind::Pipe) {
             self.bump();
-            let right = self.bit_xor();
+            let right = self.bit_xor()?;
             left = binary(BinOp::Or, left, right);
         }
-        left
+        Ok(left)
     }
 
-    fn bit_xor(&mut self) -> Expr {
-        let mut left = self.bit_and();
+    fn bit_xor(&mut self) -> CompileResult<Expr> {
+        let mut left = self.bit_and()?;
         while matches!(self.peek(), TokenKind::Caret) {
             self.bump();
-            let right = self.bit_and();
+            let right = self.bit_and()?;
             left = binary(BinOp::Xor, left, right);
         }
-        left
+        Ok(left)
     }
 
-    fn bit_and(&mut self) -> Expr {
-        let mut left = self.equality();
+    fn bit_and(&mut self) -> CompileResult<Expr> {
+        let mut left = self.equality()?;
         while matches!(self.peek(), TokenKind::Amp) {
             self.bump();
-            let right = self.equality();
+            let right = self.equality()?;
             left = binary(BinOp::And, left, right);
         }
-        left
+        Ok(left)
     }
 
-    fn equality(&mut self) -> Expr {
-        let mut left = self.relational();
+    fn equality(&mut self) -> CompileResult<Expr> {
+        let mut left = self.relational()?;
         loop {
             let op = match self.peek() {
                 TokenKind::EqEq => CmpOp::Eq,
@@ -375,14 +395,14 @@ impl Parser {
                 _ => break,
             };
             self.bump();
-            let right = self.relational();
+            let right = self.relational()?;
             left = compare(op, left, right);
         }
-        left
+        Ok(left)
     }
 
-    fn relational(&mut self) -> Expr {
-        let mut left = self.shift();
+    fn relational(&mut self) -> CompileResult<Expr> {
+        let mut left = self.shift()?;
         loop {
             let op = match self.peek() {
                 TokenKind::Lt => CmpOp::Lt,
@@ -392,14 +412,14 @@ impl Parser {
                 _ => break,
             };
             self.bump();
-            let right = self.shift();
+            let right = self.shift()?;
             left = compare(op, left, right);
         }
-        left
+        Ok(left)
     }
 
-    fn shift(&mut self) -> Expr {
-        let mut left = self.additive();
+    fn shift(&mut self) -> CompileResult<Expr> {
+        let mut left = self.additive()?;
         loop {
             let op = match self.peek() {
                 TokenKind::Shl => BinOp::Shl,
@@ -408,14 +428,14 @@ impl Parser {
                 _ => break,
             };
             self.bump();
-            let right = self.additive();
+            let right = self.additive()?;
             left = binary(op, left, right);
         }
-        left
+        Ok(left)
     }
 
-    fn additive(&mut self) -> Expr {
-        let mut left = self.multiplicative();
+    fn additive(&mut self) -> CompileResult<Expr> {
+        let mut left = self.multiplicative()?;
         loop {
             let op = match self.peek() {
                 TokenKind::Plus => BinOp::Add,
@@ -423,14 +443,14 @@ impl Parser {
                 _ => break,
             };
             self.bump();
-            let right = self.multiplicative();
+            let right = self.multiplicative()?;
             left = binary(op, left, right);
         }
-        left
+        Ok(left)
     }
 
-    fn multiplicative(&mut self) -> Expr {
-        let mut left = self.unary();
+    fn multiplicative(&mut self) -> CompileResult<Expr> {
+        let mut left = self.unary()?;
         loop {
             let op = match self.peek() {
                 TokenKind::Star => BinOp::Mul,
@@ -439,35 +459,36 @@ impl Parser {
                 _ => break,
             };
             self.bump();
-            let right = self.unary();
+            let right = self.unary()?;
             left = binary(op, left, right);
         }
-        left
+        Ok(left)
     }
 
     // unary -> '-' unary | '~' unary | '(' primitive ')' unary | primary
-    fn unary(&mut self) -> Expr {
-        match self.peek() {
+    fn unary(&mut self) -> CompileResult<Expr> {
+        let expr = match self.peek() {
             TokenKind::Minus => {
                 self.bump();
-                Expr::Neg(Box::new(self.unary()))
+                Expr::Neg(Box::new(self.unary()?))
             }
             TokenKind::Tilde => {
                 self.bump();
-                Expr::BitNot(Box::new(self.unary()))
+                Expr::BitNot(Box::new(self.unary()?))
             }
             TokenKind::Bang => {
                 self.bump();
-                Expr::Not(Box::new(self.unary()))
+                Expr::Not(Box::new(self.unary()?))
             }
             TokenKind::LParen if self.is_cast() => {
                 self.bump(); // (
-                let ty = self.primitive_type();
-                self.expect(&TokenKind::RParen);
-                Expr::Cast { ty, expr: Box::new(self.unary()) }
+                let ty = self.primitive_type()?;
+                self.expect(&TokenKind::RParen)?;
+                Expr::Cast { ty, expr: Box::new(self.unary()?) }
             }
-            _ => self.primary(),
-        }
+            _ => return self.primary(),
+        };
+        Ok(expr)
     }
 
     /// A `(` begins a cast iff it is immediately followed by a primitive type
@@ -478,8 +499,8 @@ impl Parser {
     }
 
     // primary -> literal | '(' expression ')' | System.out.println(arg) | name
-    fn primary(&mut self) -> Expr {
-        match self.peek().clone() {
+    fn primary(&mut self) -> CompileResult<Expr> {
+        let expr = match self.peek().clone() {
             TokenKind::IntLit(v) => {
                 self.bump();
                 Expr::IntLit(v)
@@ -514,34 +535,46 @@ impl Parser {
             }
             TokenKind::LParen => {
                 self.bump();
-                let inner = self.expression();
-                self.expect(&TokenKind::RParen);
+                let inner = self.expression()?;
+                self.expect(&TokenKind::RParen)?;
                 Expr::Paren(Box::new(inner))
             }
             // `System.out.println(arg)` — the only call shape in the subset.
             TokenKind::Ident(name) if name == "System" => {
                 self.bump();
-                self.expect(&TokenKind::Dot);
-                let out = self.expect_ident();
+                self.expect(&TokenKind::Dot)?;
+                let (out, out_span) = self.expect_ident_spanned()?;
                 if out != "out" {
-                    panic!("expected System.out, found System.{}", out);
+                    return Err(Diagnostic::parse(
+                        out_span,
+                        format!("expected System.out, found System.{out}"),
+                    ));
                 }
-                self.expect(&TokenKind::Dot);
-                let println = self.expect_ident();
+                self.expect(&TokenKind::Dot)?;
+                let (println, println_span) = self.expect_ident_spanned()?;
                 if println != "println" {
-                    panic!("expected System.out.println, found System.out.{}", println);
+                    return Err(Diagnostic::parse(
+                        println_span,
+                        format!("expected System.out.println, found System.out.{println}"),
+                    ));
                 }
-                self.expect(&TokenKind::LParen);
-                let arg = self.expression();
-                self.expect(&TokenKind::RParen);
+                self.expect(&TokenKind::LParen)?;
+                let arg = self.expression()?;
+                self.expect(&TokenKind::RParen)?;
                 Expr::Println(Box::new(arg))
             }
             TokenKind::Ident(name) => {
                 self.bump();
                 Expr::Name(name)
             }
-            other => panic!("unexpected token in expression: {:?}", other),
-        }
+            other => {
+                return Err(Diagnostic::parse(
+                    self.span(),
+                    format!("unexpected token in expression: {:?}", other),
+                ));
+            }
+        };
+        Ok(expr)
     }
 }
 
@@ -586,5 +619,22 @@ fn is_primitive_type(k: &TokenKind) -> bool {
             | TokenKind::Char
             | TokenKind::Byte
             | TokenKind::Short
+    )
+}
+
+fn is_unsupported_statement_keyword(name: &str) -> bool {
+    matches!(
+        name,
+        "while"
+            | "for"
+            | "do"
+            | "switch"
+            | "return"
+            | "throw"
+            | "try"
+            | "synchronized"
+            | "assert"
+            | "break"
+            | "continue"
     )
 }

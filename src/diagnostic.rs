@@ -81,6 +81,18 @@ impl Diagnostic {
         }
     }
 
+    pub fn lexical(span: Span, message: impl Into<String>) -> Self {
+        Self::error(DiagnosticCode::LexicalError, span, message)
+    }
+
+    pub fn parse(span: Span, message: impl Into<String>) -> Self {
+        Self::error(DiagnosticCode::ParseError, span, message)
+    }
+
+    pub fn unsupported_syntax(span: Span, message: impl Into<String>) -> Self {
+        Self::error(DiagnosticCode::UnsupportedSyntax, span, message)
+    }
+
     pub const fn kind(&self) -> ErrorKind {
         self.code.kind()
     }

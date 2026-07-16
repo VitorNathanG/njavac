@@ -12,7 +12,7 @@
 //! Character literals decode escapes (including octal and `\uXXXX`) to a UTF-16
 //! code unit. Source is assumed ASCII outside of literal escapes.
 
-use crate::diagnostic::CompileResult;
+use crate::diagnostic::{CompileResult, Diagnostic};
 use crate::span::Span;
 
 /// A single lexical token plus the 1-based source line it starts on.
@@ -117,11 +117,8 @@ pub enum TokenKind {
 }
 
 /// Tokenize `source` into a flat token stream terminated by a single `Eof`.
-///
-/// Panics on lexical errors (unterminated string/comment, unknown character,
-/// bad escape). The fixtures are well-formed, so this stays simple.
 pub fn lex(source: &str) -> CompileResult<Vec<Token>> {
-    Ok(Lexer::new(source).run())
+    Lexer::new(source).run()
 }
 
 struct Lexer<'a> {
@@ -153,42 +150,42 @@ impl<'a> Lexer<'a> {
         b
     }
 
-    fn run(mut self) -> Vec<Token> {
+    fn run(mut self) -> CompileResult<Vec<Token>> {
         // Presize: on this subset there is roughly one token per ~3 source bytes,
         // so this avoids the token vec reallocating as it grows (the lexer was the
         // top self-time function and RawVec::grow_one the top allocator path).
         let mut tokens = Vec::with_capacity(self.bytes.len() / 3 + 8);
         loop {
-            self.skip_trivia();
+            self.skip_trivia()?;
             let line = self.line;
             let start = self.pos;
             let b = match self.peek() {
                 None => {
                     tokens.push(Token { kind: TokenKind::Eof, line, span: Span::empty(start) });
-                    return tokens;
+                    return Ok(tokens);
                 }
                 Some(b) => b,
             };
 
             let kind = if b == b'"' {
-                self.string_literal()
+                self.string_literal()?
             } else if b == b'\'' {
-                self.char_literal()
+                self.char_literal()?
             } else if b.is_ascii_digit() {
-                self.number()
+                self.number()?
             } else if b == b'.' && self.peek2().is_some_and(|c| c.is_ascii_digit()) {
-                self.number()
+                self.number()?
             } else if is_ident_start(b) {
                 self.ident_or_keyword()
             } else {
-                self.punct()
+                self.punct()?
             };
             tokens.push(Token { kind, line, span: Span::new(start, self.pos) });
         }
     }
 
     /// Skip whitespace and both comment styles, repeatedly.
-    fn skip_trivia(&mut self) {
+    fn skip_trivia(&mut self) -> CompileResult<()> {
         loop {
             match self.peek() {
                 Some(b) if b == b' ' || b == b'\t' || b == b'\r' || b == b'\n' => {
@@ -205,11 +202,17 @@ impl<'a> Lexer<'a> {
                     }
                 }
                 Some(b'/') if self.peek2() == Some(b'*') => {
+                    let start = self.pos;
                     self.bump();
                     self.bump();
                     loop {
                         match self.peek() {
-                            None => panic!("unterminated block comment"),
+                            None => {
+                                return Err(Diagnostic::lexical(
+                                    Span::new(start, self.pos),
+                                    "unterminated block comment",
+                                ));
+                            }
                             Some(b'*') if self.peek2() == Some(b'/') => {
                                 self.bump();
                                 self.bump();
@@ -221,25 +224,36 @@ impl<'a> Lexer<'a> {
                         }
                     }
                 }
-                _ => return,
+                _ => return Ok(()),
             }
         }
     }
 
-    fn string_literal(&mut self) -> TokenKind {
+    fn string_literal(&mut self) -> CompileResult<TokenKind> {
+        let start = self.pos;
         self.bump(); // opening quote
         let mut s = String::new();
         loop {
             match self.peek() {
-                None => panic!("unterminated string literal"),
-                Some(b'\n') => panic!("newline in string literal"),
+                None => {
+                    return Err(Diagnostic::lexical(
+                        Span::new(start, self.pos),
+                        "unterminated string literal",
+                    ));
+                }
+                Some(b'\n') => {
+                    return Err(Diagnostic::lexical(
+                        Span::new(start, self.pos),
+                        "newline in string literal",
+                    ));
+                }
                 Some(b'"') => {
                     self.bump();
-                    return TokenKind::StringLit(s);
+                    return Ok(TokenKind::StringLit(s));
                 }
                 Some(b'\\') => {
                     self.bump();
-                    let cp = self.decode_escape();
+                    let cp = self.decode_escape()?;
                     s.push(char::from_u32(cp).unwrap_or('\u{FFFD}'));
                 }
                 Some(b) => {
@@ -250,14 +264,26 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    fn char_literal(&mut self) -> TokenKind {
+    fn char_literal(&mut self) -> CompileResult<TokenKind> {
+        let start = self.pos;
         self.bump(); // opening '
         let cp = match self.peek() {
-            None => panic!("unterminated character literal"),
-            Some(b'\'') => panic!("empty character literal"),
+            None => {
+                return Err(Diagnostic::lexical(
+                    Span::new(start, self.pos),
+                    "unterminated character literal",
+                ));
+            }
+            Some(b'\'') => {
+                self.bump();
+                return Err(Diagnostic::lexical(
+                    Span::new(start, self.pos),
+                    "empty character literal",
+                ));
+            }
             Some(b'\\') => {
                 self.bump();
-                self.decode_escape()
+                self.decode_escape()?
             }
             Some(b) => {
                 self.bump();
@@ -268,17 +294,28 @@ impl<'a> Lexer<'a> {
             Some(b'\'') => {
                 self.bump();
             }
-            _ => panic!("unterminated character literal"),
+            _ => {
+                return Err(Diagnostic::lexical(
+                    Span::new(start, self.pos),
+                    "unterminated character literal",
+                ));
+            }
         }
-        TokenKind::CharLit(cp as u16)
+        Ok(TokenKind::CharLit(cp as u16))
     }
 
     /// Decode a string/char escape, the backslash already consumed. Returns the
     /// resulting code point. Handles the simple escapes, `\s` (Java 15), octal
     /// escapes `\0`..`\377`, and `\uXXXX` (one or more `u`s, then 4 hex digits).
-    fn decode_escape(&mut self) -> u32 {
+    fn decode_escape(&mut self) -> CompileResult<u32> {
+        let start = self.pos.saturating_sub(1);
         let e = match self.peek() {
-            None => panic!("unterminated escape"),
+            None => {
+                return Err(Diagnostic::lexical(
+                    Span::new(start, self.pos),
+                    "unterminated escape",
+                ));
+            }
             Some(e) => e,
         };
         // Octal escape: \0 .. \377 (1-3 octal digits; 3 only when the first is 0-3).
@@ -295,10 +332,10 @@ impl<'a> Lexer<'a> {
                     _ => break,
                 }
             }
-            return val;
+            return Ok(val);
         }
         self.bump();
-        match e {
+        let cp = match e {
             b't' => 0x09,
             b'n' => 0x0A,
             b'r' => 0x0D,
@@ -317,20 +354,32 @@ impl<'a> Lexer<'a> {
                 for _ in 0..4 {
                     let h = match self.peek() {
                         Some(c) if c.is_ascii_hexdigit() => c,
-                        _ => panic!("bad \\u escape"),
+                        _ => {
+                            return Err(Diagnostic::lexical(
+                                Span::new(start, self.pos),
+                                "bad \\u escape",
+                            ));
+                        }
                     };
                     self.bump();
                     val = val * 16 + (h as char).to_digit(16).unwrap();
                 }
                 val
             }
-            other => panic!("unknown escape: \\{}", other as char),
-        }
+            other => {
+                return Err(Diagnostic::lexical(
+                    Span::new(start, self.pos),
+                    format!("unknown escape: \\{}", other as char),
+                ));
+            }
+        };
+        Ok(cp)
     }
 
     /// Scan a numeric literal (integer or floating point) and resolve it to a
     /// typed value token.
-    fn number(&mut self) -> TokenKind {
+    fn number(&mut self) -> CompileResult<TokenKind> {
+        let start = self.pos;
         // Hex / binary integer prefixes: 0x.. / 0b.. (never floating in the subset).
         if self.peek() == Some(b'0') && matches!(self.peek2(), Some(b'x' | b'X' | b'b' | b'B')) {
             self.bump(); // 0
@@ -350,9 +399,13 @@ impl<'a> Lexer<'a> {
             }
             if matches!(self.peek(), Some(b'L' | b'l')) {
                 self.bump();
-                return TokenKind::LongLit(long_from_str(&digits, radix));
+                return long_from_str(&digits, radix)
+                    .map(TokenKind::LongLit)
+                    .map_err(|message| Diagnostic::lexical(Span::new(start, self.pos), message));
             }
-            return TokenKind::IntLit(int_from_str(&digits, radix));
+            return int_from_str(&digits, radix)
+                .map(TokenKind::IntLit)
+                .map_err(|message| Diagnostic::lexical(Span::new(start, self.pos), message));
         }
 
         // Decimal / octal integer, or floating point.
@@ -409,24 +462,36 @@ impl<'a> Lexer<'a> {
             Some(b'L' | b'l') => {
                 self.bump();
                 let radix = if is_octal(&text) { 8 } else { 10 };
-                return TokenKind::LongLit(long_from_str(&text, radix));
+                return long_from_str(&text, radix)
+                    .map(TokenKind::LongLit)
+                    .map_err(|message| Diagnostic::lexical(Span::new(start, self.pos), message));
             }
             Some(b'f' | b'F') => {
                 self.bump();
-                return TokenKind::FloatLit(text.parse().expect("float literal"));
+                return text.parse().map(TokenKind::FloatLit).map_err(|_| {
+                    Diagnostic::lexical(Span::new(start, self.pos), "malformed float literal")
+                });
             }
             Some(b'd' | b'D') => {
                 self.bump();
-                return TokenKind::DoubleLit(text.parse().expect("double literal"));
+                return text.parse().map(TokenKind::DoubleLit).map_err(|_| {
+                    Diagnostic::lexical(Span::new(start, self.pos), "malformed double literal")
+                });
             }
             _ => {}
         }
         if is_float {
-            TokenKind::DoubleLit(text.parse().expect("double literal"))
+            text.parse().map(TokenKind::DoubleLit).map_err(|_| {
+                Diagnostic::lexical(Span::new(start, self.pos), "malformed double literal")
+            })
         } else if is_octal(&text) {
-            TokenKind::IntLit(int_from_str(&text, 8))
+            int_from_str(&text, 8)
+                .map(TokenKind::IntLit)
+                .map_err(|message| Diagnostic::lexical(Span::new(start, self.pos), message))
         } else {
-            TokenKind::IntLit(int_from_str(&text, 10))
+            int_from_str(&text, 10)
+                .map(TokenKind::IntLit)
+                .map_err(|message| Diagnostic::lexical(Span::new(start, self.pos), message))
         }
     }
 
@@ -462,9 +527,9 @@ impl<'a> Lexer<'a> {
     }
 
     /// Punctuation and operators, longest-match first for the multi-char forms.
-    fn punct(&mut self) -> TokenKind {
+    fn punct(&mut self) -> CompileResult<TokenKind> {
         let b = self.bump();
-        match b {
+        let kind = match b {
             b'{' => TokenKind::LBrace,
             b'}' => TokenKind::RBrace,
             b'(' => TokenKind::LParen,
@@ -487,8 +552,20 @@ impl<'a> Lexer<'a> {
             b'^' => self.if_eq(TokenKind::CaretEq, TokenKind::Caret),
             b'<' => self.less(),
             b'>' => self.greater(),
-            other => panic!("unexpected character: {:?}", other as char),
-        }
+            b'?' | b':' | b'@' => {
+                return Err(Diagnostic::unsupported_syntax(
+                    Span::new(self.pos - 1, self.pos),
+                    format!("unsupported Java punctuator: {}", b as char),
+                ));
+            }
+            other => {
+                return Err(Diagnostic::lexical(
+                    Span::new(self.pos - 1, self.pos),
+                    format!("unexpected character: {:?}", other as char),
+                ));
+            }
+        };
+        Ok(kind)
     }
 
     /// For `+`/`-`: a doubled form (`++`/`--`), an `=` form (`+=`), else single.
@@ -587,18 +664,18 @@ fn is_octal(text: &str) -> bool {
 /// Parse an integer literal's digit text (underscores already stripped) in the
 /// given radix to its 32-bit pattern. Values are read into a `u32` so the full
 /// unsigned range (`0xFFFFFFFF` -> `-1`) round-trips to the right `i32` bits.
-fn int_from_str(digits: &str, radix: u32) -> i32 {
+fn int_from_str(digits: &str, radix: u32) -> Result<i32, String> {
     u32::from_str_radix(digits, radix)
-        .unwrap_or_else(|_| panic!("integer literal out of range: {digits} (radix {radix})"))
-        as i32
+        .map(|value| value as i32)
+        .map_err(|_| format!("malformed or out-of-range integer literal (radix {radix})"))
 }
 
 /// Parse a `long` literal's digit text in the given radix to its 64-bit pattern,
 /// via `u64` for the same full-range round-trip.
-fn long_from_str(digits: &str, radix: u32) -> i64 {
+fn long_from_str(digits: &str, radix: u32) -> Result<i64, String> {
     u64::from_str_radix(digits, radix)
-        .unwrap_or_else(|_| panic!("long literal out of range: {digits} (radix {radix})"))
-        as i64
+        .map(|value| value as i64)
+        .map_err(|_| format!("malformed or out-of-range long literal (radix {radix})"))
 }
 
 fn is_ident_start(b: u8) -> bool {
