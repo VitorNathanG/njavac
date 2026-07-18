@@ -106,6 +106,25 @@ pub(super) fn report_finding(
     println!("  wrote raw behavioral finding to {}", out_java.display());
 }
 
+pub(super) fn report_compiler_finding(
+    cfg: &Config,
+    prog: &Prog,
+    src: &str,
+    kind: &str,
+    detail: &str,
+) {
+    println!(
+        "\nNJAVAC COMPILER FINDING [{kind}]: {} ({})\n{detail}",
+        prog.name.class, prog.name.source_arg,
+    );
+    let dir = cfg.out_dir.join("compiler-findings").join(kind);
+    let _ = std::fs::create_dir_all(&dir);
+    let out_java = dir.join(&prog.name.java_file);
+    let _ = std::fs::write(&out_java, src);
+    let _ = std::fs::write(dir.join(format!("{}.txt", prog.name.class)), detail);
+    println!("  wrote compiler finding to {}", out_java.display());
+}
+
 fn describe_observation(observation: &Observation) -> String {
     format!(
         "  termination: {:?}\n  detail: {:?}\n  stdout: {:?}\n  stderr: {:?}",

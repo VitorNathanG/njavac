@@ -181,6 +181,9 @@ src/
     |   |-- main.rs
     |   |-- model.rs
     |   |-- generate.rs
+    |   |-- generate/
+    |   |   |-- expression.rs
+    |   |   `-- statement.rs
     |   |-- render.rs
     |   |-- javac.rs
     |   |-- observe.rs
@@ -188,7 +191,10 @@ src/
     |   |-- run.rs
     |   |-- finding.rs
     |   |-- minimize.rs
-    |   `-- verify.rs
+    |   |-- verify.rs
+    |   `-- verify/
+    |       |-- worker.rs
+    |       `-- observer.rs
     `-- profile.rs
 ```
 

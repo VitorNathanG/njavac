@@ -1,7 +1,9 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use crate::finding::{behavior_sig, finding_sig, print_sig_breakdown, report_finding, SigInfo};
+use crate::finding::{
+    behavior_sig, finding_sig, print_sig_breakdown, report_compiler_finding, report_finding, SigInfo,
+};
 use crate::generate::{Gen, Rng};
 use crate::javac::{assert_batch_classes, derive_java, worker_src_path, JavacWorker};
 use crate::model::Prog;
@@ -224,19 +226,6 @@ fn summary(t: &Tally, count: u64) {
             t.byte_divergent,
         );
     }
-}
-
-fn report_compiler_finding(cfg: &Config, prog: &Prog, src: &str, kind: &str, detail: &str) {
-    println!(
-        "\nNJAVAC COMPILER FINDING [{kind}]: {} ({})\n{detail}",
-        prog.name.class, prog.name.source_arg,
-    );
-    let dir = cfg.out_dir.join("compiler-findings").join(kind);
-    let _ = std::fs::create_dir_all(&dir);
-    let out_java = dir.join(&prog.name.java_file);
-    let _ = std::fs::write(&out_java, src);
-    let _ = std::fs::write(dir.join(format!("{}.txt", prog.name.class)), detail);
-    println!("  wrote compiler finding to {}", out_java.display());
 }
 
 fn has_hard_findings(t: &Tally) -> bool {
