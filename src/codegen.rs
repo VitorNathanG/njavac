@@ -1,18 +1,16 @@
 //! Code generation: typed AST -> class bytes, via the `classfile` backend.
 //!
-//! This is where byte-identity is won or lost. Every choice mirrors javac's:
-//! constant-load opcode selection per type, local-slot allocation with the
-//! two-slot `long`/`double` model, short-form load/store opcodes, `max_stack`/
-//! `max_locals`, the `LineNumberTable`, binary numeric promotion with the
-//! conversion opcode placed exactly where javac puts it, the `iinc`/`iinc_w`/
-//! full-form boundary for compound assignment, and cross-type constant folding.
+//! This stage contains byte-visible choices reconstructed from pinned black-box
+//! output: constant-load opcode selection per type, the two-slot `long`/`double`
+//! model, short-form load/store opcodes, `max_stack`/`max_locals`, line metadata,
+//! conversion placement, compound-assignment forms, and supported constant
+//! folding.
 //!
-//! javac constant-folds any subtree whose leaves are all literals into a single
-//! typed constant load (with wrapping integer / exact IEEE-754 arithmetic and
-//! JLS shift masking), and emits real bytecode the moment a local is involved.
-//! We mirror that: `fold` evaluates a maximal constant subtree; anything else is
-//! emitted structurally with a running operand-stack model that tracks category-2
-//! (`long`/`double`) values as two words.
+//! For the documented supported forms, pinned output folds maximal eligible
+//! constant subtrees with wrapping integer, IEEE-754, and Java shift behavior.
+//! `fold` models those cases; other expressions are emitted structurally with a
+//! running operand-stack model that tracks category-2 (`long`/`double`) values as
+//! two words.
 //!
 //! `if`/`else` and comparisons add the first control flow. A boolean expression
 //! lowers in one of two modes: as a *branch* (the condition of an `if`, emitting
@@ -21,8 +19,8 @@
 //! records the verifier state (locals + stack) at each branch target and hands
 //! them to the backend, which picks the minimal frame encoding. Constant
 //! conditions are folded away (dead branches dropped, no frame), and jumps to an
-//! unconditional `goto` are threaded through — both exactly as javac does, so a
-//! method whose branches all fold stays byte-identical to its straight-line form.
+//! unconditional `goto` are threaded through according to pinned output, so a
+//! method whose supported branches all fold matches its straight-line form.
 
 mod assembler;
 mod condition;

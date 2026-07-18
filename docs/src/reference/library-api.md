@@ -19,10 +19,12 @@ bytes satisfy the [compatibility contract](compatibility-contract.md).
 or compilation-session object and does not read additional sources or a
 classpath through this API.
 
-`source_file` is the exact text stored in the class's `SourceFile` attribute. It
-is conventionally the bare filename, such as `Example.java`, but the function
-does not strip directories or validate a suffix. It does not select the class
-name or an output location.
+`source_file` is the exact text stored in the class's `SourceFile` attribute. The
+function does not strip directories or validate a suffix, but the compatibility
+contract requires an exact bare filename such as `Example.java`, matching both the
+public class and the basename supplied to the pinned reference. A qualified path
+such as `src/Example.java` is accepted as metadata but is outside that contract.
+The argument does not select the class name or an output location.
 
 The emitted `this_class` comes from the parsed `public class` declaration:
 
@@ -34,8 +36,9 @@ flowchart LR
 ```
 
 The caller is responsible for associating the returned bytes with a path. To stay
-inside the current compatibility boundary, the public class name, source
-basename, and `source_file` value must agree as described by
+inside the current compatibility boundary, the public class name and bare
+`source_file` value must agree, and that same basename must be supplied to the
+reference compiler, as described by
 [language support](language-support.md#compilation-unit-shape).
 
 ## Result and failure model

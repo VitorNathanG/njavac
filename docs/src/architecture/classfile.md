@@ -85,7 +85,8 @@ rule.
 `modified_utf8::write` iterates Rust text as UTF-16 code units. It emits NUL as
 the two-byte modified form and encodes each surrogate code unit independently, so
 a supplementary scalar occupies six payload bytes. The encoded payload length is
-checked against the class-file `u16` limit.
+checked against the class-file `u16` limit; a payload above 65,535 bytes panics
+during serialization rather than producing a returned diagnostic.
 
 This writer is correct for Rust strings reaching the backend. The frontend cannot
 currently preserve an unpaired surrogate escape in a string; that separate limit

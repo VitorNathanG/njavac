@@ -52,6 +52,10 @@ The lexer is not a complete Java lexical translation layer:
 - Direct non-ASCII source is not modeled correctly outside the supported
   boundary because traversal and literal fallback operate one UTF-8 byte at a
   time.
+- Only LF advances the `u16` source-line counter and terminates `//`. A carriage
+  return is skipped as whitespace but does neither, so supported source is LF-only
+  and cannot cross line 65,535. The exact public boundary is in
+  [language support](../reference/language-support.md#comments-and-source-metadata).
 - A string escape is converted through a Unicode scalar value. An unpaired UTF-16
   surrogate cannot be preserved faithfully in Rust `String`.
 - Decimal floating literals are implemented; hexadecimal floating literals are
@@ -150,7 +154,9 @@ responsible for all of the following:
 - Definite assignment and slot allocation.
 - Operand validation, result types, and assignment compatibility.
 - Library-call target and overload resolution.
-- The distinction between invalid Java and deliberately unsupported semantics.
+- Returned semantic-error versus deliberately unsupported classification within
+  the modeled subset. This is not a complete Java-validity decision; see
+  [semantics](semantics.md#expression-attribution).
 
 The [semantics page](semantics.md) documents those side tables and current
 limitations.

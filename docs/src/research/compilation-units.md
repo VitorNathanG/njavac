@@ -33,7 +33,7 @@ accessibility, overloads, and diagnostics require a resolver environment.
   `ACC_PUBLIC`.
 - **[U] Ordering and failure:** artifact order, duplicate names, partial failure,
   cross-sibling resolution, and generated companions require a compilation-level
-  request/result rather than the current single-byte-vector API.
+  request/result.
 
 Fixtures must evolve from one-file/one-class cases to case directories compiled as
 one source set and compared across every emitted artifact.

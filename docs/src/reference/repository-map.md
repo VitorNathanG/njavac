@@ -61,8 +61,10 @@ src/
     `-- profile.rs
 ```
 
-Rust facade files declare children and expose stage entry points. They are not
-empty compatibility shims; each also owns cross-child types or orchestration.
+Rust module-root files declare children and expose stage entry points. Some also
+own implementation, cross-child types, or orchestration; others, notably
+`src/classfile.rs`, primarily re-export child-owned types. Facade status alone
+does not imply additional ownership or API stability.
 
 ## Pipeline ownership
 
@@ -131,7 +133,7 @@ See [semantics](../architecture/semantics.md).
 | `src/codegen/lowering/condition.rs` | Conditions, chains, `if`, boolean materialization |
 | `src/codegen/lowering/emit.rs` | Physical constant/load/store/conversion emission |
 | `src/codegen/instruction.rs` | Current opcodes, exact `Instruction` forms, stack-word effects |
-| `src/codegen/assembler.rs` | `Emitter`, labels, goto compaction, layout, lines, frames, encoding |
+| `src/codegen/assembler.rs` | Symbolic instruction storage, anchors, stack-word accounting, pending-line consumption, labels, goto compaction, layout, metadata resolution, encoding |
 
 See [lowering](../architecture/lowering.md) and
 [assembler and metadata](../architecture/assembler-and-metadata.md).
@@ -140,7 +142,7 @@ See [lowering](../architecture/lowering.md) and
 
 | Path | Ownership |
 | --- | --- |
-| `src/classfile.rs` | Backend facade and public re-exports |
+| `src/classfile.rs` | Class-file module declarations and public re-exports |
 | `src/classfile/model.rs` | Ordered class, method, code, attribute, and verifier models |
 | `src/classfile/pool.rs` | Ordered constant pool and pool serialization |
 | `src/classfile/writer.rs` | Phase-2 interning and complete class/attribute writing |
@@ -160,7 +162,7 @@ Cargo auto-discovers the crate's binaries from `src/main.rs`, `src/bin/*.rs`, an
 | Binary | Source | Purpose |
 | --- | --- | --- |
 | `njavac` | `src/main.rs` | Compile one or more independent `.java` files through the library |
-| `bench` | `src/bin/bench/main.rs` | Fixture correctness and deterministic whole-suite timing harness |
+| `bench` | `src/bin/bench/main.rs` | Fixture correctness and controlled whole-suite timing harness |
 | `classdiff` | `src/bin/classdiff.rs` | Dump or structurally compare class files |
 | `fuzz` | `src/bin/fuzz/main.rs` | Generate in-scope programs and run exact plus behavioral differential oracles |
 | `profile` | `src/bin/profile.rs` | Local in-process cumulative pipeline profiler |

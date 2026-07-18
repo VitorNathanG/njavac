@@ -57,7 +57,7 @@ pub(super) fn timing(
     let in_harness = std::env::var_os("NJAVAC_IN_CONTAINER").is_some()
         || Path::new("/.dockerenv").exists();
     if !in_harness && std::env::var_os("NJAVAC_BENCH_ALLOW_HOST").is_none() {
-        println!("timing skipped: run `make bench` for deterministic numbers");
+        println!("timing skipped: run `make bench` for controlled same-host numbers");
         println!("(host timings are noise; set NJAVAC_BENCH_ALLOW_HOST=1 to force anyway)");
         return;
     }

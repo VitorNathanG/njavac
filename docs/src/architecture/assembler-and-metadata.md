@@ -1,9 +1,11 @@
 # Assembler and Metadata
 
-`src/codegen/assembler.rs` owns symbolic per-method instruction recording and the
-single final layout pass. `src/codegen/instruction.rs` defines the currently
-reachable opcodes, exact physical instruction forms, and their stack-word
-effects.
+`src/codegen/assembler.rs` owns the symbolic per-method storage and recording
+mechanics plus the single final layout pass. Lowering chooses the instruction
+sequence and forms, places labels, marks source lines, and requests frame states;
+the assembler records those decisions without performing Java lowering.
+`src/codegen/instruction.rs` defines the currently reachable opcodes, exact
+physical instruction forms, and their stack-word effects.
 
 ## Symbolic instruction model
 
@@ -34,8 +36,8 @@ Line events attach to anchors. Labels and frame requests attach to boundaries.
 
 ## Emission chokepoint
 
-`Emitter::emit` is the only path that appends an instruction. It performs four
-jobs atomically:
+`Emitter::emit` is the only storage path that appends an instruction selected by
+lowering. It performs four jobs atomically:
 
 - Creates a stable instruction anchor.
 - Consumes the pending source line into a line event, suppressing consecutive
@@ -86,9 +88,11 @@ preconditions and target-threading behavior live in the doc comments on
 ### PC layout and encoding
 
 `layout` assigns a `u32` PC to every original instruction index, adding length
-only for live entries. It enforces the JVM `Code` length ceiling before metadata
-is narrowed to `u16`. `encode` then walks the same live stream and asserts that
-its output position and each encoded length agree with layout.
+only for live entries. It enforces the 65,535-byte JVM `Code` length ceiling with
+an assertion before metadata is narrowed to `u16`; oversized code therefore
+panics rather than returning a diagnostic. `encode` then walks the same live
+stream and asserts that its output position and each encoded length agree with
+layout.
 
 All current branches are encoded as an opcode plus signed 16-bit relative offset.
 Targets are threaded before offset calculation. No equivalent branch form is

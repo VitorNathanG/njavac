@@ -22,8 +22,9 @@ pub fn compile(
 ) -> diagnostic::CompileResult<Vec<u8>>
 ```
 
-It runs one fail-fast pass through five public stage facades and returns one
-class-file byte vector.
+It runs one fail-fast pipeline through the current module entry points and returns
+one class-file byte vector. Public module visibility does not make each root file
+an implementation owner or a stable external API.
 
 ```mermaid
 flowchart LR
@@ -31,14 +32,19 @@ flowchart LR
     Lex["lexer::lex<br/>Vec&lt;Token&gt;"]
     Parse["parser::parse<br/>CompilationUnit + ExprArena"]
     Sema["sema::analyze<br/>Analysis"]
-    Plan["codegen::plan<br/>ClassPlan"]
-    Lower["lowering<br/>ClassFile + phase-1 ConstantPool"]
-    Assemble["Emitter::finish<br/>code + lines + frames"]
+    subgraph Plan["codegen::plan"]
+        direction TB
+        Preflight["preflight"]
+        Lower["lower constructor and methods"]
+        Assemble["Emitter::finish per method"]
+        Model["ClassPlan<br/>ClassFile + phase-1 ConstantPool"]
+        Preflight --> Lower --> Assemble --> Model
+    end
     Write["ClassFile::to_bytes<br/>phase-2 interning + serialization"]
     Bytes["Vec&lt;u8&gt;"]
 
-    Input --> Lex --> Parse --> Sema --> Plan
-    Plan --> Lower --> Assemble --> Write --> Bytes
+    Input --> Lex --> Parse --> Sema --> Preflight
+    Model --> Write --> Bytes
 ```
 
 `codegen::generate` combines planning and serialization. `codegen::plan` exists
@@ -52,8 +58,8 @@ not a general compilation IR.
 | Source to lexer | UTF-8 Rust string and no source identity beyond the supplied text | Tokenize bytes, preserve token spans and starting lines, decode supported literals |
 | Lexer to parser | Flat `Vec<Token>` ending in one `Eof` | Build source-faithful statement/class structure and stable expression IDs |
 | Parser to sema | One `CompilationUnit`, an append-only `ExprArena`, declaration/name spans, statement lines | Validate the supported class shape, resolve locals and calls, assign result types and verifier-local snapshots |
-| Sema to lowering | `Analysis` tied to the exact expression arena, one `MethodInfo` per accepted method | Consume local slots, resolved calls, result types, and frame-local snapshots; choose javac-compatible physical lowering |
-| Lowering to assembler | Exact instruction forms, symbolic labels, line events, and requested frame states | Compact supported gotos, assign PCs once, resolve metadata, encode instructions |
+| Sema to lowering | `Analysis` tied to the exact expression arena, one `MethodInfo` per accepted method | Consume local slots, resolved calls, result types, and frame-local snapshots; choose physical lowering matching pinned output |
+| Lowering to assembler | Chosen instruction sequence and forms, label operations, source-line marks, and requested frame states | Store symbolic records, allocate stable anchors, account for stack words, consume pending lines, compact supported gotos, assign PCs once, resolve metadata, and encode instructions |
 | Assembler to class-file writer | Final code bytes, `max_stack`, lines, and full frame snapshots | Select attribute encodings, complete ordered constant interning, and serialize the class |
 
 The expression-arena identity check in `src/codegen.rs::plan` prevents an
@@ -65,8 +71,8 @@ counts are checked there as an internal invariant.
 | Area | Current authority | Detail |
 | --- | --- | --- |
 | Tokens and source syntax | `src/lexer.rs`, `src/parser.rs`, `src/ast.rs` | [Frontend](frontend.md) |
-| Java validation, local identity, slots, and result types | `src/sema.rs` and `src/sema/` | [Semantics](semantics.md) |
-| javac-shaped expression and control-flow choices | `src/codegen/lowering/` and `src/codegen/condition.rs` | [Lowering](lowering.md) |
+| Modeled subset checks, local identity, slots, and result types | `src/sema.rs` and `src/sema/` | [Semantics](semantics.md) |
+| Expression and control-flow choices reconstructed from pinned output | `src/codegen/lowering/` and `src/codegen/condition.rs` | [Lowering](lowering.md) |
 | Instruction layout and PC-bearing metadata | `src/codegen/assembler.rs` | [Assembler and metadata](assembler-and-metadata.md) |
 | Constant-pool order, attributes, and byte encoding | `src/classfile.rs` and `src/classfile/` | [Class file](classfile.md) |
 | Independent structural inspection | `src/classdump.rs` and `src/classdump/` | [Class file](classfile.md#independent-class-reader) |
@@ -115,8 +121,8 @@ Byte identity depends on a few cross-layer rules:
 - Constant-pool insertion order is append-only. Hash maps provide lookup and
   deduplication only; map iteration never determines bytes.
 - Ordered attribute vectors drive both phase-2 interning and writing.
-- Internal contradictions panic. Expected invalid or deliberately unsupported
-  input returns one `Diagnostic`.
+- Internal contradictions panic. Modeled source failures and deliberately
+  unsupported input return one `Diagnostic`.
 
 Exact local decision tables belong in the doc comments on functions such as
 `constant::fold`, `ops::subint_narrow_op`, `CondItem::carry_prefix`,

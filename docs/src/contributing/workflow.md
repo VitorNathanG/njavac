@@ -38,20 +38,10 @@ lives in [Active work](../direction/active-work.md).
 
 ## One hypothesis per cycle
 
-```mermaid
-flowchart TD
-    Boundary[Establish verified boundary] --> Hypothesis[State one hypothesis]
-    Hypothesis --> Evidence[Build complete evidence]
-    Evidence --> Contradiction{Model contradicted?}
-    Contradiction -->|Yes| Stop[Stop and redesign from boundary]
-    Contradiction -->|No| Tidy{Preparation required?}
-    Tidy -->|Yes| Prep[Land verified tidy separately]
-    Tidy -->|No| Change[Implement one behavior change]
-    Prep --> Change
-    Change --> Gates[Run required Docker gates]
-    Gates --> Docs[Update authoritative docs and evidence]
-    Docs --> Reflect[Reflect and propose improvements]
-```
+Use the canonical [black-box research loop](research-method.md#research-loop) for
+the evidence and model portion of a cycle. After the model survives its
+discriminating probes, make any prerequisite tidy separately, implement one
+behavior change, run the required gates, update authorities, and reflect.
 
 Do not stack local patches onto a disproven model. Warning signs include a broad
 new divergence census, sibling cases that require unrelated exceptions, or probes
@@ -83,7 +73,7 @@ At minimum:
 
 | Change | Required evidence |
 | --- | --- |
-| Documentation-only | Documentation build/link gate once available; compiler gate if Docker/build context changes |
+| Documentation-only | `make docs-check`; compiler gate if Docker/build context changes |
 | Behavior-preserving compiler tidy | `make correctness` |
 | Language behavior | Focused fresh comparison, refreshed fixture cache, `make correctness`, and in-scope fuzzing |
 | Bug fix | Regression fixture, `make correctness`, and proof that the fuzz signature is gone when applicable |
@@ -94,19 +84,21 @@ At minimum:
 Use `make verify` for a fast cached loop, but refresh with `make record` after
 fixture or JDK changes. A cached pass is not the fresh pre-commit gate.
 
-## Commit and push
+## Commit and push authority
 
 This repository works directly on `main`; do not create feature branches.
 
 In a collaborative session, create a commit only when the user or responsible
-maintainer explicitly requests one. Keep each commit focused and stage only the
-intended files. Before committing, inspect status, the full diff, and recent
-history, then run the required gates.
+maintainer explicitly authorizes a commit. Authorization to edit does not imply
+authorization to commit. Keep each commit focused and stage only the intended
+files. Before committing, inspect status, the full diff, and recent history, then
+run the required gates.
 
-Once a commit has been created, push it to `origin/main` unless the user explicitly
-says not to push. An unpushed commit is not considered shared or backed up. Never
-force-push, skip hooks, rewrite unrelated history, or amend a commit unless that
-action was explicitly requested.
+Push only when the user or responsible maintainer explicitly authorizes a push.
+Authorization to edit or commit does not imply authorization to push; without push
+authorization, leave verified commits local. Never force-push, skip hooks, rewrite
+unrelated history, or amend a commit unless that specific action was explicitly
+authorized.
 
 ## Documentation in the cycle
 

@@ -15,11 +15,10 @@ bare `throw`, or plain `instanceof` stored directly need not create a frame.
 Materialized comparisons, pattern `instanceof`, loops, switches, and exception
 handlers do.
 
-Frame encoding is a byte-identity decision, not just verifier validity. Current
-**[O]** fixtures establish that njavac must choose the smallest applicable form:
-`same`, `same_locals_1_stack_item`, their extended forms, `append`, `chop`, or
-`full_frame`, with the inter-frame `-1` offset-delta bias. Future control-flow
-shapes must extend the evidence matrix rather than assume current placement rules.
+Frame encoding is a byte-identity decision, not just verifier validity. The exact
+placement and physical form for each future control-flow family remain **[U]** and
+require a retained matrix; legal forms or behavior seen in a different source
+shape do not establish the pinned compiler's choice.
 
 ### Invokedynamic and bootstraps
 
@@ -33,9 +32,8 @@ name, descriptor, ordered static arguments, and recipe payload are all byte-visi
 
 ### Constant-pool kinds
 
-**[U]** `[pool]` marks new entry kinds beyond njavac's current `Utf8`, numeric,
-`Class`, `String`, `NameAndType`, `Fieldref`, and `Methodref` set. Surveyed future
-kinds include:
+**[U]** `[pool]` marks additional entry kinds reported for future language
+families. Surveyed kinds include:
 
 - `InterfaceMethodref` (tag 11), distinct from `Methodref` (tag 10).
 - `MethodHandle`, including its one-byte reference kind.
@@ -46,9 +44,6 @@ kinds include:
 **[U]** The survey found no language feature in its catalog that required
 `CONSTANT_Dynamic` (tag 17). That is not an exhaustive proof that Java 25 javac
 never emits it.
-
-The established current rule remains: `Long` and `Double` consume two pool
-indices, including the unusable second slot.
 
 ### Attributes and code substructures
 
@@ -65,12 +60,6 @@ An exception handler table is not a standalone attribute. It is a substructure o
 
 These leads must be included in future probe matrices:
 
-- **[O] Current:** constant-pool insertion order and phase ordering are
-  load-bearing; deduplication must not reorder entries.
-- **[O] Current:** float/double NaNs are canonicalized for the pool while signed
-  zero remains distinct. Folded infinity, NaN, signed zero, and minimum integral
-  values must preserve exact bits.
-- **[O] Current:** all class-file `Utf8` payloads use JVM modified UTF-8.
 - **[U] Future concat:** the reported concatenation recipe contains literal byte
   `0x01` for runtime arguments and `0x02` for folded constants. `javap` rendering
   them as Unicode escapes is not raw-byte evidence.
@@ -85,12 +74,10 @@ These leads must be included in future probe matrices:
   `65535` (`0xffff`) on every emitted class.
 - **[U] Future attributes:** attribute emission order matters; the survey example
   for a generic class was `Signature` before `SourceFile`.
-- **[O] Current, [U] when generalized:** constant folding must reproduce exact
-  wrapping and IEEE-754 results. Each newly supported expression family needs
-  independent tests for what javac folds and what it leaves as runtime code.
-- **[O] Current, [U] when generalized:** javac-compatible lowering removes
-  provably dead arms in current boolean branches. Conditional expressions,
-  switches, assertions, and other constructs need their own aliveness evidence.
+- **[U] Future folding:** each newly supported expression family needs independent
+  tests for exact folded bits and for what remains runtime code.
+- **[U] Future reachability:** conditional expressions, switches, assertions, and
+  other branching constructs need family-specific aliveness evidence.
 
 ## Feature-to-subsystem map
 
@@ -98,7 +85,7 @@ This table is triage, not an exhaustive implementation checklist.
 
 | Future family | Reported impact | Confidence |
 | --- | --- | --- |
-| `?:` with live surrounding values | Typed stack and non-empty-stack `full_frame` | **[U]** beyond current refusal |
+| `?:` with live surrounding values | Typed stack and non-empty-stack `full_frame` | **[U]** |
 | Loops and ordinary switches | More branches and stack maps; switch alignment/opcodes | **[U]** |
 | Runtime string concatenation | Indy, bootstrap registry, pool kinds, `InnerClasses` | **[U]** |
 | General calls and interfaces | Descriptors and `InterfaceMethodref` | **[U]** |

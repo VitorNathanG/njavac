@@ -45,16 +45,30 @@ product requirement and the fixture acceptance oracle.
 
 ## Reproduction and control
 
-A bare `make fuzz` chooses a fresh seed and prints it before compiling. Reproduce
-the same generated sequence with the printed `SEED` value. `COUNT` controls the
-number of programs and `BATCH` controls how many source units share one javac task.
+A bare `make fuzz` chooses a fresh seed and prints it before compiling. The seed
+recreates the generator stream only when the generator code and relevant mode are
+unchanged. Reproducing the full run also requires the same commit, built main
+image/reference JDK, worker and observer sources, `COUNT`, `BATCH`, forwarded
+flags, and output/stop mode. `COUNT` determines how much of the stream is visited;
+`BATCH` changes which source units share one javac task and can therefore affect
+the oracle even though it does not change generation order. Record the complete
+printed header and invocation, not only `SEED`.
+
+`COUNT` and `BATCH` must be positive decimal integers. The current parser does not
+validate that contract reliably: malformed named values can silently retain a
+default or consume the next option, `COUNT=0` can pass without testing a case, and
+`BATCH=0` with positive `COUNT` cannot advance. Confirm the printed values before
+trusting a run.
+
 The generator creates every program in a batch before either compiler runs, so a
-compiler failure cannot perturb the seed-determined sequence.
+compiler failure cannot perturb the seed-determined generation order.
 
 Use `FUZZFLAGS` for additional options such as continuing after findings, changing
 the output directory, or dumping generated sources without compiling. The binary
-help is authoritative for exact flags. Parallel jobs beyond one are not
-implemented; requesting them is rejected.
+help is authoritative for exact flags. Make appends `FUZZFLAGS` as raw tokens only
+for `make fuzz`; shell quoting and arbitrary host environment forwarding are not
+provided. Parallel jobs beyond one are not implemented; requesting them is
+rejected.
 
 With keep-going enabled, the summary groups byte divergences by normalized
 structural path and behavioral findings by which observation fields differ. This
@@ -63,7 +77,7 @@ or change boundary is wrong, not an invitation to patch signatures individually.
 
 ## Reference worker
 
-`tools/FuzzJavac.java` is source-launched once by the pinned Java runtime. It keeps
+`tools/FuzzJavac.java` is source-launched once by the configured Java runtime. It keeps
 one JVM hot, receives framed source strings over a pipe, and returns class bytes
 from an in-memory file manager. It writes neither source nor class files to disk.
 Each batch uses one javac task so compiler context setup is amortized similarly to
@@ -77,9 +91,19 @@ part of a multi-class program; a missing expected class is treated as javac
 rejection for that program.
 
 The worker is an optimization, not an independent authority. `make fuzz-verify`
-generates programs, compiles them through both the worker and a real pinned
-`javac` CLI batch, and compares acceptance and bytes. Run it after any JDK bump or
-edit to the worker, its naming, options, file manager, protocol, or batching.
+generates `COUNT` programs from one seed, compiles that sample through both the
+worker and the configured `javac` CLI batch, and compares acceptance and bytes.
+A pass supports equivalence only over that generated sample; it is not exhaustive
+proof for all inputs or batch shapes. Run it after any JDK bump or edit to the
+worker, its naming, options, file manager, protocol, or batching, and record the
+sample controls.
+
+`FuzzJavac.java` suppresses compiler diagnostics and converts a caught
+`RuntimeException` into whatever partial class set had already been emitted. The
+parent can therefore classify a worker infrastructure failure as rejection for
+missing classes. Unexpected rejection counts require investigation even when the
+protocol stays alive; use worker verification and direct CLI probes to separate
+generator rejection from worker failure.
 
 The main Dockerfile does not copy either Java worker source into the image.
 `make fuzz`, `make fuzz-verify`, `make fuzz-selftest`, and
@@ -115,6 +139,12 @@ strengthen or replace the execution boundary before enabling generation.
 checks return, stdout difference, invalid class loading, throws, reference and
 candidate timeouts, and successful post-timeout restart.
 
+The Rust fuzzer installs a process-wide no-op panic hook so candidate compiler
+panics captured by `catch_unwind` do not print twice. The same hook also suppresses
+the normal panic message for uncaught harness and infrastructure panics. An exit
+status such as 101 with little or no diagnostic output can therefore be a harness,
+worker, path, or filesystem failure rather than a classified compiler finding.
+
 ## Generator boundary
 
 The current model covers the eight primitive types, numeric and bitwise
@@ -135,7 +165,9 @@ feature absent from the generator is not necessarily unsupported by the compiler
 ## Artifacts
 
 The Make targets mount the repository, so the default ignored `fuzz-out/`
-directory persists on the host.
+directory persists on the host. Fuzzer containers run as root rather than the
+host UID/GID, so created directories and files can be root-owned. This differs
+from documentation targets, which explicitly select the host identity.
 
 | Outcome | Artifact |
 | --- | --- |
@@ -145,6 +177,12 @@ directory persists on the host.
 | Worker/CLI mismatch | Up to the first 20 sources and available `.cli.class` and `.worker.class` files under `worker-mismatch/`. |
 | Self-test | A synthetic minimized Java source and structural diff at the output root. |
 | Byte-only drift | Signature and example in terminal telemetry; no normal finding bundle is written. |
+
+Only the repository-root `/fuzz-out` directory is ignored by the current Git
+rules. A custom `--out-dir` supplied through `FUZZFLAGS` is not automatically
+ignored; put custom output below `fuzz-out/` unless it is intentionally durable.
+The self-test Make target does not forward `FUZZFLAGS`, `SEED`, or a custom output
+directory.
 
 Behavioral findings intentionally remain raw because the current minimizer does
 not have an observation-aware predicate. Byte-only reduction could preserve a
@@ -160,6 +198,13 @@ documented fixture described in [Fixtures and Goldens](fixtures-and-goldens.md).
 | JDK, javac worker, worker protocol, or virtual source naming | `make fuzz-verify` |
 | Finding capture, minimization, or report writing | `make fuzz-selftest` |
 | Observer, timeout, output capture, or execution isolation | `make fuzz-observe-verify` |
+
+`make fuzz-selftest` has deliberately narrow coverage. It checks synthetic
+candidate outcome classification, selects a compilable generated program,
+minimizes with an acceptance-only synthetic predicate, and writes a Java source
+plus structural diff. It does not exercise a normal behavioral finding, observer
+capture, worker protocol equivalence, keep-going aggregation, or every artifact
+kind.
 
 Fuzzer compile-time statistics are useful operational feedback but are not a
 benchmark. Use [Profiling](profiling.md) or `make bench` for performance claims.

@@ -12,8 +12,8 @@ use super::ops::negate_op;
 pub(super) struct CondItem {
     /// The pending deciding branch, or a static verdict.
     pub(super) opcode: CondOp,
-    /// Chains as label ids collecting pending jump sites. `None` = the empty chain
-    /// (javac's null): nothing targets it, so resolving it places no frame. A
+    /// Chains as label ids collecting pending jump sites. `None` is the empty
+    /// chain: nothing targets it, so resolving it places no frame. A
     /// `Some` chain always has at least one live symbolic branch.
     pub(super) true_chain: Option<Label>,
     pub(super) false_chain: Option<Label>,
@@ -25,7 +25,7 @@ pub(super) struct CondItem {
     /// whose surrounding grouping can affect later value materialization.
     pub(super) origin: CondOrigin,
     /// Whether a final reusable stack value may stay bare or must pass through
-    /// javac's true/false materialization diamond.
+    /// the true/false materialization diamond observed in pinned output.
     pub(super) materialization: Materialization,
     /// Independent pending-position effect for a code-free static-false `if`.
     pub(super) position: CodeFreePosition,
@@ -55,7 +55,7 @@ pub(super) enum CodeFreePosition {
 }
 
 /// The deciding branch of a `CondItem`: a real conditional test (taken when the
-/// condition is *true*), or a static verdict mirroring javac's `goto_`/`dontgoto`.
+/// condition is *true*), or a static true/false verdict.
 #[derive(Clone, Copy)]
 pub(super) enum CondOp {
     Test(u8), // conditional branch opcode taken when TRUE (ifne / if_icmplt / …)
@@ -64,8 +64,8 @@ pub(super) enum CondOp {
 }
 
 impl CondItem {
-    /// Statically always-true: an unconditional `goto` sense with no pending
-    /// false jumps. Exactly javac's `CondItem.isTrue()`.
+    /// Statically always true: an unconditional-jump sense with no pending false
+    /// jumps, matching the predicate established by pinned condition probes.
     pub(super) fn is_true(&self) -> bool {
         matches!(self.opcode, CondOp::Goto) && self.false_chain.is_none()
     }
@@ -91,8 +91,8 @@ impl CondItem {
             // negation inverts the result, so the un-touched stack value is now the
             // *opposite* and must NOT be used as-is. Clearing this forces `!p` (and
             // `!!p`, which restores the `IFNE` opcode but stays cleared) through the
-            // materialization diamond in `gen_bool_value`, matching javac, which
-            // diamonds every negation rather than reusing the loaded value.
+            // materialization diamond in `gen_bool_value`; pinned probes show the
+            // supported negation forms use a diamond rather than the loaded value.
             stack_reuse: false,
             origin,
             materialization: self.materialization,
@@ -111,8 +111,8 @@ impl CondItem {
     }
 
     /// Grouping is transparent except around a negated non-strict shortcut. In
-    /// that one case javac keeps a value-materialization requirement for a later
-    /// logical result, without emitting code for the grouped operand itself.
+    /// that case pinned output keeps a value-materialization requirement for a
+    /// later logical result without code for the grouped operand itself.
     pub(super) fn parenthesize(mut self) -> CondItem {
         if self.origin == CondOrigin::NegatedShortcut {
             self.materialization = Materialization::DiamondRequired;
@@ -156,11 +156,11 @@ impl CondItem {
     }
 }
 
-/// A statically-true `CondItem` (no code emitted); javac's `goto_` verdict.
+/// A statically true `CondItem` with no emitted code.
 pub(super) fn cond_true() -> CondItem {
     cond_static(true)
 }
-/// A statically-false `CondItem` (no code emitted); javac's `dontgoto` verdict.
+/// A statically false `CondItem` with no emitted code.
 pub(super) fn cond_false() -> CondItem {
     cond_static(false)
 }

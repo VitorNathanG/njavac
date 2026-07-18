@@ -334,7 +334,8 @@ pub enum ExprKind {
     /// Logical negation `!x` (boolean).
     Not(ExprId),
     /// A parenthesized expression. Grouping is semantically transparent, but the
-    /// syntax can affect javac's boolean-item lowering and must survive parsing.
+    /// syntax can affect the boolean lowering observed in pinned output and must
+    /// survive parsing.
     Paren(ExprId),
     /// An explicit primitive cast `(Type) expr`.
     Cast {
@@ -357,8 +358,8 @@ pub enum ExprKind {
     },
     /// Short-circuit `&&` / `||`. Distinct from the bitwise `Binary { And | Or }`
     /// on booleans (those push both operands and emit `iand`/`ior`); these lower
-    /// to a jump chain (javac's `genCond`) and never evaluate the right operand
-    /// when the left already decides the result.
+    /// to a jump chain and never evaluate the right operand when the left already
+    /// decides the result, matching pinned black-box observations.
     Logical {
         op: LogOp,
         left: ExprId,

@@ -68,12 +68,13 @@ source line
 The renderer:
 
 - Treats `Span` offsets as byte offsets into the original UTF-8 source.
-- Clamps a span start and end to available source bytes.
+- Clamps the span start to the available source bytes.
 - Computes line by counting preceding newline bytes.
 - Computes column as byte distance from the line start plus one.
 - Displays only the source line containing the span start.
 - Extends an empty span to at least one caret.
-- Clips an underline at the current line end.
+- Derives the underline from the original span end, then clips it at the current
+  LF-delimited line end while still showing one caret for an empty span or EOF.
 - Uses `String::from_utf8_lossy` for the displayed source slice.
 
 Columns and caret widths are therefore byte-based, not Unicode display columns.
@@ -107,9 +108,12 @@ the current renderer cannot recover positions the AST did not retain.
 ## Returned errors versus panics
 
 Returned diagnostics represent expected source failures and deliberate
-unsupported boundaries. Panics represent compiler invariant violations, such as
-an analysis paired with the wrong expression arena, stack accounting underflow,
-an unresolved label, a missing pool entry, or an unrepresentable branch offset.
+unsupported boundaries. Panics represent compiler invariant violations or
+currently unreported hard limits, such as an analysis paired with the wrong
+expression arena, stack accounting underflow, an unresolved label, a missing pool
+entry, an unrepresentable branch offset, oversized method code, or an oversized
+modified-UTF-8 payload. The unchecked `u16` source-line counter panics in debug
+builds and wraps in release builds rather than returning a diagnostic.
 
 Known long-branch overflow currently panics because branch-form selection is
 missing. Wide ordinary local slots currently truncate rather than return a
@@ -126,6 +130,9 @@ findings from supported refusals.
 For each input file, `src/main.rs::compile_one` renders a returned diagnostic with
 the original input path and source. The outer loop prints it with an `njavac:`
 prefix, marks the invocation failed, and continues compiling later input paths.
+Per-source read and write failures follow the same continuation rule. Failure to
+create a shared `-d` directory occurs before that loop and terminates the
+invocation without compiling any input.
 The process exits nonzero if any input had an I/O or returned compile failure.
 
 CLI usage and unknown-option errors are separate unstructured messages and exit

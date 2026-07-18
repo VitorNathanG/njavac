@@ -1,9 +1,26 @@
 # Language Support
 
-njavac supports a deliberately small Java 25 subset. A program is supported only
-when it satisfies every structural, statement, expression, and source-text limit
-on this page. For supported programs, the compatibility promise is defined by the
+njavac supports a deliberately small Java 25 subset. Support has two preconditions:
+the source must be valid Java accepted by the repository-pinned reference compiler
+under the same filename, options, and environment, and it must satisfy every
+structural, statement, expression, source-text, and size limit on this page. For
+supported programs, the compatibility promise is defined by the
 [compatibility contract](compatibility-contract.md).
+
+Acceptance by njavac alone does not establish support. In particular, these known
+accidental or overly broad acceptances are excluded:
+
+- A public class name that does not match the reference source filename.
+- An out-of-range implicit constant assignment to `byte`, `short`, or `char`.
+- An integral `/` or `%` expression whose right operand is a constant zero; sema
+  currently rejects these valid runtime expressions.
+- A main-parameter `String` or `System.out.println` target whose leading simple
+  name is shadowed and therefore does not denote the hard-coded library class.
+- Source containing carriage returns, including bare-CR line endings and CRLF.
+
+The current front end may also accept malformed literal details that the reference
+rejects. The valid-reference precondition is authoritative for such cases; an
+accidental class match does not add them to the subset.
 
 Future Java coverage is research, not support. See the pages under
 [`research/`](../research/evidence.md) and the ordered
@@ -27,14 +44,17 @@ The exact limits are:
 - The file contains exactly one top-level type, a `public class` with no explicit
   `extends`, `implements`, type parameters, annotations, or other modifiers.
 - The public class name must equal the source filename without `.java`. The
-  library API does not enforce this relationship, but the CLI derives the output
-  filename from the source filename; mismatched names are therefore outside the
-  byte-identity contract.
+  library API does not enforce this relationship, but its supported use requires
+  an exact bare filename matching the declaration. The CLI derives the output
+  filename from the source filename.
 - The class contains exactly one method and no fields, constructors, initializer
   blocks, nested types, or other members.
 - The method is exactly `public static void main(String[] name)`. The parameter
   name is arbitrary, but its value may not be read or assigned.
-- `String` must be spelled exactly as the unqualified name in the parameter.
+- `String` must be spelled exactly as the unqualified name in the parameter and
+  must denote `java.lang.String`. In particular, the public class may not itself
+  be named `String`; njavac otherwise hard-codes the parameter as
+  `java/lang/String` despite Java's shadowing rules.
 - The method return type is `void`; `return` statements are not supported.
 - Packages, imports, modules, and additional top-level types are not supported.
 
@@ -156,7 +176,9 @@ Unicode support is intentionally partial:
 String values are supported only as a literal, optionally parenthesized, supplied
 directly to `System.out.println`. There are no `String` locals, concatenation,
 comparison, or general string expressions. Class-file strings are written with
-JVM modified UTF-8, including the special encoding for NUL.
+JVM modified UTF-8, including the special encoding for NUL. Every encoded
+`CONSTANT_Utf8` payload must fit in 65,535 bytes; exceeding that class-file limit
+currently panics during serialization rather than returning a diagnostic.
 
 `true` and `false` are supported. `null`, class literals, and text blocks are not.
 
@@ -186,16 +208,31 @@ a `long` distance. Assignment conversion supports primitive widening and Java's
 constant-expression narrowing into `byte`, `short`, and `char`. Compound
 assignment narrows the promoted result back to the target type.
 
-Literal-only primitive subtrees are folded with wrapping integer arithmetic,
+Implicit constant narrowing is supported only when the folded value is in the
+target type's Java range. Sema currently checks constant-expression shape but not
+that range, so njavac can accept and wrap an invalid out-of-range assignment. Such
+an accidental acceptance is excluded by the valid-reference precondition.
+
+Integral `/` and `%` have an additional current defect: sema rejects an expression
+whenever its right operand alone evaluates to constant zero. Ordinary Java
+expressions such as `1 / 0`, `x / 0`, and `x % (1 - 1)` are valid and complete
+abruptly at runtime; they are not compile-time errors merely because the divisor
+is constant. Runtime zero reached through a local divisor, such as `x / divisor`,
+is accepted.
+
+Supported constant primitive subtrees are folded with wrapping integer arithmetic,
 IEEE-754 floating arithmetic, Java shift masking, comparisons, casts, and boolean
-logic. Once a local participates, njavac emits runtime operations. One
-javac-compatible exception is retained: a constant `long >>> long` expression is
-not folded.
+logic. Expressions involving locals normally emit runtime operations, subject to
+the integral zero-divisor over-rejection above. Pinned black-box output establishes
+one retained exception: a constant `long >>> long` expression is not folded.
 
 ## Printing
 
-`System.out.println` must be spelled as that exact dotted target and take exactly
-one argument. Supported overloads are:
+`System.out.println` must be spelled as that exact dotted target, `System` must
+denote `java.lang.System`, and the call must take exactly one argument. Resolution
+is currently textual: njavac does not detect a local or class declaration that
+shadows `System`, so any such accidental acceptance is outside the subset.
+Supported overloads are:
 
 - `(I)V` for `int`, `byte`, and `short`.
 - `(J)V`, `(F)V`, and `(D)V` for `long`, `float`, and `double`.
@@ -232,10 +269,27 @@ remain printable.
 
 ## Comments and source metadata
 
-Space, tab, carriage return, line feed, `//` comments, and `/* ... */` comments
-are accepted. Block comments do not nest. Source line numbers are tracked with a
-pending-position model and emitted as `LineNumberTable`; the source basename is
-emitted as `SourceFile`.
+Space, tab, line feed, `//` comments, and `/* ... */` comments are supported.
+Line feed (`LF`, `\n`) is the only supported line terminator; supported source
+contains no carriage-return bytes. The lexer skips a carriage return as trivia but
+does not increment its line counter, and a `//` comment terminates only at LF, so a
+bare CR does not end that comment. These accidental behaviors do not support CR or
+CRLF source. Block comments do not nest.
+
+Source line numbers use a 1-based `u16` counter. A supported source therefore has
+at most 65,534 LF bytes, so traversal never advances beyond line 65,535; crossing
+that boundary can overflow or panic rather than return a diagnostic. Positions are
+tracked with a pending-line model and emitted as `LineNumberTable`; the source
+basename is emitted as `SourceFile`.
+
+## Class-file size limits
+
+Each assembled method body must be at most 65,535 code bytes. The assembler checks
+that JVM limit after goto compaction and panics when it is exceeded. Each modified
+UTF-8 payload and source line must also fit the `u16` limits documented above.
+These failures are not structured unsupported diagnostics; the valid-reference
+precondition still excludes source that the pinned compiler rejects for its own
+class-file limits.
 
 ## Deliberate refusals
 
@@ -267,9 +321,10 @@ are defects, not deliberate subset exclusions:
   than 32,767 bytes away (or less than -32,768), assembly panics instead of
   selecting javac-compatible long forms and conditional expansion.
 
-Their repair order is tracked in [active work](../direction/active-work.md). Until
-fixed, the byte-identity contract excludes programs that require either form even
-though their syntax and semantics otherwise fit this page.
+Their repair order and the semantic/source defects excluded earlier on this page
+are tracked in [active work](../direction/active-work.md). Until fixed, the
+byte-identity contract excludes programs that reach those signatures even though
+their syntax and semantics otherwise fit the general operator or source surface.
 
 ## Explicitly unsupported areas
 

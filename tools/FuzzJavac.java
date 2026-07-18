@@ -4,15 +4,14 @@
 // each spawn pays ~0.3s JVM launch AND — the bigger cost — javac re-JIT-warming
 // its whole front-end from cold, a cost that only exists once per JVM lifetime.
 // Batching amortized the LAUNCH but not the re-warm. This worker keeps ONE JVM
-// hot for the entire run: sources arrive over stdin, `.class` bytes leave over
-// stdout, and javac NEVER TOUCHES DISK (no source files written, no class files
-// written/read/scanned) — it compiles from an in-memory JavaFileObject straight
-// into an in-memory byte buffer.
+// hot for the entire run: sources arrive over stdin and generated `.class` bytes
+// leave over stdout. Source and output classes stay in memory; the standard file
+// manager can still read the platform class path.
 //
 // BYTE-IDENTITY IS THE WHOLE POINT, so this must produce the EXACT bytes the
 // `javac` CLI (`javac -d <dir> Name.java`) produces, or it is worthless as the
-// fuzzer's oracle. The fuzzer's `--verify-worker` mode is the empirical proof:
-// it compares worker acceptance and bytes with real pinned CLI invocations and
+// fuzzer's oracle. The fuzzer's `--verify-worker` mode checks a generated sample:
+// it compares worker acceptance and bytes with real configured CLI invocations and
 // must be rerun after every JDK or worker change. Two inputs are kept aligned:
 //   1. Compiler options. We pass no options, matching the CLI invocation used by
 //      the verification gate.
@@ -78,8 +77,9 @@ public final class FuzzJavac {
                 // rest (call() returns false but the good classes are still written).
                 comp.getTask(null, fm, d -> {}, null, null, units).call();
             } catch (RuntimeException e) {
-                // A compiler blowup leaves whatever was already written; report that
-                // partial set rather than hang. (Never observed in-subset.)
+                // A compiler blowup leaves whatever was already written. The protocol
+                // reports that partial set, so the parent may classify an infrastructure
+                // failure as rejection; worker verification is required after changes.
             }
 
             Map<String, byte[]> classes = fm.outputs();

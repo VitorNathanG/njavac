@@ -1,6 +1,6 @@
 # Semantics
 
-Semantic analysis validates the supported Java shape, resolves local and library
+Semantic analysis validates the modeled subset shape, resolves local and library
 names, assigns local slots, checks definite assignment, records expression result
 types, and produces verifier-local snapshots. Its facade is `src/sema.rs`; the
 main implementation is in `src/sema/analyzer.rs` and
@@ -39,7 +39,7 @@ method vector. Current language validation requires exactly one supported
 | Declaration order and types | `Vec<LocalInfo>` | Local loads/stores and descriptors |
 | Name occurrence resolution | `Span -> LocalId` map | `slot`, `ty`, and `declared_type` queries |
 | Maximum physical local usage | `max_locals: u16` | `Code.max_locals` |
-| Expression result types | Dense `ExprId`-relative `Vec<Option<Type>>` | Value and condition lowering |
+| Attributed expression result types | Dense `ExprId`-relative `Vec<Option<Type>>` | Value and condition lowering |
 | Resolved calls | Small `(ExprId, ResolvedCall)` table | Call lowering |
 | Method-entry verifier locals | Snapshot index | Initial `StackMapTable` comparison state |
 | Statement entry/exit verifier locals | `Stmt.span -> snapshot indices` | Branch-target frame requests |
@@ -99,17 +99,19 @@ not maintain a second local-flow model.
 
 ## Expression attribution
 
-`MethodAnalyzer::validate_expr` recursively validates reachable expression nodes
-and records one result `Type` per `ExprId`. It owns:
+`MethodAnalyzer::validate_expr` recursively checks value expressions and records
+their result types by `ExprId`. Structural call-target `Name` and `Select` nodes
+used only to recognize `System.out.println` are inspected textually and can retain
+`None` in the dense table. Attribution owns:
 
 - Primitive operand category checks.
 - Unary and binary numeric result promotion.
-- Boolean, equality, and relational validation.
-- Primitive cast validity.
+- Boolean, equality, and relational operand checks.
+- Primitive cast checks.
 - Assignment and compound-assignment compatibility.
 - Definite-assignment checks for local reads.
 - Integral constant-zero rejection for `/` and `%`.
-- Call target, arity, argument validation, and overload selection.
+- Supported call spelling, arity, argument checks, and parameter selection.
 
 `sema::unary_promote` and `sema::binary_promote` are the shared current promotion
 functions. `sema::constants` contains the narrow constant queries attribution
@@ -118,17 +120,29 @@ constant-expression test is currently a syntax-only approximation used for
 assignment conversion, and its numeric evaluator exists to detect integral zero
 divisors.
 
-One consequence is that constant narrowing assignment is not yet range-checked
-at attribution time. The syntax-only predicate can accept an out-of-range literal
-shape that Java would reject, after which lowering narrows it. Such invalid input
-is not part of the supported-program contract.
+Two consequences prevent sema from serving as a complete Java-validity oracle:
+
+- Constant narrowing assignment is not range-checked at attribution time. The
+  syntax-only predicate can accept an out-of-range value that Java rejects, after
+  which lowering narrows it.
+- Integral zero-divisor checking evaluates the right operand in isolation. It
+  therefore rejects valid runtime expressions such as `x / 0` and
+  `x % (1 - 1)`, even though the complete expression is not constant.
+
+These boundaries are reflected in
+[language support](../reference/language-support.md#expressions). The pinned
+reference's acceptance, not a successful sema result, is the Java-validity
+precondition.
 
 ## Library-call resolution
 
 The parser presents every call structurally. `resolve_call` currently accepts only
-the exact dotted chain `System.out.println` with one supported argument. It records
-`ResolvedCall::Println { parameter_type }`; `byte` and `short` select the `int`
-parameter type.
+the exact dotted spelling `System.out.println` with one supported argument. It
+does not perform Java symbol lookup or detect a declaration that shadows `System`.
+The main-parameter parser similarly maps the exact simple spelling `String`
+directly to `java/lang/String`, without checking whether the source class shadows
+that name. `resolve_call` records `ResolvedCall::Println { parameter_type }`;
+`byte` and `short` select the `int` parameter type.
 
 This removes source-name inspection from lowering, but the resolved fact is not
 yet complete. Lowering still hard-codes the owner, member name, invocation kind,
@@ -147,9 +161,11 @@ a renderer limit.
 
 ## Semantic boundary
 
-Sema currently decides Java validity and result types. It must not choose physical
-JVM instruction forms, constant-pool order, branch layout, or frame encodings.
-Conversely, lowering must not resolve locals or call targets by source spelling.
+Sema currently owns the subset's modeled checks and result types, but the
+approximations above mean it does not decide complete Java validity. It must not
+choose physical JVM instruction forms, constant-pool order, branch layout, or
+frame encodings. Conversely, lowering must not resolve locals or call targets by
+source spelling.
 
 The boundary is not complete yet: lowering recomputes promoted operand types,
 conversion steps, assignment coercions, and javac-compatible constant values from

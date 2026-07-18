@@ -1,13 +1,13 @@
 // Regression: `long >>> long` folding + constant shift-distance narrowing.
-// Two coupled javac behaviors the fuzzer surfaced (complements ShiftAmt, which
-// covers non-constant amounts):
-//   (1) javac constant-folds EVERY shift except `long >>> long` (unsigned shift,
-//       both operands statically `long`) — a genuine ConstFold quirk. njavac used
-//       to over-fold it to a constant.
+// Two coupled pinned-output behaviors the fuzzer surfaced (complements ShiftAmt,
+// which covers non-constant amounts):
+//   (1) black-box probes leave `long >>> long` unfolded while the sibling forms
+//       represented below fold. This is an observed physical-form distinction;
+//       njavac used to over-fold it to a constant.
 //   (2) a CONSTANT shift distance is narrowed to an int constant (`bipush 40`),
-//       never `ldc2_w <long>; l2i`. njavac used to push the long distance + l2i
-//       (an extra Long pool entry + wrong max_stack).
-// The "still folds" lines guard against over-refusing (only long>>>long is special).
+//       rather than `ldc2_w <long>; l2i` in these probes. njavac used to push the
+//       long distance + l2i (an extra Long pool entry + wrong max_stack).
+// The "still folds" lines guard the probed sibling folding cases.
 // Fuzzer-found (the whole tail: constant_pool_count / attr length / cp[N].long_*).
 public class ShiftLongConst {
     public static void main(String[] args) {

@@ -1,20 +1,20 @@
 # njavac — the single command surface. Everything that validates byte-identity
-# runs through Docker: only the pinned GraalVM javac in the image reproduces the
-# golden bytes (see CLAUDE.md §Testing). `check` is a LOCAL build for
+# runs through Docker: only the configured GraalVM javac in the built image is the
+# golden bytes (see `docs/src/tooling/command-surface.md`). `check` is a LOCAL build for
 # compiler-internal debugging only, never acceptance.
 #
 #   make verify      [FILE=fixtures/x/F.java]  # fast gate: njavac vs cached goldens (may be stale)
 #   make correctness [FILE=..]                 # fresh authoritative online check, no timing
 #   make record      [FILE=..]                 # re-record goldens (after fixtures/JDK change), then verify
-#   make bench       [FILE=..]                 # authoritative: full online correctness + deterministic timing
-#   make probe       FILE=Probe.java           # disassemble a probe with the pinned javac (javap -v -p)
+#   make bench       [FILE=..]                 # authoritative correctness + controlled same-host timing
+#   make probe       FILE=Probe.java           # disassemble a probe with the configured javac (javap -v -p)
 #   make src-diff    FILE=Probe.java           # diff BOTH compilers on one source (byte + classdiff + javap)
 #   make diff        A=a.class B=b.class       # structural class-file diff, in-container
 #   make fuzz        [SEED=n] [COUNT=n]        # exact + behavioral differential fuzz (random seed unless pinned)
-#   make fuzz-verify [COUNT=n]                 # prove the in-memory javac worker == pinned javac CLI
-#   make fuzz-selftest                         # prove the finding->minimize->report machinery
+#   make fuzz-verify [COUNT=n]                 # sample worker output against the configured javac CLI
+#   make fuzz-selftest                         # exercise narrow synthetic outcome/minimizer plumbing
 #   make fuzz-observe-verify                   # exercise the persistent execution observer
-#   make image                                 # build the pinned image
+#   make image                                 # build the version-selected main image
 #   make check                                 # LOCAL release build (debugging only; NOT a test)
 #   make profile [ROUNDS=n] [TRIALS=n] [PHASE=all|lex|parse|sema|codegen|full]  # LOCAL hot profile
 #   make docs                                  # serve the maintainer guide at localhost:3000
@@ -24,7 +24,7 @@
 IMAGE     := njavac-bench
 VOLUME    := njavac-goldens
 GOLDENS   := /goldens
-# bench timing determinism: pin one core, fix memory, no swap. Override per host.
+# Bench controls reduce same-host noise: pin one core, fix memory, no swap.
 BENCH_CPU ?= 2
 BENCH_MEM ?= 2g
 FILE      ?=
@@ -50,10 +50,10 @@ DOCS_GID   := $(shell id -g)
 help:  ## show this help
 	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | sed -E 's/:.*## /\t/' | sort
 
-image:  ## build the pinned Docker image
+image:  ## build the version-selected main Docker image
 	docker build -t $(IMAGE) .
 
-probe: image  ## disassemble a .java with the pinned javac: make probe FILE=Probe.java
+probe: image  ## disassemble a .java with the configured javac: make probe FILE=Probe.java
 	@test -n "$(FILE)" || { echo "usage: make probe FILE=path/to/Probe.java"; exit 2; }
 	docker run --rm -v "$(CURDIR):/w" -w /w --entrypoint sh $(IMAGE) -c \
 	  'd=$$(mktemp -d); "$$JAVA_HOME/bin/javac" -d "$$d" "$(FILE)" && "$$JAVA_HOME/bin/javap" -v -p "$$d"/*.class'
@@ -74,18 +74,18 @@ src-diff: image  ## diff both compilers on ONE source: make src-diff FILE=Probe.
 verify: image  ## fast gate: njavac vs cached goldens (whole suite, or one FILE=path)
 	@docker run --rm -v $(VOLUME):$(GOLDENS) --entrypoint sh $(IMAGE) \
 	    -c 'ls $(GOLDENS)/*.class >/dev/null 2>&1' \
-	  || { echo ">> golden cache empty — recording from the pinned javac"; \
+	  || { echo ">> golden cache empty — recording from the configured javac"; \
 	       docker run --rm -v $(VOLUME):$(GOLDENS) $(IMAGE) --record --golden-dir $(GOLDENS); }
 	docker run --rm -v $(VOLUME):$(GOLDENS) $(IMAGE) --offline --golden-dir $(GOLDENS) $(FILE)
 
 correctness: image  ## fresh authoritative online byte-identity check (no timing)
 	docker run --rm $(IMAGE) --no-timing $(FILE)
 
-record: image  ## re-record goldens from the pinned javac into the volume, then verify
+record: image  ## re-record goldens from the configured javac, then verify
 	docker run --rm -v $(VOLUME):$(GOLDENS) $(IMAGE) --record --golden-dir $(GOLDENS)
 	docker run --rm -v $(VOLUME):$(GOLDENS) $(IMAGE) --offline --golden-dir $(GOLDENS) $(FILE)
 
-bench: image  ## authoritative Docker run: full online correctness + deterministic timing
+bench: image  ## authoritative correctness + controlled same-host Docker timing
 	docker run --rm \
 	  --cpuset-cpus=$(BENCH_CPU) --cpus=1 \
 	  --memory=$(BENCH_MEM) --memory-swap=$(BENCH_MEM) --pids-limit=256 \
@@ -99,11 +99,11 @@ fuzz: image  ## exact + behavioral fuzz of random in-scope Java: make fuzz [SEED
 	docker run --rm -v "$(CURDIR):/w" -w /w --entrypoint fuzz $(IMAGE) \
 	  $(if $(SEED),--seed $(SEED),) --count $(COUNT) $(if $(BATCH),--batch $(BATCH),) $(FUZZFLAGS)
 
-fuzz-verify: image  ## prove the in-memory javac worker == pinned javac CLI byte-for-byte: make fuzz-verify [COUNT=n] (run after a JDK bump)
+fuzz-verify: image  ## sample the javac worker against the configured CLI: make fuzz-verify [COUNT=n]
 	docker run --rm -v "$(CURDIR):/w" -w /w --entrypoint fuzz $(IMAGE) \
 	  $(if $(SEED),--seed $(SEED),) --count $(COUNT) $(if $(BATCH),--batch $(BATCH),) --verify-worker
 
-fuzz-selftest: image  ## prove the finding->minimize->report machinery (no real bug needed)
+fuzz-selftest: image  ## exercise narrow synthetic outcome/minimizer plumbing
 	docker run --rm -v "$(CURDIR):/w" -w /w --entrypoint fuzz $(IMAGE) --selftest
 
 fuzz-observe-verify: image  ## exercise the persistent JVM observer and its timeout restart
@@ -136,7 +136,13 @@ docs-build: docs-image  ## build the maintainer guide through Docker
 	  $(DOCS_IMAGE) \
 	  mdbook build docs
 
-docs-check: docs-build  ## build and check rendered internal links through Docker
+docs-check: docs-build  ## inventory sources, then check rendered internal links through Docker
+	docker run --rm \
+	  --user "$(DOCS_UID):$(DOCS_GID)" \
+	  --mount type=bind,source="$(CURDIR)",target=/work,readonly \
+	  --workdir /work \
+	  $(DOCS_IMAGE) \
+	  sh docs/check-summary.sh
 	docker run --rm \
 	  --mount type=bind,source="$(CURDIR)/docs/book",target=/input,readonly \
 	  lycheeverse/lychee:0.24.2@sha256:e2d19e57cf6ab037026f20b8e449a1f30d9d7f81eef4194763aab2eab20bd28d \

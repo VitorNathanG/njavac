@@ -31,18 +31,10 @@ example is not sufficient evidence for a javac-specific choice.
 
 ## Evidence labels
 
-Every durable research claim should identify its confidence:
-
-| Label | Meaning |
-| --- | --- |
-| Observed | The pinned compiler produced the stated output for a checked-in probe. |
-| Inferred | One rule explains a complete documented corpus. |
-| Predicted | The inferred rule implies this result, but it has not yet been independently probed. |
-| Unverified | A useful hypothesis or future concern without pinned evidence. |
-
-Do not write an inferred or predicted claim as an unconditional fact. The
-[Evidence and confidence](../research/evidence.md) is the durable registry for probe
-corpora and their conclusions.
+[Evidence and Confidence](../research/evidence.md#confidence-labels) defines the
+four canonical labels and owns the registry, location, format, and replay
+convention for probe corpora. Apply those labels; do not redefine them here or
+write an inferred or predicted claim as an unconditional fact.
 
 ## Complete the table first
 
@@ -110,10 +102,12 @@ add an exception until the complete corpus supports a revised model.
 
 ## Evidence durability
 
-Probe material should be minimal, named by the behavior it isolates, and safe to
-re-run against the pinned image. Record conclusions and relevant structural fields;
-avoid committing huge incidental disassemblies when a small source and precise
-observation are sufficient.
+Probe material follows the corpus convention in
+[Evidence and confidence](../research/evidence.md#future-probe-corpora). It should
+be minimal, named by the behavior it isolates, and safe to re-run against the
+pinned image. Record conclusions and relevant structural fields; avoid committing
+huge incidental disassemblies when a small source and precise observation are
+sufficient.
 
 Fixtures and probe corpora have different jobs. A fixture is an acceptance guard
 for supported behavior. A corpus preserves enough observations to justify the

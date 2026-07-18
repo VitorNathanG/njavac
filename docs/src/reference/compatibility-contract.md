@@ -1,9 +1,9 @@
 # Compatibility Contract
 
 njavac's product is not merely a valid class file or behavior equivalent to
-Java. For every program inside the documented
-[language subset](language-support.md), njavac must emit exactly the same class
-bytes as the repository-pinned reference `javac`.
+Java. For every valid Java program inside the documented
+[language subset](language-support.md) that the repository-pinned reference
+accepts, njavac must emit exactly the same class bytes as that reference compiler.
 
 ## Reference boundary
 
@@ -81,44 +81,36 @@ not establish which valid byte sequence the pinned compiler selects. Research
 confidence and evidence retention are defined in
 [Evidence and confidence](../research/evidence.md).
 
-## Current byte-visible invariants
+## Current mechanics
 
-The current backend depends on these established invariants:
-
-- Bytecode-referenced constants are interned in encounter order before structural
-  class constants.
-- Composite constant-pool entries intern their missing children breadth-first.
-- `Long` and `Double` entries consume two logical pool indices.
-- Float and double constants are keyed by javac-compatible canonical NaN bits,
-  while negative zero remains distinct from positive zero.
-- JVM text uses modified UTF-8, encoding NUL as `c0 80` and UTF-16 surrogate code
-  units independently.
-- Attribute vectors are the single authority for interning and write order.
-- Stack-map deltas use the first frame's absolute offset and then
-  `offset - previous - 1`; the smallest valid frame encoding is selected.
-- Source positions are pending until consumed by a real instruction. Code-free
-  statements do not automatically create line entries.
-- Branches, frame requests, and line events remain symbolic until final layout;
-  dead and goto-to-next unconditional branches are compacted without destabilizing
-  their anchors.
-
-The exact local decision rules belong in code doc comments and fixtures rather
-than being duplicated here.
+The contract owns what must match, while the architecture guide owns how the
+current compiler achieves it. See [Lowering](../architecture/lowering.md) for
+physical Java-expression choices,
+[Assembler and Metadata](../architecture/assembler-and-metadata.md) for symbolic
+layout and PC-bearing metadata, and
+[Class File](../architecture/classfile.md) for constant-pool and attribute order.
+Exact local decision rules belong in code doc comments and fixtures.
 
 ## Supported-program qualification
 
 The contract applies only when all of these are true:
 
 - The source satisfies [Language Support](language-support.md).
-- It does not reach either known wide-local or long-branch assembler defect.
+- The source is valid Java accepted by the pinned reference compiler before
+  njavac's result is considered.
+- It does not reach any current defect or accidental-acceptance signature excluded
+  by the language-support page.
+- It stays within the documented source-line, method-code, and modified-UTF-8
+  limits.
 - Compilation uses the repository-pinned reference environment and corresponding
   njavac build.
 - The same source filename is supplied to both compilers so `SourceFile` agrees.
 - For CLI use, the public class name matches the source basename.
 
-Outside that boundary, a diagnostic, panic, wrong class, or accidental match does
-not extend the supported language. Deliberate unsupported diagnostics and known
-defects are listed on the support page so the contract cannot hide them.
+Outside that boundary, a diagnostic, panic, wrong class, accidental acceptance, or
+accidental byte match does not extend the supported language. Deliberate
+unsupported diagnostics, accidental-acceptance exclusions, and known defects are
+listed on the support page so the contract cannot hide them.
 
 ## Evidence and gates
 

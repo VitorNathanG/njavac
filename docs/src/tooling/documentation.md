@@ -8,11 +8,18 @@ this page owns build, preview, Mermaid, and link-check mechanics.
 
 Book sources live under `docs/src/`. `docs/src/SUMMARY.md` controls navigation and
 which pages mdBook renders. A Markdown file that exists but is not listed in the
-summary is not part of the rendered book or the rendered-link check.
+summary is not part of the rendered book or the rendered-link check. The
+`docs-check` source inventory closes that gap by rejecting any recursive Markdown
+source, except `SUMMARY.md` itself, that has no summary entry.
 
 Rendered output goes to `docs/book/`. It is generated, ignored by Git, and should
 never be edited directly. The documentation container runs as the host UID/GID so
 the output remains removable and writable without elevated permissions.
+
+`docs/mermaid.min.js` and `docs/mermaid-init.js` are checked-in build inputs, not
+generated book output. Keep durable explanatory images under
+`docs/src/assets/images/` and reference them from an included page; do not place
+source assets under `docs/book/`.
 
 ## Commands
 
@@ -22,7 +29,10 @@ flowchart LR
     Image --> Preview[make docs]
     Image --> Build[make docs-build]
     Build --> Book[docs/book]
-    Book --> Links[make docs-check]
+    Source --> Inventory[SUMMARY source inventory]
+    Book --> Links[Rendered link check]
+    Inventory --> Check[make docs-check]
+    Links --> Check
 ```
 
 | Target | Purpose | Result |
@@ -30,11 +40,11 @@ flowchart LR
 | `make docs-image` | Build the pinned mdBook and Mermaid tool image. | Local Docker image only. |
 | `make docs` | Serve the book for interactive review on the configured loopback port. | Live preview plus generated `docs/book/`; stop with the foreground process. |
 | `make docs-build` | Render the book once through Docker. | Replaces or updates `docs/book/`; fails on mdBook or preprocessor errors. |
-| `make docs-check` | Build first, then inspect rendered links and fragments with pinned Lychee. | Documentation gate for rendered internal links. |
+| `make docs-check` | Build first, inventory Markdown sources against `SUMMARY.md`, then inspect rendered links and fragments with pinned Lychee. | Documentation source-inclusion, rendering, and internal-link gate. |
 
 `DOCS_PORT` changes the host preview port and `DOCS_IMAGE` changes the local image
-tag. Consult `make help` for current invocation syntax rather than copying a flag
-catalog into prose.
+tag. `make help` owns target names and short target hints; `Makefile` owns variable
+defaults and forwarding.
 
 ## Pinned toolchain
 
@@ -48,6 +58,13 @@ browser assets. The link gate runs a pinned Lychee image in offline mode against
 read-only mount of the rendered book. It checks internal links and anchor-only
 fragments without turning external network availability into a documentation
 failure.
+
+The configured mdBook 0.5.4 build currently prints a warning that
+`mdbook-mermaid` was built against mdBook 0.5.0. This is an honest compatibility
+warning from the preprocessor, not a claim that the repository configures mdBook
+0.5.0 and not, by itself, a failed build. The current build completes and renders
+Mermaid with that warning. Do not suppress it or describe the versions as an
+exact pair; investigate it when changing either tool or if preprocessing fails.
 
 ## Mermaid
 
@@ -73,9 +90,10 @@ example, link to a sibling as `fuzzing.md` and to contribution guidance as
 numbers or copied explanations.
 
 The link checker sees rendered pages, not every Markdown file in the source tree.
-Before considering a new page integrated, ensure the navigation owner adds it to
-`SUMMARY.md`, then run `make docs-check`. A build success alone does not prove that
-an unlisted source page rendered.
+`docs/check-summary.sh` separately checks that each `docs/src/**/*.md` source has
+a literal page link in `SUMMARY.md`. Before considering a new page integrated,
+ensure the navigation owner adds it, then run `make docs-check`. A build success
+alone does not prove that an unlisted source page rendered; the full gate does.
 
 ## Documentation workflow
 

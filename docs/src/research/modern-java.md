@@ -46,9 +46,8 @@ listed are unverified, not implicitly simple or unsupported forever.
 - **[U] Attributes:** reported class carries only `SourceFile` at class level in
   the minimal probe.
 
-This is not parser sugar over current support. It requires source-derived type
-identity, the first supported instance method, and a new synthesized-constructor
-shape.
+This requires source-derived type identity, instance methods, and a synthesized
+constructor shape.
 
 ### Module import declarations
 

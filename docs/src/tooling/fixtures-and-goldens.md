@@ -1,7 +1,7 @@
 # Fixtures and Goldens
 
 The fixture corpus is the acceptance suite. Each fixture is compiled by njavac
-and compared byte-for-byte with either a fresh pinned `javac` output or a cached
+and compared byte-for-byte with either a fresh configured `javac` output or a cached
 copy of that output.
 
 ## Fixture contract
@@ -60,6 +60,7 @@ Both compilers receive the complete selected fixture list in one invocation. Thi
 avoids paying a JVM startup per source and matches normal multi-source compiler
 use. Before compiling, the harness removes outputs expected for the selected
 fixtures so an old class cannot turn a missing compiler output into a false pass.
+It does not inventory unrelated output basenames.
 
 An online mismatch is localized with a structural `classdiff` followed by a
 noise-stripped `javap -v -p` comparison. Offline mode uses the cached class as the
@@ -67,7 +68,7 @@ reference and cannot tell whether that reference is current.
 
 ## Golden cache
 
-Goldens are convenience copies of class files emitted by the pinned `javac`.
+Goldens are convenience copies of class files emitted by the configured `javac`.
 They live in the Docker volume selected by `VOLUME`, mounted at `GOLDENS`; they
 are not source files, are not checked into Git, and must never be hand-edited.
 
@@ -75,7 +76,7 @@ are not source files, are not checked into Git, and must never be hand-edited.
 
 1. Build the current main image.
 2. Check whether the golden volume contains any top-level class file.
-3. If none exists, record the whole fixture suite with the pinned `javac`.
+3. If none exists, record the whole fixture suite with the configured `javac`.
 4. Run njavac and compare the whole suite, or `FILE`, against the volume.
 
 The emptiness check is not a freshness check. A nonempty volume can contain
@@ -84,9 +85,18 @@ without warning. A cached mismatch can therefore mean either a compiler
 regression or a stale reference, while a cached pass can miss a changed reference
 compiler behavior.
 
-Run `make record` after changing the fixture corpus or pinned JDK. It invokes the
-pinned `javac` over the whole current suite and then verifies against the refreshed
-cache. In particular:
+Recording removes and rewrites the expected class for every current fixture, but
+it does not clear the volume first. A golden whose fixture was renamed or removed
+remains as an orphan. Comparisons ignore that unrelated basename, but its presence
+can make the volume look nonempty and prevent `make verify` from auto-recording
+when no current golden is usable. Remove the Docker volume explicitly when a
+strictly clean cache is required, then use `make record`; never delete or edit
+individual class bytes as a repair.
+
+Run `make record` after changing the fixture corpus or configured JDK. The Make
+target invokes `javac` over the whole current suite and then already runs offline
+verification against the refreshed current entries. A second `make verify` is
+redundant unless another change occurred. In particular:
 
 ```sh
 make record FILE=fixtures/branches/IfElse.java
@@ -101,10 +111,10 @@ the whole suite; `FILE` applies only to the subsequent offline verification.
 | --- | --- | --- |
 | Fast whole-suite edit loop | `make verify` | Cached and possibly stale |
 | Fast focused fixture loop | `make verify FILE=fixtures/.../Case.java` | Cached and possibly stale |
-| Fresh focused diagnosis | `make correctness FILE=fixtures/.../Case.java` | Live pinned `javac` |
-| Fresh pre-commit acceptance | `make correctness` | Live pinned `javac` |
-| Fresh acceptance plus controlled timing | `make bench` | Live pinned `javac` |
-| Refresh cache after fixture or JDK change | `make record` | Rewrites expected goldens from pinned `javac` |
+| Fresh focused diagnosis | `make correctness FILE=fixtures/.../Case.java` | Live configured `javac` |
+| Fresh pre-commit acceptance | `make correctness` | Live configured `javac` |
+| Fresh acceptance plus controlled timing | `make bench` | Live configured `javac` |
+| Refresh cache after fixture or JDK change | `make record` | Rewrites expected goldens from configured `javac` |
 
 Passing one focused fixture is not evidence that the complete corpus still
 matches. Finish compiler behavior changes with the whole-suite fresh gate.
@@ -116,7 +126,7 @@ matches. Finish compiler behavior changes with the whole-suite fresh gate.
 3. Keep the program inside the currently supported language and current
    one-class harness shape.
 4. Add a concise edge comment, especially for a regression.
-5. Refresh the cache with `make record`.
+5. Refresh the cache and run its built-in offline verification with `make record`.
 6. Run a focused fresh check if diagnosis is useful.
 7. Run `make correctness` over the complete suite.
 

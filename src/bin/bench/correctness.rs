@@ -112,8 +112,8 @@ pub(super) fn correctness(
 /// the goldens come from the pinned `javac`, then persisted to a volume.
 pub(super) fn record_goldens(cfg: &Config, fixtures: &[PathBuf], golden_dir: &Path) {
     std::fs::create_dir_all(golden_dir).expect("create golden dir");
-    // Clear the goldens we're about to regenerate, so a renamed/removed fixture
-    // can't leave a stale orphan in the cache.
+    // Clear outputs for current fixtures before regenerating them. Goldens for
+    // renamed or removed fixtures remain as harmless orphans in this flat cache.
     for fix in fixtures {
         let _ = std::fs::remove_file(golden_dir.join(format!("{}.class", base_name(fix))));
     }
@@ -129,13 +129,18 @@ pub(super) fn record_goldens(cfg: &Config, fixtures: &[PathBuf], golden_dir: &Pa
     let mut argv = vec![cfg.javac.clone(), "-d".into(), golden_dir.display().to_string()];
     argv.extend(fixtures.iter().map(|p| p.to_string_lossy().into_owned()));
     if !run_quiet(&argv) {
-        eprintln!("  WARN  javac exited non-zero while recording");
+        eprintln!("  FAIL  javac exited non-zero while recording");
+        std::process::exit(1);
     }
     let ok = fixtures
         .iter()
         .filter(|f| golden_dir.join(format!("{}.class", base_name(f))).exists())
         .count();
     println!("  -> recorded {ok}/{} goldens", fixtures.len());
+    if ok != fixtures.len() {
+        eprintln!("  FAIL  golden recording was incomplete");
+        std::process::exit(1);
+    }
 }
 
 /// `javap -v -p` output as lines, with the header lines that legitimately differ

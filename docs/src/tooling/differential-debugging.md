@@ -1,6 +1,6 @@
 # Differential Debugging
 
-Differential debugging treats the pinned `javac` as a black box. Build probes,
+Differential debugging treats the configured in-image `javac` as a black box. Build probes,
 observe emitted class files, and infer the smallest rule that explains a complete
 case matrix. Do not inspect or derive a design from javac or OpenJDK source.
 
@@ -27,15 +27,17 @@ to establish acceptance.
 ## `make probe`
 
 `make probe FILE=...` bind-mounts the repository, compiles the source only with
-the pinned `javac` into a temporary directory, then prints private and verbose
+the configured `javac` into a temporary directory, then prints private and verbose
 `javap` output. It is useful for constant-pool order, attributes, stack maps, line
 tables, descriptors, flags, and exact bytecode layout.
 
 The source must be visible below the repository mount and should follow the normal
-public-class/filename rule. Put throwaway matrices under an ignored repository
-path such as `scratch-fuzz/`, not outside the mount. The temporary class files are
-deleted with the container; preserve durable evidence as a probe corpus or fixture
-when required by the development workflow.
+public-class/filename rule. Pass a repository-relative path with no whitespace,
+quotes, shell metacharacters, or leading option-like component because the Make
+recipe interpolates `FILE` into an in-container shell command. Put throwaway
+matrices under an ignored repository path such as `scratch-fuzz/`, not outside the
+mount. The temporary class files are deleted with the container; preserve durable
+evidence as a probe corpus or fixture when required by the development workflow.
 
 `probe` answers "what did the reference emit?" It does not run njavac and is not a
 gate.
@@ -45,7 +47,7 @@ gate.
 `make src-diff FILE=...` is the fastest end-to-end diagnostic for one ad hoc
 source:
 
-1. Compile with the pinned `javac`.
+1. Compile with the configured `javac`.
 2. Compile with the image's njavac binary.
 3. Compare `<basename>.class` byte-for-byte.
 4. If bytes differ, print the structural `classdiff` report.
@@ -57,9 +59,13 @@ It assumes the source basename is the emitted class basename.
 Important: byte divergence is an expected diagnostic outcome, so the internal
 `classdiff` and text `diff` failures are deliberately ignored. If both compilers
 accepted, `make src-diff` returns success even when it printed `bytes differ`.
-Reference rejection and njavac rejection have distinct nonzero statuses. Never use
-this command in a script as a boolean byte-identity gate; parse-free gate semantics
-belong to `make correctness`.
+This also means a `classdiff` read or parse failure and a textual-diff tool failure
+can be hidden while the outer command succeeds. The shell emits distinct internal
+statuses for reference and njavac rejection, but GNU Make normally collapses a
+failed recipe to its own nonzero status. Treat the printed rejection label as the
+diagnostic distinction, not the top-level Make status. Never use this command in a
+script as a boolean byte-identity or diagnostic-health gate; parse-free gate
+semantics belong to `make correctness`.
 
 ## `make diff` and `classdiff`
 
@@ -74,9 +80,12 @@ at the likely cause rather than a derived symptom. It remains useful when `javap
 renders both files identically.
 
 The `classdiff` binary also supports a one-file structural dump when run directly.
-For two files it exits zero on identity and nonzero on divergence. `make diff`
-therefore has status-bearing comparison semantics, but it compares only the files
-you supplied and does not prove how they were produced.
+For two files it exits zero only on identity. Exit 1 is ambiguous: it represents
+both byte divergence and read or parse failure; usage errors use another nonzero
+status. `make diff` therefore supports a zero-is-identical check, but a nonzero
+result must be interpreted with its output. It compares only the supplied files
+and does not prove how they were produced. `A` and `B` have the same
+repository-relative, shell-safe path constraint as other diagnostic paths.
 
 ## Fixture mismatch diagnostics
 
@@ -99,7 +108,7 @@ the verbose disassembly before comparing it. If class bytes differ but normalize
 3. Reduce the source while preserving the same structural signature.
 4. Build a matrix around all relevant operand types, constants, source positions,
    control-flow shapes, and boundary values.
-5. Use `make probe` to collect pinned-reference observations for cases njavac does
+5. Use `make probe` to collect configured-reference observations for cases njavac does
    not yet compile.
 6. State a falsifiable rule and test predictions outside the examples that
    suggested it.

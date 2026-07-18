@@ -21,10 +21,10 @@ pub(super) fn fold(exprs: &ExprArena, expr: ExprId) -> Option<Const> {
     fold_impl(exprs, expr, false)
 }
 
-/// Return a value only when the complete subtree is available to javac lowering as
-/// an immediate. Unlike `fold`, a deciding logical left operand does not hide an
-/// unavailable right operand. This keeps non-strict shortcuts structural while
-/// preserving javac's observed `long >>> long` non-folding exception.
+/// Return a value only when the complete subtree is available to current lowering
+/// as an immediate. Unlike `fold`, a deciding logical left operand does not hide
+/// an unavailable right operand. This keeps non-strict shortcuts structural while
+/// preserving the pinned output's observed `long >>> long` non-folding case.
 pub(super) fn lowering_const(exprs: &ExprArena, expr: ExprId) -> Option<Const> {
     fold_impl(exprs, expr, true)
 }
@@ -53,10 +53,10 @@ fn fold_impl(exprs: &ExprArena, expr: ExprId, strict_logical: bool) -> Option<Co
                 fold_impl(exprs, *left, strict_logical)?,
                 fold_impl(exprs, *right, strict_logical)?,
             );
-            // javac's ConstFold folds *every* shift except `long >>> long` (unsigned
-            // shift, both operands `long`) — a genuine javac quirk. Returning None
-            // there forces the runtime `lushr` (with the distance narrowed by
-            // `gen_shift_distance`), matching javac byte-for-byte.
+            // Pinned black-box output leaves constant `long >>> long` unfolded,
+            // while the probed sibling shift forms fold. Returning None forces the
+            // runtime `lushr`, with the distance narrowed by
+            // `gen_shift_distance`, to match those observations.
             if *op == BinOp::UShr && matches!(l, Const::Long(_)) && matches!(r, Const::Long(_)) {
                 return None;
             }
@@ -244,7 +244,7 @@ pub(super) fn const_convert(c: Const, to: PrimitiveType) -> Const {
 }
 
 /// The signed increment of an int-family additive compound-assign with a *constant*
-/// RHS (`+= k` → `k`, `-= k` → `-k`), or `None` when javac's magnitude normalization
+/// RHS (`+= k` → `k`, `-= k` → `-k`), or `None` when the observed magnitude normalization
 /// does not apply: a non-int-family promoted type (`long`/`float`/`double` keep the
 /// raw `lsub`/…), a non-additive op, or a non-constant RHS.
 pub(super) fn int_additive_const_delta(
@@ -264,11 +264,11 @@ pub(super) fn int_additive_const_delta(
     })
 }
 
-/// javac loads an int increment as a non-negative magnitude and picks the operator by
-/// sign: `(|delta|, is_add)` — `iadd` for `delta ≥ 0`, `isub` for `delta < 0`. Every
-/// negative delta uses `isub`, *including* `i32::MIN`: its magnitude is unrepresentable
-/// so `wrapping_neg` returns `i32::MIN` itself, pushed as `-2147483648` with `isub`
-/// (verified — javac emits `isub` for `x += i32::MIN` too, since `x + MIN == x - MIN`).
+/// Pinned probes load an int increment as a non-negative magnitude and select the
+/// operator by sign: `(|delta|, is_add)` uses `iadd` for `delta >= 0` and `isub`
+/// for the probed negative cases, including `i32::MIN`. Its magnitude is
+/// unrepresentable, so `wrapping_neg` returns `i32::MIN` itself, pushed as
+/// `-2147483648` with `isub`; modulo arithmetic makes `x + MIN == x - MIN`.
 pub(super) fn int_delta_magnitude(delta: i32) -> (i32, bool) {
     if delta >= 0 {
         (delta, true)

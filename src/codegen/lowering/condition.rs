@@ -37,7 +37,8 @@ impl Gen<'_> {
 
         // A code-free verdict has no instruction to consume the condition line.
         // Restore the previous pending position unless the lowered item carries
-        // javac's preserving provenance for a static-false negated shortcut.
+        // the pinned output's preserving provenance for a static-false negated
+        // shortcut.
         if self.emitter.instruction_count() == code_before {
             let taken = if c.is_true() {
                 true
@@ -103,8 +104,8 @@ impl Gen<'_> {
         }
     }
 
-    /// Lower a boolean expression to a `CondItem` (javac's `genCond`): emit its
-    /// operand loads eagerly, leaving only the deciding branch pending. A
+    /// Lower a boolean expression to a `CondItem`: emit its operand loads eagerly,
+    /// leaving only the deciding branch pending. A
     /// complete lowering-constant subtree collapses to a static verdict with no
     /// code. Non-strict `false && q` / `true || q` instead walk structurally and
     /// mark a shortcut verdict while dropping the dead operand. `&&`/`||` short-
@@ -112,7 +113,7 @@ impl Gen<'_> {
     /// non-deciding outcome falls through into the right operand, and the two
     /// chains are merged by the local conditional-item model.
     fn gen_cond(&mut self, e: ExprId) -> CondItem {
-        // This query requires the complete subtree to be available as a javac
+        // This query requires the complete subtree to be available as a lowering
         // immediate. Non-strict shortcuts (`true || local`) stay structural so
         // grouping, negation, and casts retain their observable lowering history.
         if let Some(c) = lowering_const(self.exprs, e) {
@@ -187,8 +188,8 @@ impl Gen<'_> {
         );
         let opcode = match p.stack() {
             StackTy::Int => {
-                // javac folds `x <op> 0` to the compare-with-zero opcodes, but only
-                // when the literal `0` is the *right* operand.
+                // Pinned probes use compare-with-zero opcodes for `x <op> 0`, but
+                // only when the folded zero is the right operand.
                 if matches!(fold(self.exprs, right), Some(Const::Int(0))) {
                     self.gen_promoted_operand(left, PrimitiveType::Int);
                     int_zero_branch(op, true)
@@ -236,8 +237,8 @@ impl Gen<'_> {
         }
     }
 
-    /// Emit the branch that routes the FALSE outcome of `c` to a chain, returning
-    /// it (javac's `CondItem.jumpFalse`). Total: a static verdict emits nothing.
+    /// Emit the branch that routes the false outcome of `c` to a chain and return
+    /// it. A static verdict emits nothing.
     fn jump_false(&mut self, c: CondItem) -> Option<Label> {
         if c.is_true() {
             return None; // never false
@@ -250,8 +251,8 @@ impl Gen<'_> {
                 let f = self.emit_test_branch(negate_op(op));
                 self.merge_chains(c.false_chain, Some(f))
             }
-            // dontgoto with a live true_chain (`q || false`): the false path is an
-            // unconditional jump.
+            // A static-false verdict with a live true chain (`q || false`) needs an
+            // unconditional jump for the false path.
             CondOp::DontGoto => {
                 debug_assert_eq!(
                     self.emitter.stack_depth(),
@@ -267,8 +268,8 @@ impl Gen<'_> {
         }
     }
 
-    /// Emit the branch that routes the TRUE outcome of `c` to a chain, returning
-    /// it (javac's `CondItem.jumpTrue`). Total: a static verdict emits nothing.
+    /// Emit the branch that routes the true outcome of `c` to a chain and return
+    /// it. A static verdict emits nothing.
     fn jump_true(&mut self, c: CondItem) -> Option<Label> {
         if c.is_false() {
             return None; // never true

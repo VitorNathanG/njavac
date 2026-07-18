@@ -22,8 +22,8 @@ Unless marked otherwise, entries are migrated **[U]** reports under
 - **[U] Labels:** labeled statements and labeled break/continue add a separate
   semantic namespace and non-local target resolution.
 
-`while` and C-style `for` are the second ordered
-[language rung](../direction/language-rungs.md).
+`while` and C-style `for` are separate cycles in the ordered
+[language rungs](../direction/language-rungs.md).
 
 ## Integer switch
 
@@ -131,5 +131,5 @@ and class/member ordering; they are not parser-only additions.
   attribution work even when some modifiers or inferred spellings are
   byte-invisible.
 
-Current branch-local declarations remain a deliberate refusal, not partial block
-support.
+The current block boundary is owned by
+[Language Support](../reference/language-support.md#local-declarations-and-scope).

@@ -5,7 +5,7 @@
 # seed false comfort — neither belongs here.
 #
 # Reliability over speed for now: a cold `docker build` of the pinned GraalVM
-# image each run (no GHA layer cache yet). Only the pinned javac reproduces the
+# image each run (no GHA layer cache yet). Only the content-pinned javac reproduces the
 # golden bytes, so `make correctness` builds and runs entirely inside that image.
 # Add layer caching later only if the cold build's runtime hurts.
 name: byte-identity

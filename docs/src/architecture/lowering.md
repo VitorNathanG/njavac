@@ -2,15 +2,16 @@
 
 Lowering turns an attributed current-subset AST into exact physical JVM
 instruction choices and an ordered class-file model. It is deliberately
-javac-compatible rather than a generic optimization layer.
+driven by pinned black-box output rather than acting as a generic optimization
+layer.
 
 The facade `src/codegen.rs` owns class planning. The implementation is split
 between reusable policy modules and `src/codegen/lowering/`:
 
 | Source | Responsibility |
 | --- | --- |
-| `src/codegen/preflight.rs` | Reject valid frontend shapes the backend cannot represent safely |
-| `src/codegen/constant.rs` | javac-compatible primitive folding queries and constant conversions |
+| `src/codegen/preflight.rs` | Reject attributed frontend shapes the backend cannot represent safely |
+| `src/codegen/constant.rs` | Primitive folding queries and constant conversions reconstructed from pinned output |
 | `src/codegen/condition.rs` | Pure `CondItem` state used by boolean lowering |
 | `src/codegen/ops.rs` | Opcode-family and conversion selection helpers |
 | `src/codegen/stack.rs` | Primitive Java type to JVM computational type projection |
@@ -27,16 +28,26 @@ arena and method list. It then performs this sequence:
 ```mermaid
 flowchart TD
     Inputs["CompilationUnit + Analysis + source_file"]
-    Preflight["preflight_codegen"]
-    CP["ConstantPool::new"]
-    Init["gen_init"]
-    Methods["gen_method for each method"]
-    CF["ClassFile::new"]
-    Plan["ClassPlan { ClassFile, ConstantPool }"]
-    Bytes["ClassPlan::to_bytes"]
 
-    Inputs --> Preflight --> CP --> Init --> Methods --> CF --> Plan --> Bytes
+    subgraph CodegenPlan["codegen::plan"]
+        Identity["arena and method identity checks"]
+        Preflight["preflight_codegen"]
+        CP["ConstantPool::new"]
+        Init["gen_init"]
+        InitAsm["Emitter::finish"]
+        Methods["gen_method for each method"]
+        MethodAsm["Emitter::finish for each method"]
+        CF["ClassFile::new"]
+        Plan["ClassPlan { ClassFile, ConstantPool }"]
+        Return["return ClassPlan"]
+        Identity --> Preflight --> CP --> Init --> InitAsm --> Methods --> MethodAsm --> CF --> Plan --> Return
+    end
+    Inputs --> Identity
 ```
+
+`ClassPlan::to_bytes` runs only after `codegen::plan` returns; it is not nested in
+planning. Each constructor or source method is fully assembled by its own
+`Emitter::finish` before `ClassFile::new` builds the ordered class model.
 
 Preflight runs before constant interning or instruction recording. A returned
 `NJC1001` therefore cannot leave a partially observable plan. The one current
@@ -79,7 +90,7 @@ Value lowering distinguishes:
 
 Assignments call `gen_coerced`, which folds a constant directly to the target
 type or emits a runtime conversion. Binary operations emit the left operand and
-its widening before the right operand, preserving javac's observable instruction
+its widening before the right operand, preserving the pinned output's instruction
 and pool encounter order. Shift distance lowering is separate because the JVM
 consumes an `int` distance even for a `long` left operand.
 
@@ -129,7 +140,8 @@ Comparisons evaluate promoted operands and leave a pending true-polarity branch
 test. `&&` and `||` resolve only the chain that must enter the right operand and
 merge the other chain. Dead right operands contribute no code or metadata.
 Parentheses, negation, and boolean casts transform explicit `CondItem` state where
-their history changes javac's byte-visible materialization or source positions.
+black-box comparisons show their history changes materialization or source
+positions.
 
 `gen_if` consumes a condition item as control flow. A code-free static verdict
 emits only the live arm and generally restores the previous pending line.
@@ -161,15 +173,17 @@ It currently recomputes these Java facts:
   the selected parameter type.
 
 This is a known boundary gap. The target is for sema to record conversions and a
-complete resolved invocation while lowering remains responsible for javac's exact
-physical expression and control-flow shape.
+complete resolved invocation while lowering remains responsible for the exact
+physical expression and control-flow shape observed in pinned output.
 
 ## Handoff to assembly and class writing
 
 Lowering selects exact instruction forms such as short local opcodes, `ldc`
-width, branch polarity, and `iinc` form. The assembler must not replace one with
-an equivalent encoding. It owns only symbolic layout, supported goto compaction,
-metadata resolution, and byte encoding. See
+width, branch polarity, and `iinc` form, and it drives label placement, pending
+source-line updates, and frame requests. The assembler must not replace a chosen
+instruction or topology with an equivalent encoding. It owns symbolic storage and
+stable anchors, stack-word accounting, pending-line consumption, supported goto
+compaction, final layout, metadata resolution, and byte encoding. See
 [assembler and metadata](assembler-and-metadata.md).
 
 Pool operands are interned while lowering encounters their instructions. That is

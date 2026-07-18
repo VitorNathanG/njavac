@@ -21,7 +21,27 @@ conditional and unconditional targets outside the signed 16-bit range. The
 implementation must account for layout changes caused by widened branches rather
 than patching offsets after a fixed layout.
 
-## 3. Complete attribution facts
+## 3. Bare-CR/LF line tracking
+
+Treat a bare CR as a Java line terminator for source positions and line-number
+events while continuing to count CRLF as one terminator. Add a focused fixture
+that distinguishes bare CR, LF, and CRLF without combining another lexer change.
+
+## 4. Integral zero-divisor rejection
+
+Remove the ordinary-expression `/` and `%` zero-divisor rejection. Java permits
+these expressions and they complete abruptly at runtime; contexts that require a
+constant expression must enforce that separate rule when such contexts are added.
+Add focused runtime fixtures for literal and non-literal left operands.
+
+## 5. Implicit narrowing range validation
+
+Validate the folded value before accepting implicit constant assignment narrowing
+to `byte`, `short`, or `char`. Reject an out-of-range constant instead of allowing
+lowering to truncate it. Keep this separate from explicit casts and compound
+assignment, which have different narrowing rules.
+
+## 6. Complete attribution facts
 
 Record conversions and promoted types selected during semantic attribution so
 lowering does not recompute semantic expression results. Expand resolved
@@ -37,7 +57,7 @@ Lowering must consume these facts without reconstructing library signatures. Do
 not create a generic type arena, resolver environment, or source-type hierarchy
 until a language rung gives each one a concrete responsibility.
 
-## 4. Model the typed operand stack
+## 7. Model the typed operand stack
 
 Replace word-depth-only tracking with typed symbolic operand-stack state. Derive
 field and invocation effects from modeled types or descriptors. Frame requests
@@ -48,10 +68,10 @@ This is the byte-preserving prerequisite for non-empty-stack boolean
 materialization and the conditional-expression rung. Land it before changing the
 accepted language.
 
-## 5. Resume language rungs
+## 8. Resume language rungs
 
-After the four infrastructure steps are green, continue with the ordered
-[language rungs](language-rungs.md). If a rung exposes another structural
+After the preceding defects and infrastructure items are green, continue with the
+ordered [language rungs](language-rungs.md). If a rung exposes another structural
 prerequisite, add the smallest tidy-first infrastructure item here and land it
 separately from the feature.
 

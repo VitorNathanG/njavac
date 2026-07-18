@@ -16,7 +16,7 @@ machine-enforced details, such as exact constants and command-line flags.
 - [Quickstart](start/quickstart.md) takes a new maintainer through the first
   build, compile, and byte-identity check.
 - [Workflow](contributing/workflow.md) defines how changes are researched,
-  separated, verified, committed, pushed, and reflected on.
+  separated, verified, reflected on, and explicitly authorized for commit or push.
 
 ## Find an authority
 

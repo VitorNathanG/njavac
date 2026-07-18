@@ -22,13 +22,14 @@ otherwise, entries are migrated **[U]** reports under the confidence rules in
   escapes at compile time, producing one ordinary string constant. The complete
   normalization matrix has not been retained.
 - **[U] General Unicode translation:** Java translates eligible Unicode escapes
-  before tokenization. njavac currently decodes only literal-local escapes, so a
-  future source layer must retain translated-to-original position mapping.
+  before tokenization. A future source layer must retain translated-to-original
+  position mapping; the accepted boundary remains owned by
+  [Language Support](../reference/language-support.md#character-and-string-literals).
 - **[U] Direct Unicode source:** identifier classification, supplementary
   characters, surrogate handling, diagnostics, and modified UTF-8 output need a
   dedicated corpus.
 - **[U] Text-block line continuation:** the backslash-newline escape is distinct
-  from current ordinary string escapes.
+  from ordinary string-literal escapes.
 
 Hexadecimal floating-point syntax remains unimplemented and has no retained
 future probe corpus. It must cover significand forms, binary exponent, suffix,
@@ -44,8 +45,7 @@ same pool value.
 - **[U] Field assignment values:** `obj.f = x` used as a value was reported to
   require `dup_x1` plus `putfield`.
 - **[U] General lvalues:** array elements, fields, qualified names, and assignment
-  conversions require a focused lvalue lowering authority rather than extending
-  the current local-only statement representation.
+  conversions require a focused lvalue lowering authority.
 
 ## Conditional expression
 
@@ -54,8 +54,9 @@ same pool value.
   `double` arm.
 - **[U] Live-stack materialization:** values produced through branches while a
   surrounding value remains live require typed stack snapshots and
-  non-empty-stack `full_frame` entries. This is the first ordered
-  [language rung](../direction/language-rungs.md).
+  non-empty-stack frame evidence. Conditional expressions and general
+  boolean-value contexts are separate ordered
+  [language rungs](../direction/language-rungs.md).
 
 ## String concatenation
 

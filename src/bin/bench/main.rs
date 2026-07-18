@@ -8,7 +8,7 @@
 //!      loudly, with a localized structural and javap diff of the first mismatch,
 //!      so it doubles as the acceptance test.
 //!
-//!   2. TIMING (deterministic harness only): time compiling the whole suite with
+//!   2. TIMING (controlled Docker harness only): time compiling the whole suite with
 //!      each compiler. Host timings are noise (JVM startup jitter, scheduler,
 //!      thermal), so timings are only produced inside the Docker harness.
 //!

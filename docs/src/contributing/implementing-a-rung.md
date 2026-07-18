@@ -103,8 +103,9 @@ After fixture changes, refresh cached goldens before relying on the fast gate:
 
 ```sh
 make record
-make verify
 ```
+
+`make record` performs the offline verification after recording.
 
 ## Verify the rung
 
@@ -155,6 +156,7 @@ A rung is done only when:
 - Active planning entries completed by the rung are deleted.
 - The cycle reflection has been presented before starting another rung.
 
-When a commit is requested, keep preparatory tidies and behavior in separate
-commits, then push each resulting commit to `origin/main` unless explicitly told
-not to push.
+When commits are authorized, keep preparatory tidies and behavior in separate
+commits. Commit and push authorization is governed solely by
+[Maintainer Workflow](workflow.md#commit-and-push-authority); completing a rung
+does not authorize either action.

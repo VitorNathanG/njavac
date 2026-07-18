@@ -1,20 +1,34 @@
 # Profiling
 
 njavac has two intentionally different performance measurements. `make bench`
-measures process-level wall clock in the controlled Docker harness. `make profile`
-measures the compiler pipeline itself in-process on the host.
+measures process-level wall clock in a Docker harness with resource controls.
+`make profile` measures the compiler pipeline itself in-process on the host.
 
 ## Choose the measurement
 
 | Question | Tool | What it includes |
 | --- | --- | --- |
-| How long does one normal whole-suite compiler invocation take? | `make bench` | Process startup, dynamic linking or JVM startup, and compilation of the complete fixture corpus. |
+| How long does one normal whole-suite compiler invocation take on this controlled host? | `make bench` | Repeated samples, each including process startup, dynamic linking or JVM startup, and compilation of the complete fixture corpus. |
 | Which njavac phase consumes compiler time? | `make profile` | Hot in-process lexing, parsing, semantic analysis, codegen planning, and serialization. No process spawn per compile. |
 | Does output still match javac? | `make correctness` | Fresh byte comparison, not a performance measurement. |
 
 For tiny inputs, process startup dominates the benchmark, especially javac's JVM
 startup. Do not interpret `make bench` as a phase profile. Conversely, the hot
 profile excludes normal CLI startup and cannot replace benchmark timing.
+
+`make bench` first runs the fresh correctness pass. It then warms each compiler
+and collects multiple whole-suite process samples: the configured defaults use
+many more njavac samples than javac samples because javac startup is expensive.
+CPU affinity, quota, memory, swap, and PID controls reduce noise but do not control
+host load, hypervisor scheduling, power, or thermal state. Compare nearby runs on
+the same host and configuration; do not call the result deterministic.
+
+The timed closures discard compiler output and ignore each timed process's success
+status. The initial correctness result remains authoritative for the tested pass,
+but a compiler that fails during a later warm-up or measured invocation can still
+produce a timing sample and a successful benchmark command. Treat suspiciously
+short samples or intermittent failures as invalid timing evidence and reproduce
+with explicit compiler diagnostics.
 
 ## Profile method
 
@@ -80,10 +94,11 @@ runs on the same machine rather than isolated single measurements.
 
 ## Trust boundary
 
-`make profile` is deliberately local. It does not invoke pinned javac, run in the
+`make profile` is deliberately local. It does not invoke the configured javac, run in the
 acceptance container, or compare class bytes. A successful or faster profile is
 not acceptance evidence. Run the required Docker correctness gate separately.
 
 Forced host execution of the benchmark harness is likewise debugging only. The
 sanctioned process-level timing command is `make bench`, whose CPU and memory
-controls are described in [Docker and CI](docker-and-ci.md).
+controls and residual host boundary are described in
+[Docker and CI](docker-and-ci.md).

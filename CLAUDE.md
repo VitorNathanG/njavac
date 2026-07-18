@@ -46,9 +46,10 @@ remain authoritative for machine behavior and exact flags.
   gates before moving on.
 - Do not introduce backward-compatibility wrappers without a concrete shipped or
   persisted compatibility requirement.
-- Never push when the user says not to push. Do not create branches. Commit only
-  when requested or when the user has explicitly authorized incremental commits.
-  Otherwise leave verified work in the working tree.
+- Commit and push authorization is governed by the
+  [maintainer workflow](docs/src/contributing/workflow.md#commit-and-push-authority).
+  Do not create branches, and do not treat edit or commit authorization as push
+  authorization.
 - Before committing, inspect status, diff, and recent history; stage only intended
   files. Do not amend unless explicitly requested.
 - At the end of a substantial cycle, present a short reflection: what worked,
@@ -126,15 +127,8 @@ Every code change must leave it truthful, navigable, and internally consistent.
 
 ### Diagrams and Images
 
-- Use Mermaid when relationships, flow, state, or ordering are easier to verify
-  visually than in prose. Keep the adjacent prose sufficient for readers and
-  agents that do not render diagrams.
-- Keep diagrams small, directional, and consistent with the text. A diagram is
-  not a substitute for naming ownership and constraints.
-- Store images under `docs/src/assets/images/`, use descriptive lowercase names,
-  provide useful alt text, and prefer SVG or optimized PNG. Do not commit
-  screenshots when a reproducible text or Mermaid representation is clearer.
-- Never hotlink an image required to understand the guide.
+- Follow the human-facing Mermaid and asset rules in
+  [Documentation policy](docs/src/contributing/documentation-policy.md#diagrams-and-images).
 
 ### Code References
 

@@ -51,8 +51,9 @@ different output-path model.
 
 ## Failure and exit status
 
-The CLI continues to later source paths after an I/O error or returned compiler
-diagnostic. It exits:
+The CLI continues to later source paths after a per-source read error, write error,
+or returned compiler diagnostic. Creation of the shared `-d` directory happens
+once before the source loop; if that setup fails, no source is compiled. It exits:
 
 - `0` when every input compiles and writes successfully.
 - `1` when any source has an I/O failure or returned diagnostic.

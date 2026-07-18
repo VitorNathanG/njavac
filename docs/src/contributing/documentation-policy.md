@@ -13,7 +13,7 @@ Different kinds of facts have different authorities:
 | Authority | Owns | Does not own |
 | --- | --- | --- |
 | Executable code and configuration | Machine behavior, exact constants, configured versions, emitted bytes | Human workflow or planning rationale |
-| `make help` and binary `--help` | Exact targets, variables, flags, and invocation syntax | Task selection and conceptual guidance |
+| `make help`, binary `--help`, and executable configuration | Displayed targets and flags; Makefile variables and defaults | Task selection and conceptual guidance |
 | Root `README.md` | Repository identity and routes into the guide | Coverage ledger, mechanics, plans, or command catalog |
 | This mdBook | Durable human reference, architecture, tooling guidance, contribution policy, research, and direction | Function-local implementation rationale |
 | Code doc comments | One decision function's invariant and javac-matching rule | Whole-system architecture or public coverage |
@@ -99,8 +99,25 @@ a copied command list, and a named function or corpus to an untraceable phrase s
 as "see the boolean tests."
 
 Code comments should use repository-relative paths or stable corpus identifiers.
-Book pages should use relative Markdown links that render in mdBook. Check both
-source-tree and rendered-book links when documentation tooling is available.
+Book pages should use relative Markdown links that render in mdBook. Validate both
+source-tree and rendered-book links with `make docs-check`.
+
+## Diagrams and images
+
+Use Mermaid when a relationship, flow, state transition, or ordering is easier for
+a maintainer to verify visually than in prose. Keep diagrams small, directional,
+and consistent with adjacent text. The prose must remain sufficient for readers
+and agents that do not render Mermaid. Link to a canonical workflow diagram rather
+than drawing a second version that can drift.
+
+Human-facing images must help a maintainer perform or understand a task; do not add
+decorative screenshots. Store required assets under `docs/src/assets/images/` with
+descriptive lowercase filenames, useful alt text, and any necessary source or
+license attribution. Prefer SVG for diagrams and optimized PNG for raster content.
+Use a reproducible text, table, or Mermaid diagram instead of a screenshot when it
+communicates the same fact. Never hotlink an image required to understand the
+guide, and verify that labels remain readable in the rendered desktop and narrow
+layouts.
 
 ## Document evidence honestly
 
@@ -138,4 +155,4 @@ Before landing documentation changes, verify:
 - Code comments and prose do not claim authority from javac internals.
 - Completed planning entries were deleted.
 - New page links use expected stable paths.
-- The documentation build and link gate pass once that sanctioned target exists.
+- `make docs-check` passes.

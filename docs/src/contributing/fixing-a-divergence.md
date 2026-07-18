@@ -94,8 +94,10 @@ Refresh cached goldens after adding the fixture:
 
 ```sh
 make record
-make verify FILE=fixtures/<topic>/<Fixture>.java
 ```
+
+`make record` performs the offline verification after recording. Use a focused
+`make verify FILE=...` later only when another edit needs the fast cached loop.
 
 ## Verify completion
 
@@ -119,6 +121,6 @@ Do not combine independent fuzzer signatures or opportunistic refactors in one f
 Finish reproduction, model, fix, fixture, authoritative verification, planning
 deletion, and reflection for one signature before beginning the next.
 
-Create a commit only when explicitly requested. Once the fix and fixture are
-committed, push to `origin/main` unless explicitly told not to push. A fix is not
-landed while its regression fixture or commit remains only local.
+Commit and push authorization is governed solely by
+[Maintainer Workflow](workflow.md#commit-and-push-authority). Completing the fix
+does not authorize either action.
