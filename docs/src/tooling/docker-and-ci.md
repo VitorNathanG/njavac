@@ -6,18 +6,16 @@ shared by the reference-derived images, so host Java output is never a substitut
 
 ## Root image graph
 
-The root `Dockerfile` has two shared build stages and four capability targets:
+The root `Dockerfile` has two shared build stages and three capability targets:
 
 ```mermaid
 flowchart LR
     Fetch[jdk-fetch] --> Reference[reference]
     Rust[rust-build] --> Acceptance[acceptance]
     Rust --> Fuzz[fuzz]
-    Rust --> Profile[profile]
     Reference --> Acceptance
     Reference --> Fuzz
     Fixtures[fixtures] --> Acceptance
-    Fixtures --> Profile
     Workers[tools/Fuzz*.java] --> Fuzz
 ```
 
@@ -30,9 +28,8 @@ data across local rebuilds.
 | Target | Image variable | Contents and purpose |
 | --- | --- | --- |
 | `reference` | `REFERENCE_IMAGE` | Complete verified JDK and reference tools; used by `probe` and as the base for reference-dependent targets. |
-| `acceptance` | `IMAGE` | Reference JDK, `njavac`, `bench`, `classdiff`, and the fixture snapshot. It sets `NJAVAC_IN_CONTAINER` and defaults to the benchmark harness. |
+| `acceptance` | `IMAGE` | Reference JDK, `njavac`, the unified `benchmark` runner, its internal allocation helper, `classdiff`, and the fixture snapshot. It sets `NJAVAC_IN_CONTAINER` and defaults to the benchmark harness. |
 | `fuzz` | `FUZZ_IMAGE` | Reference JDK, `fuzz`, and the two source-launched Java workers copied from `tools/`. Absolute worker paths bind the image to one repository revision. |
-| `profile` | `PROFILE_IMAGE` | Pinned Debian, `profile`, and the fixture snapshot. It deliberately contains no JDK. |
 
 Every image recipe using the root compiler Dockerfile names its target explicitly.
 Adding another stage cannot silently change a public compiler image tag merely by
@@ -45,24 +42,25 @@ verification, so cache state cannot silently select different javac bytes.
 | --- | --- | --- | --- |
 | `verify`, `record` | Acceptance | Golden volume | No timing controls |
 | `correctness` | Acceptance | None | No timing controls |
-| `bench` | Acceptance | None | One selected CPU, fixed CPU quota, memory and swap cap, PID limit |
-| `profile` | Profile | None | Same controls as `bench` |
+| `benchmark` | Acceptance | Host `RESULTS` directory for JSON; the default is ignored | One selected CPU, fixed CPU quota, memory and swap cap, PID limit |
 | `probe` | Reference | Repository source mount | Diagnostic only |
 | `src-diff`, `diff` | Acceptance | Repository source/class mount | Diagnostic only |
 | Fuzzer targets | Fuzz | Only repository-root `fuzz-out/` | Not CPU-pinned; fuzzing is not a timing benchmark |
 
 Every Docker-backed execution command depends on the capability image it requires,
 so Docker evaluates the relevant current build context before execution. Outputs
-under the benchmark's default in-container `target/bench-out` disappear with the
-`--rm` container. The golden volume and bind-mounted `fuzz-out/` are the
-intentional durable exceptions.
+under the benchmark's in-container `/tmp/njavac-benchmark` disappear with the
+`--rm` container. The golden volume, bind-mounted `fuzz-out/`, and benchmark JSON
+under the bind-mounted results directory are the intentional durable exceptions.
 
-`make bench` and `make profile` use `BENCH_CPU` and `BENCH_MEM` to account for host
-topology and available resources. The selected CPU index must exist in Docker's
-visible CPU set. These controls reduce variance for nearby runs on the same host;
-host load, virtualization, power, thermal state, and scheduler behavior remain
-uncontrolled. The result is neither deterministic nor comparable across arbitrary
-hosts.
+`make benchmark` uses `BENCH_CPU` and `BENCH_MEM` to account for host topology and
+available resources. The selected CPU index must exist in Docker's visible CPU
+set. After building `IMAGE`, the recipe resolves its immutable image ID once, runs
+that ID, and records the same value in the report. The container runs as the host
+UID/GID so its JSON artifact remains writable.
+These controls reduce variance for nearby runs on the same host; host load,
+virtualization, power, thermal state, and scheduler behavior remain uncontrolled.
+The result is neither deterministic nor comparable across arbitrary hosts.
 
 ## Documentation image
 
@@ -83,11 +81,10 @@ read-only repository mount. See [Documentation Tooling](documentation.md).
 | Activity | Docker-backed? | Acceptance evidence? |
 | --- | ---: | ---: |
 | `make image` | Yes | Acceptance-image build evidence only |
-| `make profile` | Yes | Controlled pipeline-performance evidence only |
 | Direct host `javac` comparison | No | No; disallowed as reference evidence |
 | `make verify` | Yes | Cached inner-loop evidence; cache may be stale |
 | `make correctness` | Yes | Fresh exact-byte fixture evidence |
-| `make bench` | Yes | Fresh exact-byte fixture evidence plus controlled same-host timing |
+| `make benchmark` | Yes | Fresh exact-byte fixture evidence plus controlled same-host performance and profiling sections |
 | Fuzzer worker and observer gates | Yes | Evidence for their specific oracle contracts |
 | `make docs-check` | Yes | Documentation rendering and internal-link evidence |
 
@@ -103,7 +100,7 @@ byte comparison. It is an exact-byte fixture backstop. The runner and checkout
 action use mutable GitHub labels, but the reference JDK and compiler build images
 remain content-pinned by the repository Dockerfile.
 
-The workflow does not run `make verify`, `make bench`, `make profile`, any fuzzer
+The workflow does not run `make verify`, `make benchmark`, any fuzzer
 mode, worker or observer verification, or `make docs-check`. It has no
 declared Docker layer cache. A green GitHub status therefore establishes only the
 fresh exact-byte fixture contract of `make correctness` against the acceptance

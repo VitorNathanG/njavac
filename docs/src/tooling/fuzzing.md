@@ -218,4 +218,5 @@ capture, worker protocol equivalence, keep-going aggregation, or every artifact
 kind.
 
 Fuzzer compile-time statistics are useful operational feedback but are not a
-benchmark. Use [Profiling](profiling.md) or `make bench` for performance claims.
+benchmark. Use [Benchmarking and Profiling](profiling.md) or `make benchmark` for
+performance claims.

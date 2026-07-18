@@ -49,12 +49,14 @@ Docker image build or cached verify does not replace it.
 Use the controlled benchmark only when authoritative timing is also needed:
 
 ```sh
-make bench
+make benchmark
 ```
 
-The benchmark collects repeated process samples under CPU and memory controls.
-Those controls improve same-host comparability but do not make timing
-deterministic or portable between hosts.
+The benchmark runs correctness, uninstrumented process and compiler-core samples,
+and isolated phase and allocation passes under CPU and memory controls. It writes
+a terminal report and ignored JSON artifact. Those controls
+improve same-host comparability but do not make timing deterministic or portable
+between hosts.
 
 ## Compile an ad hoc source
 

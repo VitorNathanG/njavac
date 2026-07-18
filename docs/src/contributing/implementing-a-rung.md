@@ -128,7 +128,7 @@ make fuzz
 
 Run `make fuzz-verify` after a JDK or javac-worker change and whenever the rung
 reaches class-generation territory not previously exercised by that worker gate.
-Run `make fuzz-observe-verify` after observer changes. Use `make bench` when the
+Run `make fuzz-observe-verify` after observer changes. Use `make benchmark` when the
 cycle includes an authoritative performance claim.
 
 The fuzzer must grow with the supported surface. Update generation, rendering,

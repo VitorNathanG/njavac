@@ -28,7 +28,7 @@ guide explains when to use them.
 ## No host language toolchains
 
 A host Rust toolchain and host JDK are not required for normal maintenance. The
-root Dockerfile's explicit acceptance, reference, fuzz, and profile targets are the
+root Dockerfile's explicit acceptance, reference, and fuzz targets are the
 compiler build and execution environments exposed by Make. Never substitute direct
 host Cargo, `javac`, or `javap` output for repository build, compatibility, or
 performance evidence.
@@ -37,15 +37,15 @@ performance evidence.
 
 The initial reference-derived image build installs the configured GraalVM
 distribution, and the first Rust-derived image compiles the binaries. Shared
-stages make later target builds incremental. The benchmark and profiler targets
-also constrain CPU and memory to reduce same-host variance. If the default CPU
-index does not exist on the host, select an available one with
-`BENCH_CPU=<index>` on either command.
+stages make later target builds incremental. The benchmark target also constrains
+CPU and memory to reduce same-host variance. If the default CPU index does not
+exist on the host, select an available one with `BENCH_CPU=<index>`.
 
-Timing results are meaningful only through `make bench` or `make profile`. Host
+Timing results are meaningful only through `make benchmark`. Host
 scheduling, power mode, thermal state, and VM noise make ad hoc timing unsuitable
-for regression decisions. See [Profiling](../tooling/profiling.md) for the
-process-level and in-process methodologies.
+for regression decisions. See
+[Benchmarking and Profiling](../tooling/profiling.md) for its isolated
+uninstrumented, phase, and allocation passes.
 
 ## Acceptance boundary
 
@@ -55,11 +55,10 @@ There is no sanctioned host acceptance run and no `cargo test` substitute.
 | Activity | Execution | Evidence |
 | --- | --- | --- |
 | Run `make image` | Docker | Acceptance-image build only |
-| Run `make profile` | Docker | Controlled phase-performance evidence only |
 | Compare against host `javac` | Unsanctioned | None |
 | Run `make verify` | Docker | Cached, suitable for the inner loop |
 | Run `make correctness` | Docker | Fresh exact-byte fixture evidence |
-| Run `make bench` | Docker | Fresh exact-byte fixture evidence plus controlled same-host timing |
+| Run `make benchmark` | Docker | Fresh exact-byte fixture evidence plus controlled same-host performance and profiling sections |
 | Run fuzzer and worker gates | Docker | Evidence for their documented contracts |
 
 The detailed gate selection lives in [Command surface](../tooling/command-surface.md)

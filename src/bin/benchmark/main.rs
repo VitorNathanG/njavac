@@ -1,4 +1,4 @@
-//! njavac's single test + benchmark harness.
+//! njavac's correctness and performance benchmark harness.
 //!
 //! It does two things over the `fixtures/` corpus:
 //!
@@ -8,30 +8,33 @@
 //!      loudly, with a localized structural and javap diff of the first mismatch,
 //!      so it doubles as the exact-byte fixture gate.
 //!
-//!   2. TIMING (controlled Docker harness only): time compiling the whole suite with
-//!      each compiler. Host timings are noise (JVM startup jitter, scheduler,
-//!      thermal), so timings are only produced inside the Docker harness.
+//!   2. PERFORMANCE (controlled Docker harness only): collect uninstrumented
+//!      process and hot-pipeline samples followed by isolated phase and allocation
+//!      passes.
 //!
 //! Dependency-free on purpose. Configure via flags (see `--help`).
 
 mod correctness;
-mod timing;
+mod measurement;
+mod report;
 
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use correctness::{correctness, record_goldens};
-use timing::timing;
-
 struct Config {
-    javac_runs: usize,
-    njavac_runs: usize,
+    samples: usize,
     warmup: usize,
+    rounds: usize,
+    allocation_rounds: usize,
     javac: String,
     javap: String,
     njavac: String,
+    alloc_helper: String,
     fixtures_dir: String,
     out_dir: String,
+    json_path: Option<PathBuf>,
     /// A single `.java` file to verify instead of the whole corpus.
     /// `Some` ⇒ correctness over just this file, no timing.
     single: Option<PathBuf>,
@@ -43,9 +46,8 @@ struct Config {
     /// The git-ignored golden cache dir (`--record` writes it, `--offline` reads
     /// it). Under `target/`, so it is never committed and `cargo clean` drops it.
     golden_dir: String,
-    /// Skip the timing pass — run the correctness check only. A fresh, authoritative
-    /// online exact-byte fixture gate without the ~12s timing measurement.
-    no_timing: bool,
+    /// Skip performance measurement and run only the correctness check.
+    no_performance: bool,
 }
 
 impl Config {
@@ -54,21 +56,22 @@ impl Config {
         let default_javac =
             format!("{home}/.sdkman/candidates/java/25.0.2-graalce/bin/javac");
         let mut c = Config {
-            // njavac is fast enough that many runs are cheap and tighten the
-            // estimate; javac pays ~700 ms of JVM startup per run, so keep it low.
-            javac_runs: 5,
-            njavac_runs: 1000,
-            warmup: 5,
+            samples: 5,
+            warmup: 2,
+            rounds: 100,
+            allocation_rounds: 1,
             javac: default_javac,
             javap: String::new(), // filled in below, derived from javac
             njavac: "target/release/njavac".into(),
+            alloc_helper: "target/release/benchmark_alloc".into(),
             fixtures_dir: "fixtures".into(),
-            out_dir: "target/bench-out".into(),
+            out_dir: "/tmp/njavac-benchmark".into(),
+            json_path: None,
             single: None,
             record: false,
             offline: false,
-            golden_dir: "target/bench-golden".into(),
-            no_timing: false,
+            golden_dir: "target/benchmark-golden".into(),
+            no_performance: false,
         };
         if let Ok(v) = std::env::var("JAVAC") {
             c.javac = v;
@@ -83,27 +86,33 @@ impl Config {
         while let Some(a) = args.next() {
             let mut val = || args.next().expect("flag needs a value");
             match a.as_str() {
-                "--javac-runs" => c.javac_runs = val().parse().expect("javac-runs must be a number"),
-                "--njavac-runs" => c.njavac_runs = val().parse().expect("njavac-runs must be a number"),
-                "--warmup" => c.warmup = val().parse().expect("warmup must be a number"),
+                "--samples" => c.samples = positive(&val(), "samples"),
+                "--warmup" => c.warmup = val().parse().expect("warmup must be a nonnegative number"),
+                "--rounds" => c.rounds = positive(&val(), "rounds"),
+                "--allocation-rounds" => {
+                    c.allocation_rounds = positive(&val(), "allocation-rounds")
+                }
                 "--javac" => c.javac = val(),
                 "--javap" => c.javap = val(),
                 "--njavac" => c.njavac = val(),
+                "--alloc-helper" => c.alloc_helper = val(),
                 "--fixtures" => c.fixtures_dir = val(),
                 "--out-dir" => c.out_dir = val(),
+                "--json" => c.json_path = Some(PathBuf::from(val())),
                 "--golden-dir" => c.golden_dir = val(),
                 "--record" => c.record = true,
                 "--offline" => c.offline = true,
-                "--no-timing" => c.no_timing = true,
+                "--no-performance" => c.no_performance = true,
                 "--help" | "-h" => {
                     println!(
-                        "usage: bench [<File.java> | --fixtures DIR] [--record] [--offline] \
-                         [--no-timing] [--golden-dir DIR] [--javac-runs N] [--njavac-runs N] \
-                         [--warmup N] [--javac PATH] [--javap PATH] [--njavac PATH] [--out-dir DIR]\n\
+                        "usage: benchmark [<File.java> | --fixtures DIR] [--record] [--offline] \
+                         [--no-performance] [--golden-dir DIR] [--samples N] [--warmup N] \
+                         [--rounds N] [--allocation-rounds N] [--javac PATH] [--javap PATH] \
+                         [--njavac PATH] [--alloc-helper PATH] [--out-dir DIR] [--json PATH]\n\
                          \n  <File.java>   verify just this one fixture (no timing)\
                          \n  --record      compile all fixtures with javac into the golden cache, then exit\
                          \n  --offline     byte-compare njavac against the golden cache (no javac needed)\
-                         \n  --no-timing   run the correctness check only, skip the timing pass"
+                         \n  --no-performance  run the correctness check only"
                     );
                     std::process::exit(0);
                 }
@@ -157,7 +166,20 @@ fn run_quiet(argv: &[String]) -> bool {
         .unwrap_or(false)
 }
 
+fn positive(value: &str, name: &str) -> usize {
+    value
+        .parse()
+        .ok()
+        .filter(|&value| value > 0)
+        .unwrap_or_else(|| panic!("{name} must be a positive integer"))
+}
+
 fn main() {
+    let raw_args: Vec<OsString> = std::env::args_os().collect();
+    if raw_args.get(1).is_some_and(|arg| arg == "--resource-child") {
+        measurement::resource_child(raw_args.into_iter().skip(2).collect());
+    }
+
     let cfg = Config::from_args();
 
     // A single `.java` file verifies just that fixture; otherwise the whole
@@ -165,7 +187,7 @@ fn main() {
     let fixtures = match &cfg.single {
         Some(f) => {
             if !f.is_file() {
-                eprintln!("bench: no such fixture file: {}", f.display());
+                eprintln!("benchmark: no such fixture file: {}", f.display());
                 std::process::exit(2);
             }
             vec![f.clone()]
@@ -185,10 +207,24 @@ fn main() {
 
     correctness(&cfg, &fixtures, &javac_dir, &njavac_dir);
 
-    // Timing is a whole-suite, live-javac measurement: skip it for a single
-    // fixture (meaningless), in --offline mode (no javac to time against), and
-    // when --no-timing asks for a correctness-only run.
-    if cfg.single.is_none() && !cfg.offline && !cfg.no_timing {
-        timing(&cfg, &fixtures, &javac_dir, &njavac_dir);
+    if cfg.single.is_none() && !cfg.offline && !cfg.no_performance {
+        let in_harness = std::env::var_os("NJAVAC_IN_CONTAINER").is_some();
+        if !in_harness && std::env::var_os("NJAVAC_BENCHMARK_ALLOW_HOST").is_none() {
+            println!("performance skipped: run `make benchmark` for controlled same-host evidence");
+            return;
+        }
+        let workload = measurement::load_workload(&fixtures, &njavac_dir).unwrap_or_else(|error| {
+            eprintln!("benchmark: {error}");
+            std::process::exit(1);
+        });
+        let measurements = measurement::run(&cfg, &workload, &javac_dir, &njavac_dir)
+            .unwrap_or_else(|error| {
+                eprintln!("benchmark: {error}");
+                std::process::exit(1);
+            });
+        report::print_and_write(&cfg, &workload, &measurements).unwrap_or_else(|error| {
+            eprintln!("benchmark: {error}");
+            std::process::exit(1);
+        });
     }
 }

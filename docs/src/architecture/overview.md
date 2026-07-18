@@ -48,8 +48,8 @@ flowchart LR
 ```
 
 `codegen::generate` combines planning and serialization. `codegen::plan` exists
-so the profiler can measure lowering separately from class-file writing; it is
-not a general compilation IR.
+so the benchmark's phase observer can distinguish lowering from class-file
+writing; it is not a general compilation IR.
 
 ## Contracts between stages
 

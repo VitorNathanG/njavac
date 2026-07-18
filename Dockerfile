@@ -4,7 +4,7 @@
 #
 # Shared stages isolate the pinned reference JDK from the Rust build. Final
 # targets then add only the capabilities needed by reference probes, fixture
-# acceptance, fuzzing, or in-process profiling.
+# acceptance, benchmarking, or fuzzing.
 #
 # Caching:
 #   * cargo registry + target/ -> cache mounts, so dependency and incremental
@@ -13,8 +13,8 @@
 # Determinism:
 #   * GraalVM 25.0.2 archives are selected by architecture and SHA-256 verified.
 #   * Base images are digest-pinned; Rust dependencies use `cargo build --locked`.
-# Timing repeatability (CPU pinning, memory caps) lives in the Makefile `bench`
-# and `profile` targets' `docker run` flags.
+# Timing repeatability (CPU pinning, memory caps) lives in the Makefile
+# `benchmark` target's `docker run` flags.
 
 # ---- Stage 1: fetch and verify the exact reference JDK ----------------------
 FROM debian:bookworm-slim@sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bbd5acbfca6ec875818 AS jdk-fetch
@@ -50,8 +50,9 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/target \
     cargo build --release --locked \
     && mkdir -p /out \
-    && cp target/release/njavac target/release/bench target/release/classdiff \
-          target/release/fuzz target/release/profile /out/
+    && cp target/release/njavac target/release/benchmark \
+          target/release/benchmark_alloc target/release/classdiff \
+          target/release/fuzz /out/
 
 # ---- Stage 4: fixture acceptance, benchmarking, and paired diagnostics ------
 FROM reference AS acceptance
@@ -60,12 +61,12 @@ WORKDIR /work
 ENV NJAVAC_IN_CONTAINER=1
 COPY fixtures ./fixtures
 COPY --from=rust-build /out/njavac    /usr/local/bin/njavac
-COPY --from=rust-build /out/bench     /usr/local/bin/bench
+COPY --from=rust-build /out/benchmark /usr/local/bin/benchmark
+COPY --from=rust-build /out/benchmark_alloc /usr/local/bin/benchmark_alloc
 # The structural class-file differ, reachable for debugging via `make diff`; it
-# also backs the diff `bench` prints on a mismatch.
+# also backs the diff `benchmark` prints on a mismatch.
 COPY --from=rust-build /out/classdiff /usr/local/bin/classdiff
-ENTRYPOINT ["bench", "--njavac", "/usr/local/bin/njavac"]
-CMD ["--njavac-runs", "1000", "--javac-runs", "5", "--warmup", "5"]
+ENTRYPOINT ["benchmark", "--njavac", "/usr/local/bin/njavac", "--alloc-helper", "/usr/local/bin/benchmark_alloc"]
 
 # ---- Stage 5: self-contained differential fuzzing ---------------------------
 FROM reference AS fuzz
@@ -75,10 +76,3 @@ COPY tools/FuzzJavac.java tools/FuzzObserve.java /opt/njavac/tools/
 ENV FUZZ_WORKER=/opt/njavac/tools/FuzzJavac.java
 ENV FUZZ_OBSERVER=/opt/njavac/tools/FuzzObserve.java
 ENTRYPOINT ["fuzz"]
-
-# ---- Stage 6: JDK-free hot pipeline profiling -------------------------------
-FROM debian:bookworm-slim@sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bbd5acbfca6ec875818 AS profile
-WORKDIR /work
-COPY fixtures ./fixtures
-COPY --from=rust-build /out/profile /usr/local/bin/profile
-ENTRYPOINT ["profile"]

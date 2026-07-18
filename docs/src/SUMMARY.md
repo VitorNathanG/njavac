@@ -32,7 +32,7 @@
 - [Fixtures and Goldens](tooling/fixtures-and-goldens.md)
 - [Differential Debugging](tooling/differential-debugging.md)
 - [Fuzzing](tooling/fuzzing.md)
-- [Profiling](tooling/profiling.md)
+- [Benchmarking and Profiling](tooling/profiling.md)
 - [Docker and CI](tooling/docker-and-ci.md)
 - [Documentation Tooling](tooling/documentation.md)
 

@@ -1,5 +1,6 @@
 /target
 /fuzz-out
+/benchmark-results
 /docs/book
 # Ad-hoc probe programs live under the repo root so the Docker mount ($(pwd):/w)
 # can see them, but they are throwaway — never commit them.

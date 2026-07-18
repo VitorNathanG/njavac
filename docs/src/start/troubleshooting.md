@@ -19,7 +19,7 @@ failure is a hard supply or version mismatch and must not be bypassed.
 
 ## A performance target rejects the CPU selection
 
-`make bench` and `make profile` pin one CPU by host index. If Docker reports an
+`make benchmark` pins one CPU by host index. If Docker reports an
 invalid CPU set, choose an index visible to Docker with `BENCH_CPU`. On constrained
 desktop Docker VMs, the host's logical CPU numbers and Docker's available set may
 differ.
@@ -33,10 +33,10 @@ Docker CPU and memory controls do not eliminate host scheduling, virtualization,
 power, thermal, or background-load variance. The benchmark is controlled, not
 deterministic.
 
-If a timing sample is implausibly short, rerun the compiler with visible output.
-The benchmark performs a correct fresh comparison first, but its later warm-up
-and measured invocations discard output and ignore process failure status. A later
-failed invocation can still be timed and reported.
+The benchmark fails when a warm-up, measured compiler, profiled compilation, or
+allocation helper fails. If a timing remains implausibly short, inspect the raw
+samples in the applicable JSON under `benchmark-results/` and reproduce the
+compiler command with visible output.
 
 ## `make verify` fails unexpectedly
 
@@ -74,13 +74,13 @@ That following verification is already part of `make record`; an immediate
 
 ## A focused fixture command cannot see an ad hoc source
 
-`verify`, `correctness`, and `bench` use sources copied into the acceptance image
+`verify`, `correctness`, and `benchmark` use sources copied into the acceptance image
 and do not bind-mount the repository. Their `FILE` mode is intended for fixtures
 present in that image. Use `make src-diff FILE=...` for an ad hoc source under the
 repository; that target mounts the working tree.
 
 Each command rebuilds or re-evaluates its capability-image dependency first, so a
-newly added fixture should become visible to acceptance and profile commands. If
+newly added fixture should become visible to acceptance commands. If
 it does not, inspect the selected Dockerfile target, build context, and ignore
 rules before changing the harness.
 
@@ -207,14 +207,15 @@ path, filesystem error, worker failure, protocol invariant, or harness defect; i
 is not automatically an njavac compiler finding. Recheck mounts and ownership,
 then isolate the relevant worker or direct binary mode.
 
-## Image build or profile is green
+## Image build or performance is green
 
-`make image` proves only that the pinned acceptance build completed. `make profile`
-measures in-process performance in its separate JDK-free image. Neither compares
-compiler outputs, so neither is compatibility evidence. Run the applicable
-correctness or fuzz gates separately.
+`make image` proves only that the pinned acceptance build completed. The
+performance sections of `make benchmark` measure speed and resources; they are not
+compatibility evidence. The benchmark's initial fresh byte comparison is its only
+compatibility section, and broader changes still require their applicable fuzz or
+infrastructure gates.
 
-If profile numbers move sharply on macOS, verify that both runs used the same
+If benchmark numbers move sharply on macOS, verify that both runs used the same
 power mode and comparable thermal/background conditions. Low Power Mode and
 regular performance mode are not comparable baselines.
 
@@ -236,7 +237,7 @@ the pinned build rather than suppressing it.
 ## CI is green but another gate was not run
 
 The hosted workflow runs only `make correctness` on pushes and pull requests. It
-does not run documentation, fuzz, worker, observer, benchmark, or profile targets.
+does not run documentation, fuzz, worker, observer, or benchmark targets.
 Run those explicitly when the change requires them. See
 [Docker and CI](../tooling/docker-and-ci.md) for the current automation boundary
 and [Command Surface](../tooling/command-surface.md) for gate selection.

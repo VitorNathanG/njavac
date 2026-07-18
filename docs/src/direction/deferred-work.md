@@ -14,10 +14,11 @@ Language coverage belongs in [Language Rungs](language-rungs.md), not here.
   formatter and configuration through the repository toolchain, expose it through
   `make fmt-check`, and decide separately whether to perform one explicit
   normalization change.
-- **Automate baseline/current profiling comparisons.** Add a helper such as
-  `make profile-compare BASE=<rev> PHASE=<phase>` that builds an isolated baseline
-  image and compares profile minima under the same container controls, making
-  regressions easier to distinguish from residual host noise.
+- **Automate baseline/current benchmark comparisons.** Build an isolated baseline
+  compiler and compare its unified benchmark JSON with the candidate under the
+  same current runner, corpus fingerprint, and container controls. Interleave
+  subject order and report per-metric deltas without introducing a composite
+  score.
 - **Harden capability-image runtime boundaries.** Add read-only diagnostic mounts,
   disabled networking, dropped capabilities, `no-new-privileges`, explicit PID
   limits, and tmpfs scratch paths. Follow with non-root users and read-only root
@@ -32,10 +33,6 @@ Language coverage belongs in [Language Rungs](language-rungs.md), not here.
   actions by commit, build both supported architectures after Docker or JDK
   changes, and add selected documentation and fuzzer-infrastructure gates. Keep
   performance evidence on native architecture rather than emulation.
-- **Fail benchmark samples when a child compiler fails.** The timing pass currently
-  permits a failed warm-up or measured compiler process to appear as an
-  implausibly fast sample. Reject the sample and fail the command without changing
-  the separate fresh fixture comparison.
 - **Add narrower runtime images only on concrete demand.** A classdiff-only image
   can reduce cold diagnostic setup, and a minimal njavac image can support
   distribution. Do not add either until a measured workflow or product requirement

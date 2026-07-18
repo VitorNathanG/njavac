@@ -55,10 +55,10 @@ src/
 |   |-- reader.rs
 |   `-- diff.rs
 `-- bin/
-    |-- bench/
+    |-- benchmark/
+    |-- benchmark_alloc.rs
     |-- classdiff.rs
-    |-- fuzz/
-    `-- profile.rs
+    `-- fuzz/
 ```
 
 Rust module-root files declare children and expose stage entry points. Some also
@@ -86,7 +86,7 @@ flowchart LR
 
 | Path | Named entry points or ownership |
 | --- | --- |
-| `src/lib.rs` | Public modules and fixed `compile` pipeline |
+| `src/lib.rs` | Public modules, fixed `compile` pipeline, and hidden repository-tooling phase observer seam |
 | `src/main.rs` | `njavac` CLI, argument parsing, per-file I/O, output naming |
 | `src/span.rs` | Half-open byte `Span` |
 | `src/diagnostic.rs` | `CompileResult`, diagnostic codes, classification, rendering |
@@ -162,14 +162,15 @@ Cargo auto-discovers the crate's binaries from `src/main.rs`, `src/bin/*.rs`, an
 | Binary | Source | Purpose |
 | --- | --- | --- |
 | `njavac` | `src/main.rs` | Compile one or more independent `.java` files through the library |
-| `bench` | `src/bin/bench/main.rs` | Fixture correctness and controlled whole-suite timing harness |
+| `benchmark` | `src/bin/benchmark/main.rs` | Fixture correctness plus isolated uninstrumented, phase, and allocation measurement passes with terminal and JSON reports |
+| `benchmark_alloc` | `src/bin/benchmark_alloc.rs` | Internal allocation-instrumented helper invoked only by the benchmark runner |
 | `classdiff` | `src/bin/classdiff.rs` | Dump or structurally compare class files |
 | `fuzz` | `src/bin/fuzz/main.rs` | Generate in-scope programs and run exact plus behavioral differential oracles |
-| `profile` | `src/bin/profile.rs` | Containerized in-process cumulative pipeline profiler |
 
-`src/bin/bench/correctness.rs` owns fixture discovery outcomes, live/cached
-reference comparison, and mismatch reports. `src/bin/bench/timing.rs` owns the
-container-gated process timing pass.
+`src/bin/benchmark/correctness.rs` owns fixture discovery outcomes, live/cached
+reference comparison, and mismatch reports. `measurement.rs` owns process
+resources, uninstrumented samples, phase timing, allocation-helper orchestration,
+and statistics. `report.rs` owns the terminal and JSON representations.
 
 The fuzzer is split by responsibility:
 
@@ -211,7 +212,7 @@ is not used by sanctioned Make targets. Neither is source authority.
 | --- | --- |
 | `Cargo.toml`, `Cargo.lock` | One dependency-free Rust 2024 crate and locked package metadata |
 | `Makefile` | Sanctioned command surface; `make help` is the exact catalog |
-| `Dockerfile` | Shared pinned Java/Rust stages and explicit acceptance, reference, fuzz, and profile targets |
+| `Dockerfile` | Shared pinned Java/Rust stages and explicit acceptance, reference, and fuzz targets |
 | `docs/book.toml`, `docs/Dockerfile` | Pinned mdBook/Mermaid build configuration |
 | `.github/` | Repository automation |
 
@@ -236,7 +237,7 @@ facts migrate into this book and how duplicate prose is removed.
 ## API visibility warning
 
 The crate currently exports most stage facades publicly. This is useful to the
-profiler and repository tools, but it does not establish stable external module
+benchmark and repository tools, but it does not establish stable external module
 contracts. `njavac::compile` is the fixed library entry point; details are in the
 [library API](library-api.md). The target boundaries in
 [Architecture Direction](../direction/architecture.md) are not permission to

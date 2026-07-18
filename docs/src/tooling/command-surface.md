@@ -15,15 +15,13 @@ flowchart TD
     Edit[Edit code or fixture] --> Fast[make verify]
     Fast --> Fresh[make correctness]
     Fresh --> Kind{What changed?}
-    Kind -->|Process timing| Bench[make bench]
-    Kind -->|Pipeline phase timing| Profile[make profile]
+    Kind -->|Performance or profiling| Benchmark[make benchmark]
     Kind -->|Language behavior| Fuzz[make fuzz]
     Kind -->|JDK or javac worker| Worker[make fuzz-verify]
     Kind -->|Observer| Observer[make fuzz-observe-verify]
     Kind -->|Documentation| Docs[make docs-check]
     Kind -->|None of these| Complete[Required gate complete]
-    Bench --> Complete
-    Profile --> Complete
+    Benchmark --> Complete
     Fuzz --> Complete
     Worker --> Complete
     Observer --> Complete
@@ -31,10 +29,12 @@ flowchart TD
 ```
 
 `make verify` is fast but cache-backed and can be stale. `make correctness` is
-the fresh, authoritative pre-commit exact-byte fixture gate. `make bench` adds repeated
-whole-suite timing samples under controls that support same-host comparisons; it
-does not make wall-clock results deterministic or portable across hosts. An image
-build or profile run is never compatibility evidence.
+the fresh, authoritative pre-commit exact-byte fixture gate. `make benchmark`
+adds uninstrumented process and compiler-core measurements, isolated phase and
+allocation passes under controls that support same-host comparisons. It does not
+make wall-clock results deterministic or portable across
+hosts. An image build or performance-report section is never compatibility
+evidence; the benchmark's separate initial correctness section is.
 
 ## Target catalog
 
@@ -53,12 +53,11 @@ build or profile run is never compatibility evidence.
 | `verify` | Compile with njavac in Docker and compare against the persisted golden volume. It auto-records only when that volume has no class files. | Fast cached inner-loop gate. A nonempty cache is not freshness-checked and can be stale. |
 | `correctness` | Compile with both njavac and the configured in-image `javac`, then byte-compare fresh outputs. | Authoritative online exact-byte fixture gate with no timing pass. This is the normal pre-commit gate. |
 | `record` | Rebuild the golden cache from the configured in-image `javac`, then run an offline verification. | Cache-maintenance operation followed by a cached check. With `FILE`, recording still covers the whole suite; only the second verification is filtered. |
-| `bench` | Run fresh correctness, then collect repeated whole-suite process samples for each compiler under Docker CPU and memory controls. Each sample is one compiler invocation. | Exact-byte fixture evidence plus controlled same-host timing. With `FILE`, the harness checks only that fixture and skips timing. Timed invocations do not check their later process statuses. |
-| `profile` | Build and run the JDK-free `profile` target under the benchmark CPU and memory controls. | Controlled phase-performance evidence only. It neither invokes the reference compiler nor establishes compatibility. |
+| `benchmark` | Run fresh correctness, one uninstrumented performance pass, phase attribution, allocation attribution, and one unified report under Docker CPU and memory controls. | The initial exact-byte fixture pass is compatibility evidence. Performance sections are controlled same-host evidence only. With `FILE`, the harness checks only that fixture and skips performance. Every timed or profiled failure fails the command. |
 
 See [Fixtures and Goldens](fixtures-and-goldens.md) for cache lifecycle and
-[Profiling](profiling.md) for the distinction between benchmark and pipeline
-measurements.
+[Benchmarking and Profiling](profiling.md) for pass isolation, metrics, artifacts,
+and the distinction between uninstrumented and profiled measurements.
 
 ### Differential debugging
 
@@ -110,23 +109,25 @@ does not pass.
 
 | Variable | Used by | Meaning |
 | --- | --- | --- |
-| `FILE` | `probe`, `src-diff`, `verify`, `correctness`, `record`, `bench` | Select one source or fixture where supported. `probe` and `src-diff` require it. `record FILE=...` records the whole suite before filtering verification. |
+| `FILE` | `probe`, `src-diff`, `verify`, `correctness`, `record`, `benchmark` | Select one source or fixture where supported. `probe` and `src-diff` require it. `record FILE=...` records the whole suite before filtering verification. `benchmark FILE=...` performs only focused correctness. |
 | `A`, `B` | `diff` | Paths to the two class files, visible through the repository bind mount. |
-| `BENCH_CPU`, `BENCH_MEM` | `bench`, `profile` | Select the Docker-visible CPU index and container memory limit shared by both performance measurements. |
+| `BENCH_CPU`, `BENCH_MEM` | `benchmark` | Select the Docker-visible CPU index and container memory limit for every benchmark pass. |
+| `SAMPLES`, `WARMUP`, `ROUNDS`, `ALLOCATION_ROUNDS` | `benchmark` | Control measured samples, untimed warm-ups, hot/phase corpus repetitions per sample, and allocation corpus repetitions. Positive-value validation belongs to the benchmark binary; `WARMUP` may be zero. |
+| `BENCH_POWER_MODE` | `benchmark` | Record the maintainer-supplied host power-mode label in the report. It does not change host power settings. |
+| `RESULTS`, `RESULT_FILE` | `benchmark` | Select the repository-relative host directory and generated JSON filename. The default directory is ignored, and the default filename includes revision, UTC run time, and a run-process identifier so reports accumulate rather than overwrite one another. A custom directory is not automatically ignored. |
 | `SEED`, `COUNT`, `BATCH` | `fuzz`, `fuzz-verify` | Select the generator seed, case count, and javac-worker batch size. `COUNT` and `BATCH` must be positive decimal integers. Omitting `SEED` chooses and prints a fresh seed in these two modes. |
 | `FUZZFLAGS` | `fuzz` only | Append raw fuzzer command-line tokens. Consult `fuzz --help`; this value is not shell-safe quoting and is not forwarded by the other fuzzer targets. |
-| `ROUNDS`, `TRIALS`, `PHASE` | `profile` | Control repeated corpus passes, minimum-reduced trials, and the cumulative pipeline phase to measure. |
 | `DOCS_PORT` | `docs` | Change the host loopback port used by the documentation server. |
 | `DOCS_IMAGE` | documentation targets | Override the local tag used for the pinned documentation image. |
 | `IMAGE` | acceptance targets | Override the local acceptance-image tag. |
 | `REFERENCE_IMAGE` | `probe` | Override the local reference-image tag. |
 | `FUZZ_IMAGE` | fuzzer targets | Override the local self-contained fuzzer-image tag. |
-| `PROFILE_IMAGE` | `profile` | Override the local JDK-free profiler-image tag. |
 | `VOLUME`, `GOLDENS` | `verify`, `record` | Override the Docker golden-volume name and its in-container path. These are normally implementation details. |
 
-The Makefile computes `DOCS_UID` and `DOCS_GID` from the host so documentation
-build output is not owned by root. Do not treat those computed values as a public
-configuration surface.
+The Makefile computes documentation and benchmark UID/GID values from the host so
+their mounted output is not owned by root. It also captures the current revision
+and host CPU label for benchmark metadata. Do not treat those computed values as a
+public configuration surface.
 
 The fuzzer parser currently accepts some malformed named numeric values by
 silently retaining a default. `COUNT=0` can produce a vacuous run, while
@@ -137,9 +138,10 @@ on a run.
 
 ## Environment and paths
 
-Direct `bench` execution reads `JAVAC`, `JAVAP`,
-`NJAVAC_BENCH_ALLOW_HOST`, and the container marker
-`NJAVAC_IN_CONTAINER`. Direct `fuzz` execution reads `JAVAC`, `JAVA`,
+Direct `benchmark` execution reads `JAVAC`, `JAVAP`,
+`NJAVAC_BENCHMARK_ALLOW_HOST`, and the container marker
+`NJAVAC_IN_CONTAINER`. The Make target also supplies revision, host CPU, power,
+and container-control metadata. Direct `fuzz` execution reads `JAVAC`, `JAVA`,
 `FUZZ_WORKER`, and `FUZZ_OBSERVER`. These are binary-level debugging controls,
 not all Make controls. The fuzz target sets worker paths inside its image. Docker
 recipes do not pass arbitrary host environment variables with `docker run -e`;
@@ -161,12 +163,12 @@ host mount.
 | `make image` | Local acceptance image under `IMAGE`; BuildKit may retain shared JDK, Cargo registry, and Rust target caches outside Git. |
 | `make docs-image` | Local Docker image under `DOCS_IMAGE`; downloaded mdBook and Mermaid archives are verified during the build. |
 | `make probe` | Local reference image under `REFERENCE_IMAGE`; probe classes remain inside the disposable container. |
-| `make profile` | Local JDK-free image under `PROFILE_IMAGE` plus a terminal timing report. |
 | `make record` or first empty-cache `make verify` | Class files in the named Docker golden volume; never committed. BuildKit cache removal does not remove this volume. |
 | `make fuzz` and fuzzer verification modes | Local fuzz image under `FUZZ_IMAGE` plus findings under the bind-mounted host `fuzz-out/`. Containers run as root, so created files may be root-owned. |
 | `make docs-build`, `make docs-check`, or `make docs` | Rendered host `docs/book/`; the directory is ignored. |
 | `make src-diff` | Terminal output only; temporary classes disappear with the container. |
-| `make correctness` or `make bench` | Terminal result only under the Make wrapper; benchmark output directories are inside the disposable container. |
+| `make correctness` | Terminal result only; class outputs remain inside the disposable container. |
+| `make benchmark` | Terminal report plus one revision- and time-named JSON file under the host `RESULTS` directory; the default directory is ignored. Temporary class outputs remain inside the disposable container. |
 
 A custom fuzzer `--out-dir` must remain below `fuzz-out/` to use Make's host mount.
 Output elsewhere in the container disappears with `--rm`.

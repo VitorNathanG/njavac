@@ -7,7 +7,7 @@
 #   make verify      [FILE=fixtures/x/F.java]  # fast gate: njavac vs cached goldens (may be stale)
 #   make correctness [FILE=..]                 # fresh authoritative exact fixture check, no timing
 #   make record      [FILE=..]                 # re-record goldens (after fixtures/JDK change), then verify
-#   make bench       [FILE=..]                 # exact fixture check + controlled same-host timing
+#   make benchmark   [FILE=..]                 # exact fixture check + complete performance report
 #   make probe       FILE=Probe.java           # disassemble a probe with the configured javac (javap -v -p)
 #   make src-diff    FILE=Probe.java           # diff BOTH compilers on one source (byte + classdiff + javap)
 #   make diff        A=a.class B=b.class       # structural class-file diff, in-container
@@ -16,7 +16,6 @@
 #   make fuzz-selftest                         # exercise narrow synthetic outcome/minimizer plumbing
 #   make fuzz-observe-verify                   # exercise the persistent execution observer
 #   make image                                 # build the fixture-acceptance image
-#   make profile [ROUNDS=n] [TRIALS=n] [PHASE=all|lex|parse|sema|codegen|full]  # controlled hot profile
 #   make docs                                  # serve the maintainer guide at localhost:3000
 #   make docs-build                            # build the maintainer guide through Docker
 #   make docs-check                            # build and check internal links through Docker
@@ -24,12 +23,24 @@
 IMAGE           ?= njavac-acceptance
 REFERENCE_IMAGE ?= njavac-reference
 FUZZ_IMAGE      ?= njavac-fuzz
-PROFILE_IMAGE   ?= njavac-profile
 VOLUME          ?= njavac-goldens
 GOLDENS         ?= /goldens
 # Performance controls reduce same-host noise: pin one core, fix memory, no swap.
 BENCH_CPU ?= 2
 BENCH_MEM ?= 2g
+SAMPLES   ?= 5
+WARMUP    ?= 2
+ROUNDS    ?= 100
+ALLOCATION_ROUNDS ?= 1
+RESULTS   ?= benchmark-results
+BENCH_REVISION := $(shell git rev-parse --short HEAD 2>/dev/null)$(shell test -z "$$(git status --porcelain)" || printf '%s' -dirty)
+BENCH_TIMESTAMP := $(shell date -u +%Y%m%dT%H%M%SZ)
+BENCH_RUN_ID := $(shell printf '%s' $$$$)
+RESULT_FILE ?= benchmark-$(BENCH_REVISION)-$(BENCH_TIMESTAMP)-$(BENCH_RUN_ID).json
+BENCH_HOST_CPU := $(shell sysctl -n machdep.cpu.brand_string 2>/dev/null || uname -m)
+BENCH_POWER_MODE ?= unknown
+BENCH_UID := $(shell id -u)
+BENCH_GID := $(shell id -g)
 FILE      ?=
 A         ?=
 B         ?=
@@ -40,15 +51,12 @@ SEED      ?=
 COUNT     ?= 5000
 BATCH     ?=
 FUZZFLAGS ?=
-ROUNDS    ?= 1000
-TRIALS    ?= 5
-PHASE     ?= all
 DOCS_IMAGE ?= njavac-docs:mdbook-0.5.4
 DOCS_PORT  ?= 3000
 DOCS_UID   := $(shell id -u)
 DOCS_GID   := $(shell id -g)
 
-.PHONY: help image reference-image fuzz-image profile-image probe src-diff verify correctness record bench diff fuzz fuzz-verify fuzz-selftest fuzz-observe-verify profile docs-image docs docs-build docs-check
+.PHONY: help image reference-image fuzz-image probe src-diff verify correctness record benchmark diff fuzz fuzz-verify fuzz-selftest fuzz-observe-verify docs-image docs docs-build docs-check
 
 help:  ## show this help
 	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | sed -E 's/:.*## /\t/' | sort
@@ -61,9 +69,6 @@ reference-image:
 
 fuzz-image:
 	docker build --target fuzz -t $(FUZZ_IMAGE) .
-
-profile-image:
-	docker build --target profile -t $(PROFILE_IMAGE) .
 
 probe: reference-image  ## disassemble a .java with the configured javac: make probe FILE=Probe.java
 	@test -n "$(FILE)" || { echo "usage: make probe FILE=path/to/Probe.java"; exit 2; }
@@ -91,17 +96,28 @@ verify: image  ## fast gate: njavac vs cached goldens (whole suite, or one FILE=
 	docker run --rm -v $(VOLUME):$(GOLDENS) $(IMAGE) --offline --golden-dir $(GOLDENS) $(FILE)
 
 correctness: image  ## fresh authoritative exact-byte fixture check (no timing)
-	docker run --rm $(IMAGE) --no-timing $(FILE)
+	docker run --rm $(IMAGE) --no-performance $(FILE)
 
 record: image  ## re-record goldens from the configured javac, then verify
 	docker run --rm -v $(VOLUME):$(GOLDENS) $(IMAGE) --record --golden-dir $(GOLDENS)
 	docker run --rm -v $(VOLUME):$(GOLDENS) $(IMAGE) --offline --golden-dir $(GOLDENS) $(FILE)
 
-bench: image  ## exact-byte fixture check + controlled same-host Docker timing
+benchmark: image  ## exact-byte fixture check + complete controlled performance report
+	mkdir -p "$(RESULTS)"
+	image_id="$$(docker image inspect --format '{{.Id}}' $(IMAGE))"; \
 	docker run --rm \
+	  --user "$(BENCH_UID):$(BENCH_GID)" \
 	  --cpuset-cpus=$(BENCH_CPU) --cpus=1 \
 	  --memory=$(BENCH_MEM) --memory-swap=$(BENCH_MEM) --pids-limit=256 \
-	  $(IMAGE) $(FILE)
+	  --mount type=bind,source="$(CURDIR)/$(RESULTS)",target=/results \
+	  --env NJAVAC_BENCH_REVISION="$(BENCH_REVISION)" \
+	  --env NJAVAC_BENCH_CPU="$(BENCH_CPU)" --env NJAVAC_BENCH_MEM="$(BENCH_MEM)" \
+	  --env NJAVAC_BENCH_HOST_CPU="$(BENCH_HOST_CPU)" \
+	  --env NJAVAC_BENCH_POWER_MODE="$(BENCH_POWER_MODE)" \
+	  --env NJAVAC_BENCH_IMAGE_ID="$$image_id" \
+	  "$$image_id" --samples $(SAMPLES) --warmup $(WARMUP) --rounds $(ROUNDS) \
+	    --allocation-rounds $(ALLOCATION_ROUNDS) --json /results/$(RESULT_FILE) $(FILE)
+	@echo "host report: $(RESULTS)/$(RESULT_FILE)"
 
 diff: image  ## structural class-file diff in-container: make diff A=x.class B=y.class
 	@test -n "$(A)" && test -n "$(B)" || { echo "usage: make diff A=a.class B=b.class"; exit 2; }
@@ -120,12 +136,6 @@ fuzz-selftest: fuzz-image  ## exercise narrow synthetic outcome/minimizer plumbi
 
 fuzz-observe-verify: fuzz-image  ## exercise the persistent JVM observer and its timeout restart
 	docker run --rm -v "$(CURDIR)/fuzz-out:/work/fuzz-out" $(FUZZ_IMAGE) --verify-observer
-
-profile: profile-image  ## controlled in-process profile: make profile [ROUNDS=1000] [TRIALS=5] [PHASE=all|lex|parse|sema|codegen|full]
-	docker run --rm \
-	  --cpuset-cpus=$(BENCH_CPU) --cpus=1 \
-	  --memory=$(BENCH_MEM) --memory-swap=$(BENCH_MEM) --pids-limit=256 \
-	  $(PROFILE_IMAGE) $(ROUNDS) $(TRIALS) $(PHASE)
 
 docs-image:  ## build the pinned mdBook + Mermaid documentation image
 	docker build -f docs/Dockerfile -t $(DOCS_IMAGE) .

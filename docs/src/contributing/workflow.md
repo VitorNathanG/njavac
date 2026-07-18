@@ -85,7 +85,7 @@ At minimum:
 | Bug fix | Exact fixture or sanctioned behavioral regression, `make correctness`, and proof that the behavioral fuzz signature is gone when applicable |
 | JDK or javac-worker change | `make fuzz-verify` in addition to correctness |
 | Observer change | `make fuzz-observe-verify` |
-| Timing claim | `make bench` or the documented in-process profiling method, as applicable |
+| Performance or profiling claim | The applicable uninstrumented or instrumented section of `make benchmark` |
 
 Use `make verify` for a fast cached loop, but refresh with `make record` after
 fixture or JDK changes. A cached pass is not the fresh pre-commit gate.

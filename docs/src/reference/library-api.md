@@ -82,7 +82,8 @@ The function performs no filesystem I/O.
 lexer::lex
     -> parser::parse
     -> sema::analyze
-    -> codegen::generate
+    -> codegen::plan
+    -> ClassPlan::to_bytes
 ```
 
 The compiler validates only the documented subset. It is not a general Java
@@ -94,7 +95,7 @@ known reachable assembler defects remain outside the supported-program contract.
 
 `src/lib.rs` currently declares `classfile`, `classdump`, `span`, `diagnostic`,
 `lexer`, `ast`, `parser`, `sema`, and `codegen` as public modules. This visibility
-supports repository binaries such as the profiler and structural differ. It does
+supports repository binaries such as the benchmark and structural differ. It does
 not make every stage type a stable external API.
 
 The source comment on `compile` identifies that function and its output behavior as
@@ -104,6 +105,9 @@ and types to change. In particular:
 
 - `lexer::lex`, `parser::parse`, `sema::analyze`, `codegen::plan`, and
   `codegen::generate` are maintainer-facing pipeline seams.
+- `CompileObserver`, `CompilePhase`, and `compile_observed` are hidden
+  repository-tooling seams used to attribute production-pipeline work without
+  adding timers to ordinary `compile` calls.
 - AST layouts, `Analysis`, `MethodInfo`, `ClassPlan`, and class-file model types
   may evolve without compatibility wrappers.
 - `Analysis` is tied to one exact `ExprArena`; `codegen::plan` asserts arena and

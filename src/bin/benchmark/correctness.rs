@@ -46,11 +46,17 @@ pub(super) fn correctness(
     if !cfg.offline {
         let mut argv = vec![cfg.javac.clone(), "-d".into(), javac_dir.display().to_string()];
         argv.extend(fix_paths.iter().cloned());
-        run_quiet(&argv);
+        if !run_quiet(&argv) {
+            eprintln!("  FAIL  javac exited non-zero during correctness preflight");
+            std::process::exit(1);
+        }
     }
     let mut argv = vec![cfg.njavac.clone(), "-d".into(), njavac_dir.display().to_string()];
     argv.extend(fix_paths);
-    run_quiet(&argv);
+    if !run_quiet(&argv) {
+        eprintln!("  FAIL  njavac exited non-zero during correctness preflight");
+        std::process::exit(1);
+    }
 
     // Byte-compare each fixture's output against the reference.
     let mut failures: Vec<String> = Vec::new();
@@ -78,7 +84,7 @@ pub(super) fn correctness(
     println!("\n{}/{} failed. First mismatch: {base}", failures.len(), fixtures.len());
     if cfg.offline && fixtures.len() > 1 && failures.len() == fixtures.len() {
         println!("(every fixture failed in --offline mode — is the golden cache stale or empty? \
-                  run `bench --record` to (re)build {})", cfg.golden_dir);
+                  run `benchmark --record` to (re)build {})", cfg.golden_dir);
     }
 
     let want_file = want_path(cfg, javac_dir, base);
