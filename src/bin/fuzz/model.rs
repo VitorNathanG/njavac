@@ -46,8 +46,9 @@ impl Ty {
     }
 }
 
-/// A literal value; its Java type is implied by the variant. Floats/doubles keyed
-/// by bit-pattern so `-0.0`/`NaN`/`±Inf` stay distinct (matches classfile pooling).
+/// A literal value; its Java type is implied by the variant. Float and double
+/// bits preserve generated values such as signed zero and distinct NaN payloads;
+/// class-file pooling separately canonicalizes NaNs.
 #[derive(Clone, Debug)]
 pub(super) enum Val {
     I(i32),

@@ -1,8 +1,8 @@
 use crate::ast::{BinOp, ExprArena, ExprId, ExprKind, PrimitiveType};
 
-/// A syntax-only approximation used for assignment conversion. Range checking is
-/// deliberately left to a later constant-analysis stage, so existing valid folded
-/// initializers are not rejected here.
+/// A syntax-only approximation used for assignment conversion. It recognizes the
+/// constant-expression shape but does not prove that a folded value fits a narrow
+/// assignment target; callers must not treat it as a complete JLS range check.
 pub(super) fn is_constant_expression(exprs: &ExprArena, expr: ExprId) -> bool {
     match &exprs[expr] {
         ExprKind::IntLit(_)

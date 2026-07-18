@@ -1,6 +1,6 @@
 # Byte-identity correctness gate. The repo commits straight to `main` with no
 # reviewer, so this is the only unconditional backstop against a byte-breaking
-# commit silently becoming the baseline (ROADMAP §0.4). Correctness only: timing
+# commit silently becoming the baseline. Correctness only: timing
 # is host/CI noise, and the fuzzer's fresh-random-seed design makes a fixed CI
 # seed false comfort — neither belongs here.
 #

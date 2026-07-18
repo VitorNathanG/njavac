@@ -1,4 +1,4 @@
-//! `classdiff` — inspect or structurally diff `.class` files (ROADMAP §0.3).
+//! `classdiff` — inspect or structurally diff `.class` files.
 //!
 //!   classdiff <a.class>            # dump one file's structural fields
 //!   classdiff <a.class> <b.class>  # diff two files, localizing the first divergence

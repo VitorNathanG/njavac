@@ -188,14 +188,10 @@ pub(super) fn assert_negate_op_consistent() {
     }
 }
 
-/// The `i2b`/`i2s`/`i2c` javac emits converting an int-computational value of
-/// sub-int type `cur` to sub-int `to`. javac's `Items.Item.coerce` emits the
-/// narrowing op for **every** sub-int target whose typecode differs from the
-/// source's — `Code.truncate` collapses byte/char/short to int, so the only pair it
-/// treats as already-coerced is same-typecode-to-same. That means even the
-/// *widening* `byte`->`short` emits `i2s` (numerically a no-op, but javac emits it),
-/// as does an implicit `short s = someByte;` assignment. `None` therefore means only
-/// `cur == to` (byte->byte / short->short / char->char).
+/// The `i2b`/`i2s`/`i2c` observed from javac when converting an int-computational
+/// value of sub-int type `cur` to `to`. The pinned output emits the target opcode
+/// whenever the source and target sub-int types differ. Thus even widening
+/// `byte`->`short` emits `i2s`; `None` means only `cur == to`.
 pub(super) fn subint_narrow_op(cur: PrimitiveType, to: PrimitiveType) -> Option<u8> {
     if cur == to {
         return None;

@@ -6,9 +6,10 @@ merely valid bytecode or equivalent runtime behavior. See the
 [compatibility contract](../reference/compatibility-contract.md) for the promise
 and [language support](../reference/language-support.md) for its input boundary.
 
-This page describes the implementation that exists now. The root
-`ARCHITECTURE.md` describes a larger destination architecture; names from that
-document are not current modules unless this guide says otherwise.
+This page describes the implementation that exists now. The
+[architecture direction](../direction/architecture.md) describes the larger
+destination; target responsibilities are not current modules unless this guide
+says otherwise.
 
 ## Current pipeline
 
@@ -168,5 +169,6 @@ In that target, semantic attribution is the sole authority for Java meaning,
 the assembler owns typed stack and verifier state, and the writer receives a
 complete ordered plan without discovering semantic artifacts. A compilation
 request returns an artifact set and diagnostics rather than one anonymous byte
-vector. These are design goals from `ARCHITECTURE.md`, not promises made by the
+vector. These are design goals from
+[Architecture Direction](../direction/architecture.md), not promises made by the
 current library.

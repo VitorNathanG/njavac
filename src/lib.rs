@@ -1,9 +1,8 @@
 //! njavac — a toy Java 25 compiler (library crate).
 //!
 //! Pipeline: source text -> lexer -> parser -> sema -> codegen -> class bytes.
-//! The `classfile` backend already matches javac's output byte-for-byte (it
-//! reproduces javac's constant-pool interning order and attribute layout); the
-//! other modules are being filled in to replace the earlier hand-lowering.
+//! For the documented supported language, the complete pipeline is required to
+//! match the repository-pinned javac byte-for-byte.
 
 pub mod classfile;
 pub mod classdump;

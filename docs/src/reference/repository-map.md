@@ -2,8 +2,8 @@
 
 njavac is one dependency-free Rust crate with several binaries, a Docker-pinned
 reference environment, Java fixtures, and an mdBook maintainer guide. This page
-maps current paths to current responsibilities. It does not reproduce the larger
-target tree in `ARCHITECTURE.md`.
+maps current paths to current responsibilities. Future boundaries live separately
+in [Architecture Direction](../direction/architecture.md).
 
 ## Compiler crate
 
@@ -222,12 +222,12 @@ All byte-identity acceptance runs through Docker. Local `make check` and
 | Path | Current role |
 | --- | --- |
 | `docs/src/` | Human maintainer guide and current reference pages |
-| `README.md` | Repository entry and transitional language ledger while migration completes |
-| `CLAUDE.md` | Agent bootstrap, working conventions, and transitional mechanics |
-| `ARCHITECTURE.md` | Target boundaries and module-creation triggers, not current tree |
-| `ROADMAP.md` | Ordered active infrastructure and open findings |
-| `FUTURE_WORK.md` | Unordered deferred improvements |
-| `.claude/skills/byte-identity-rung/` | Agent workflow for empirical feature work |
+| `README.md` | Concise repository entry that routes readers into this guide |
+| `CLAUDE.md` | Agent bootstrap and documentation style guide |
+| `docs/src/direction/architecture.md` | Target boundaries and module-creation triggers |
+| `docs/src/direction/active-work.md` | Ordered active infrastructure and open findings |
+| `docs/src/direction/deferred-work.md` | Unordered deferred improvements |
+| `.claude/skills/byte-identity-rung/` | Thin agent adapter to the human feature and bug workflows |
 
 The [documentation policy](../contributing/documentation-policy.md) defines how
 facts migrate into this book and how duplicate prose is removed.
@@ -237,5 +237,6 @@ facts migrate into this book and how duplicate prose is removed.
 The crate currently exports most stage facades publicly. This is useful to the
 profiler and repository tools, but it does not establish stable external module
 contracts. `njavac::compile` is the fixed library entry point; details are in the
-[library API](library-api.md). The target source tree in `ARCHITECTURE.md` is also
-not permission to import paths that do not exist or to create empty modules.
+[library API](library-api.md). The target boundaries in
+[Architecture Direction](../direction/architecture.md) are not permission to
+import paths that do not exist or to create empty modules.

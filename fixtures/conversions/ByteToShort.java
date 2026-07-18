@@ -1,7 +1,6 @@
 // Regression: byte->short is a *widening* conversion, yet javac still emits `i2s`.
-// javac's Items.coerce narrows to the target sub-int type whenever the source and
-// target typecodes differ (byte/char/short collapse to int under Code.truncate, so
-// the ONLY no-op is same-typecode-to-same). So byte->short — numerically a no-op,
+// Pinned black-box output uses the target sub-int conversion whenever source and
+// target sub-int types differ. So byte->short — numerically a no-op,
 // since a byte already fits a short — nonetheless emits `i2s`, in an explicit cast
 // AND in an implicit assignment. njavac used to skip it (it treated byte as already
 // fitting short), emitting a Code attribute one `i2s` byte short. Fuzzer-found

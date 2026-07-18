@@ -14,11 +14,12 @@
 //! Diffing two such lists in lock-step finds the *first structural divergence with
 //! a byte offset*, which localizes to the cause and works even when javap agrees.
 //!
-//! It parses the general format (every standard constant-pool tag, all attribute
-//! shapes) so it can read javac's output too, not just njavac's subset; anything
-//! it doesn't decode structurally (an unknown attribute, the raw code array) is
-//! captured as one hex field and resynced against the attribute's declared length,
-//! so an attribute njavac doesn't emit yet never derails the parse.
+//! It recognizes the standard constant-pool tags needed by current javac output
+//! and structurally decodes `Code`, `LineNumberTable`, `StackMapTable`, and
+//! `SourceFile`. Other attribute bodies and the raw code array are captured as hex
+//! fields and bounded by their declared lengths, so an unfamiliar attribute does
+//! not derail the surrounding parse. Utf8 display is currently lossy standard
+//! UTF-8 rather than a complete modified-UTF-8 decoder.
 
 mod diff;
 mod reader;

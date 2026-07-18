@@ -1,4 +1,4 @@
-// Persistent in-memory javac worker for the differential fuzzer (ROADMAP §0.1).
+// Persistent in-memory javac worker for the differential fuzzer.
 //
 // WHY THIS EXISTS. The fuzzer's wall time was dominated by re-spawning `javac`:
 // each spawn pays ~0.3s JVM launch AND — the bigger cost — javac re-JIT-warming
@@ -11,42 +11,32 @@
 //
 // BYTE-IDENTITY IS THE WHOLE POINT, so this must produce the EXACT bytes the
 // `javac` CLI (`javac -d <dir> Name.java`) produces, or it is worthless as the
-// fuzzer's oracle. Two things make that hold, and both are cross-checked by the
-// fuzzer's `--verify-worker` mode (worker bytes vs. a real CLI spawn, over tens
-// of thousands of generated programs — the empirical proof, re-run per JDK bump):
-//   1. Same backend. `ToolProvider.getSystemJavaCompiler()` is `JavacTool`, whose
-//      `getTask(...).call()` drives `com.sun.tools.javac.main.JavaCompiler` — the
-//      SAME class the `javac` launcher runs. Emitted `.class` bytes are a pure
-//      function of (source, options, source-file name). We pass NO options, to
-//      match the CLI's defaults exactly (notably `-g:lines,source`, which is why
-//      we get a LineNumberTable but no LocalVariableTable).
-//   2. Same source-file name. The `.class` couples to the source name via the
+// fuzzer's oracle. The fuzzer's `--verify-worker` mode is the empirical proof:
+// it compares worker acceptance and bytes with real pinned CLI invocations and
+// must be rerun after every JDK or worker change. Two inputs are kept aligned:
+//   1. Compiler options. We pass no options, matching the CLI invocation used by
+//      the verification gate.
+//   2. Source-file name. The `.class` couples to the source name via the
 //      SourceFile attribute (and LineNumberTable). The in-memory source is named
 //      "<Class>.java" (URI string:///<Class>.java, getName() "<Class>.java"), so
 //      javac's simple-name derivation yields "<Class>.java" — identical to a real
 //      file the CLI would open.
 //
-// ISOLATION. A FRESH getTask (hence fresh javac Context: Names, Symtab, ...) per
-// request means no state leaks between compilations; only the JVM + the platform
-// StandardJavaFileManager's read-only classpath cache are reused (pure speedup,
-// no effect on output). Determinism of the bytes is therefore unchanged.
+// ISOLATION. A fresh compilation task is created per request. The JVM and
+// StandardJavaFileManager are reused for speed, so empirical CLI equivalence is a
+// required gate rather than an assumption about implementation internals.
 //
-// BATCHING (why a request carries MANY units). A fresh getTask means a fresh
-// javac Context — symbol table, name table, and platform-class resolution rebuilt
-// from scratch. Doing that per-program is far slower than the `javac` CLI, which
-// shares ONE Context across a whole @argfile batch. So a request carries a batch:
-// all its units compile in ONE getTask (one Context, amortized exactly like the
-// CLI), while the JVM stays hot and nothing touches disk. javac emits a `.class`
-// for every error-free unit even if a sibling unit fails (same as the CLI batch),
-// so the reply is simply the set of classes produced; the fuzzer maps each back to
-// its unit by name and treats a missing one as that unit's javac-reject.
+// BATCHING. Compiling each program in a separate task is much slower, so a request
+// carries many units and compiles them in one task. The reply is the set of classes
+// produced; the fuzzer maps each class back by name and treats an expected class
+// that is absent as that unit's javac rejection.
 //
 // PROTOCOL (big-endian, DataInput/DataOutputStream on both ends; lock-step
 // request→response). Request:  int nUnits, then per unit { int nameLen, name utf8,
 // int srcLen, src utf8 }. Response: int nClasses, then per class { int nameLen,
-// binary-class-name utf8, int len, class bytes }. The fuzzer asserts the returned
-// name set is exactly the batch's class names — the same "no stray $-aux class"
-// guard the disk path did with an output-dir file-set check.
+// binary-class-name utf8, int len, class bytes }. The fuzzer rejects every returned
+// class name not expected for the batch. Missing expected names represent rejected
+// units and are not a protocol error.
 import java.io.*;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;

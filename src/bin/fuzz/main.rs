@@ -1,4 +1,4 @@
-//! njavac's differential fuzzer (ROADMAP §0.1).
+//! njavac's differential fuzzer; see `docs/src/tooling/fuzzing.md`.
 //!
 //! Generates random **in-scope** Java (`main` bodies over the supported numeric +
 //! branch + short-circuit subset), compiles each program with BOTH the pinned

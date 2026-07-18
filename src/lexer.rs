@@ -1,11 +1,11 @@
 //! Lexer: source text -> flat token stream.
 //!
-//! Produces a flat stream of tokens for the Tier-2 numeric subset. Every token
+//! Produces a flat stream of tokens for the supported language subset. Every token
 //! carries its 1-based source line so the parser can attach lines to statements
 //! for a byte-identical `LineNumberTable`. Whitespace and `//` / `/* */` comments
 //! are skipped.
 //!
-//! Numeric literals are fully scanned here: decimal/hex/octal/binary integers
+//! Supported numeric literals are scanned here: decimal/hex/octal/binary integers
 //! (with `_` separators and an optional `L` suffix) and floating-point literals
 //! (fraction, exponent, `f`/`d` suffix). Each is resolved to its typed value —
 //! the source radix/form leaves no trace, exactly as javac keeps only the value.

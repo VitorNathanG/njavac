@@ -1,13 +1,13 @@
 use super::instruction::{Label, IFNE};
 use super::ops::negate_op;
 
-/// javac's `Items.CondItem`, restricted to njavac's side-effect-free boolean
-/// subset. Lowering a boolean expression (`gen_cond`) emits every operand load
+/// njavac's empirically reconstructed conditional-item model for the supported
+/// side-effect-free boolean subset. Lowering (`gen_cond`) emits every operand load
 /// eagerly but leaves the *deciding branch* pending in `opcode`; the not-yet-
 /// resolved jump sites are collected in `true_chain`/`false_chain`. Consumers
 /// (`gen_if`, `gen_bool_value`) then resolve those chains to concrete pcs. This is
-/// the one representation that expresses javac's constant short-circuit collapse
-/// (`true || q`, `q && false`, …) — see the `&&`/`||` corpus.
+/// the representation that matches observed constant short-circuit collapse such
+/// as `true || q` and `q && false`.
 #[derive(Clone, Copy)]
 pub(super) struct CondItem {
     /// The pending deciding branch, or a static verdict.

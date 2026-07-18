@@ -15,7 +15,7 @@
 #     compilation are reused; only changed sources recompile.
 #
 # Determinism:
-#   * 25.0.2-graalce matches the host build that produced the golden bytes.
+#   * 25.0.2-graalce is the live reference used to produce fresh or cached goldens.
 #   * pinned rust:1.95 toolchain + `cargo build --locked`.
 # Timing repeatability (CPU pinning, memory caps) lives in the Makefile `bench`
 # target's `docker run` flags.
@@ -59,7 +59,7 @@ COPY --from=build /out/bench     /usr/local/bin/bench
 # The structural class-file differ, reachable for debugging via `make diff`; it
 # also backs the diff `bench` prints on a mismatch.
 COPY --from=build /out/classdiff /usr/local/bin/classdiff
-# The two-layer differential fuzzer (ROADMAP §0.1), reached via `make fuzz`
+# The two-layer differential fuzzer, documented in `docs/src/tooling/fuzzing.md`
 # (entrypoint override). Its source-launched workers use the pinned JDK.
 COPY --from=build /out/fuzz     /usr/local/bin/fuzz
 ENTRYPOINT ["bench", "--njavac", "/usr/local/bin/njavac"]

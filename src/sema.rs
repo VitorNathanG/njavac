@@ -229,9 +229,9 @@ fn validate_class_shape(unit: &CompilationUnit) -> CompileResult<()> {
     Ok(())
 }
 
-/// Unary numeric promotion: `byte`/`short`/`char` (and `boolean`) become `int`;
-/// wider types are unchanged. Applied to the operand of a unary op and to the
-/// left operand of a shift.
+/// Unary numeric promotion: `byte`/`short`/`char` become `int`; wider numeric
+/// types are unchanged. `boolean` is preserved for boolean operators. Applied to
+/// the operand of a unary op and to the left operand of a shift.
 pub fn unary_promote(t: PrimitiveType) -> PrimitiveType {
     match t {
         PrimitiveType::Long => PrimitiveType::Long,

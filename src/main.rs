@@ -2,12 +2,11 @@
 //!
 //!   njavac [-d <dir>] <file.java> [<file.java> ...]
 //!
-//! Like javac, a single invocation compiles any number of source files. Each
-//! class is written to `<ClassName>.class` — under `-d <dir>` when given,
-//! otherwise beside its source file (javac's default). The class name comes from
-//! the parsed source; in njavac's supported subset it always matches the
-//! basename. As with javac, a returned compile diagnostic for one source does not
-//! abort the others; the process exits non-zero if any source failed.
+//! One invocation independently compiles any number of source files. Output uses
+//! the source basename under `-d <dir>` or beside the source; supported inputs
+//! require that basename to match the parsed public class. A returned diagnostic
+//! for one source does not abort later sources, and any failure makes the process
+//! exit non-zero.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -61,9 +60,9 @@ fn compile_one(input: &str, out_dir: Option<&Path>) -> Result<(), String> {
         .to_string_lossy()
         .into_owned();
 
-    // The output basename is the source basename minus ".java"; in the supported
-    // subset the public class name is required to match it, so this is exactly
-    // javac's `<ClassName>.class`.
+    // The CLI names output from the source basename. The supported-language
+    // contract requires it to match the public class, but compile() does not
+    // currently enforce that relationship.
     let class_name = source_file.strip_suffix(".java").unwrap_or(&source_file).to_owned();
 
     let bytes = njavac::compile(&source, &source_file)

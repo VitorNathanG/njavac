@@ -10,7 +10,7 @@ pub struct Token {
     pub span: Span,
 }
 
-/// The lexical categories of the Tier-2 subset.
+/// The lexical categories of the supported subset.
 ///
 /// Note: `PartialEq` (not `Eq`) because the float literal variants carry
 /// `f32`/`f64`. The parser only ever compares against non-literal kinds, so

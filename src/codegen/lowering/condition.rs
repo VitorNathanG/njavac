@@ -13,7 +13,7 @@ use super::Gen;
 impl Gen<'_> {
     // -------- control flow / labels / frames --------
 
-    /// `if (cond) then [else els]`, a faithful port of javac's `visitIf`. A code-free
+    /// Lower an `if` using the control-flow shape reconstructed from pinned output. A code-free
     /// static verdict emits only the taken arm and no frame; a static-false negated
     /// shortcut leaves its source line pending only on straight-line entry. A live
     /// branch target suppresses it. Otherwise `gen_cond` lowers the condition to a
@@ -110,7 +110,7 @@ impl Gen<'_> {
     /// mark a shortcut verdict while dropping the dead operand. `&&`/`||` short-
     /// circuit from the *left*: the left's deciding branch is emitted, its
     /// non-deciding outcome falls through into the right operand, and the two
-    /// chains are merged (`Code.mergeChains`).
+    /// chains are merged by the local conditional-item model.
     fn gen_cond(&mut self, e: ExprId) -> CondItem {
         // This query requires the complete subtree to be available as a javac
         // immediate. Non-strict shortcuts (`true || local`) stay structural so
@@ -366,7 +366,7 @@ impl Gen<'_> {
         self.branch_to_new(op)
     }
 
-    /// Merge chain `b` into chain `a` (javac's `Code.mergeChains`): retarget every
+    /// Merge chain `b` into chain `a`: retarget every
     /// pending branch of `b` to `a`. Instruction order never affects output — all
     /// sites of a merged chain resolve to one position, and frames key by layout pc.
     fn merge_chains(&mut self, a: Option<Label>, b: Option<Label>) -> Option<Label> {
