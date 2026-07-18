@@ -410,7 +410,11 @@ is outside the accumulated duration. Defaults are 1000 rounds, 5 trials, and all
 phases; select one phase for a native sampling profile without first running the
 other cumulative prefixes. The final breakdown reports the **min over trials** —
 the robust estimator, since host noise can only ever *add* time. Single-shot host
-timing lies; always compare mins on the same host and corpus.
+timing lies; always compare mins on the same host, corpus, and macOS power mode.
+Power mode materially changes compiler throughput, so performance goals and
+regression judgments are conditional on it. The current 2.04M LOC/s measurement
+used the MacBook's regular mode (full performance); the earlier 1.06M LOC/s
+baseline used power-saver mode and is not a like-for-like comparison.
 
 ## Architecture
 
