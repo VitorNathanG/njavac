@@ -472,12 +472,11 @@ source → lexer::lex → parser::parse → sema::analyze → codegen::generate 
   the `SourceFile` attribute from the input file's basename (the class name comes
   from the source). A per-file compile error is caught so one bad source does not
   abort the batch — the process just exits non-zero.
-- **`classdump`** is not part of the pipeline — it is the *inverse*: a structural
-  reader that parses `.class` bytes back into an ordered list of fields (byte
-  offset + path + value), and a `diff_report` that localizes the first structural
-  divergence between two class files. It is the mirror of the `classfile` writer
-  and the byte-identity debugging tool (the `classdiff` bin, and the diff the
-  bench prints on a mismatch). See §Testing.
+- **`classdump`** is not part of the pipeline — it is the *inverse*: `reader`
+  parses `.class` bytes into an ordered list of fields (byte offset + path + value),
+  while `diff` localizes the first structural divergence. It remains operationally
+  independent from the `classfile` writer and backs both the `classdiff` bin and
+  mismatch reports from the bench. See §Testing.
 
 ### Where byte-identity is won or lost
 
