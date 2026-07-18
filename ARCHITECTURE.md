@@ -172,7 +172,10 @@ src/
 |   `-- diff.rs
 |
 `-- bin/
-    |-- bench.rs
+    |-- bench/
+    |   |-- main.rs
+    |   |-- correctness.rs
+    |   `-- timing.rs
     |-- classdiff.rs
     |-- fuzz/
     |   |-- main.rs
