@@ -10,13 +10,11 @@ RUN set -eux; \
     case "${TARGETARCH}" in \
         amd64) \
             target="x86_64-unknown-linux-musl"; \
-            mdbook_sha="5222beabd3e37dc5be0d18ff99b79058469354db5c220153a1b92db5ba12be89"; \
-            mermaid_sha="c3a924da1c1895d694f0544fb8ce71ae01508138d8e9b02374e9bf608ae765d7" \
+            mdbook_sha="5222beabd3e37dc5be0d18ff99b79058469354db5c220153a1b92db5ba12be89" \
             ;; \
         arm64) \
             target="aarch64-unknown-linux-musl"; \
-            mdbook_sha="753e5c5c363ee8a56972344dcf91466f005a51db84a7aeffe427ae3ef83d6d44"; \
-            mermaid_sha="372c2e8ef1f59f65e40887517ecf353587c3c30fb7f4911e2ec250e0ca61d806" \
+            mdbook_sha="753e5c5c363ee8a56972344dcf91466f005a51db84a7aeffe427ae3ef83d6d44" \
             ;; \
         *) \
             echo "unsupported architecture: ${TARGETARCH}" >&2; exit 1 \
@@ -28,16 +26,28 @@ RUN set -eux; \
       -o /tmp/mdbook.tar.gz; \
     echo "${mdbook_sha}  /tmp/mdbook.tar.gz" | sha256sum -c -; \
     tar -xzf /tmp/mdbook.tar.gz -C /out mdbook; \
-    curl -fsSL \
-      "https://github.com/badboy/mdbook-mermaid/releases/download/v0.17.0/mdbook-mermaid-v0.17.0-${target}.tar.gz" \
-      -o /tmp/mdbook-mermaid.tar.gz; \
-    echo "${mermaid_sha}  /tmp/mdbook-mermaid.tar.gz" | sha256sum -c -; \
-    tar -xzf /tmp/mdbook-mermaid.tar.gz -C /out mdbook-mermaid; \
-    chmod 0755 /out/mdbook /out/mdbook-mermaid
+    chmod 0755 /out/mdbook
 
-FROM alpine:3.23.3@sha256:25109184c71bdad752c8312a8623239686a9a2071e8825f20acb8f2198c3f659
+FROM rust:1.95-slim-bookworm@sha256:d7482085ff5b415f84dba5647ae71606650bdef00db7aeb69f4b3d170c3e4082 AS mermaid-build
 
-COPY --from=fetch /out/mdbook /out/mdbook-mermaid /usr/local/bin/
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /src
+RUN curl -fsSL \
+      "https://static.crates.io/crates/mdbook-mermaid/mdbook-mermaid-0.17.0.crate" \
+      -o /tmp/mdbook-mermaid.crate \
+    && echo "7676e3d7e2ca3218b7c67ca43c0b5d01173ad8e29fd9bcaad2fece19129d6a3d  /tmp/mdbook-mermaid.crate" | sha256sum -c - \
+    && tar -xzf /tmp/mdbook-mermaid.crate --strip-components=1 -C /src
+COPY docs/mdbook-mermaid.Cargo.lock /src/Cargo.lock
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/src/target \
+    cargo build --release --locked --bin mdbook-mermaid \
+    && cp target/release/mdbook-mermaid /out-mdbook-mermaid
+
+FROM debian:bookworm-slim@sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bbd5acbfca6ec875818
+
+COPY --from=fetch /out/mdbook /usr/local/bin/mdbook
+COPY --from=mermaid-build /out-mdbook-mermaid /usr/local/bin/mdbook-mermaid
 
 WORKDIR /work
 EXPOSE 3000

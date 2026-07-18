@@ -59,10 +59,10 @@ The result is neither deterministic nor comparable across arbitrary hosts.
 
 ## Documentation image
 
-Documentation uses `docs/Dockerfile`, not the compiler image. It pins the Alpine
-base by digest, downloads fixed mdBook and mdbook-mermaid releases for `amd64` or
-`arm64`, verifies their archives by architecture-specific SHA-256, and copies only
-those tools into the runtime stage.
+Documentation uses `docs/Dockerfile`, not the compiler image. It pins all base
+images by digest, verifies the mdBook archive and mdbook-mermaid crate checksums,
+and builds mdbook-mermaid against the committed lockfile's matching 0.5.4
+preprocessor protocol before copying only the documentation tools into runtime.
 
 Documentation commands bind-mount the repository and run as the host UID/GID so
 `docs/book/` remains host-writable. The preview server publishes only on

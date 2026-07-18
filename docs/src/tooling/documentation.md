@@ -48,10 +48,12 @@ defaults and forwarding.
 
 ## Pinned toolchain
 
-`docs/Dockerfile` supports Docker `amd64` and `arm64`. It pins the Alpine base by
-digest and verifies the downloaded mdBook and mdbook-mermaid archives against
-architecture-specific checksums. Unsupported architectures fail during the image
-build rather than silently downloading an unverified binary.
+`docs/Dockerfile` supports Docker `amd64` and `arm64`. It pins its Alpine, Debian,
+and Rust bases by digest. The mdBook release archive and mdbook-mermaid crate
+source are checksum-verified. mdbook-mermaid is built from the committed
+`docs/mdbook-mermaid.Cargo.lock`, which selects `mdbook-preprocessor` 0.5.4 to
+match mdBook 0.5.4. Unsupported architectures fail during the image build rather
+than downloading an unverified mdBook binary.
 
 `docs/book.toml` enables the Mermaid preprocessor and loads the vendored Mermaid
 browser assets. The link gate runs a pinned Lychee image in offline mode against a
@@ -59,12 +61,8 @@ read-only mount of the rendered book. It checks internal links and anchor-only
 fragments without turning external network availability into a documentation
 failure.
 
-The configured mdBook 0.5.4 build currently prints a warning that
-`mdbook-mermaid` was built against mdBook 0.5.0. This is an honest compatibility
-warning from the preprocessor, not a claim that the repository configures mdBook
-0.5.0 and not, by itself, a failed build. The current build completes and renders
-Mermaid with that warning. Do not suppress it or describe the versions as an
-exact pair; investigate it when changing either tool or if preprocessing fails.
+When either mdBook component changes, update the lockfile deliberately and reject
+any preprocessor version warning rather than suppressing it.
 
 ## Mermaid
 
