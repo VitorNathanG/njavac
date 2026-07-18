@@ -442,8 +442,10 @@ source → lexer::lex → parser::parse → sema::analyze → codegen::generate 
   precedence-climbing loop for expressions; `infix_binding_power` is the ordered
   operator/associativity table. Dotted invocation syntax remains structural
   `Name`/`Select`/`Call`; the parser does not resolve `System.out.println`.
-- **`sema`** → supported-class-shape validation, operand-family checks, and
-  occurrence-based local resolution: each declaration gets a stable `LocalId`,
+- **`sema`** → the facade owns the public analysis model and class-shape checks;
+  `analyzer` owns method-local scopes, slots, definite assignment, and snapshots,
+  its `attribution` child owns expression/call validation, and `constants` owns the
+  narrow semantic constant queries. Each declaration gets a stable `LocalId`,
   every `Name` span maps to it, and definite assignment is tracked by ID. Its
   lexical scope stack reclaims two-slot-aware allocations on braced-scope exit
   while retaining the `max_locals` high-water mark; unbraced branch bodies share
