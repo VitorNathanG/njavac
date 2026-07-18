@@ -424,8 +424,11 @@ source → lexer::lex → parser::parse → sema::analyze → codegen::generate 
 - **`diagnostic` / `span`** → the fallible stage contract: half-open source-byte
   ranges plus stable syntax/unsupported diagnostic codes; internal invariant
   failures remain Rust panics rather than a diagnostic category.
-- **`lexer`** → flat `Vec<Token>`, each carrying a half-open source-byte `Span`
-  plus the existing 1-based line used for a byte-identical `LineNumberTable`.
+- **`lexer`** → the facade owns source traversal, trivia, and identifier dispatch;
+  `token` owns the flat token model, `literal` decodes numeric/string/character
+  forms, and `punctuator` owns longest-match operators. Every token carries a
+  half-open source-byte `Span` plus the existing 1-based line used for a
+  byte-identical `LineNumberTable`.
 - **`ast`** → plain enums; declarations/statements carry source spans while
   statements/braces retain their byte-visible line facts. One
   recursive `Type` (`Void` / `Primitive` / canonical-internal-name `Class` / `Array`)
