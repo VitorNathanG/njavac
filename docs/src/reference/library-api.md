@@ -97,7 +97,7 @@ known reachable assembler defects remain outside the supported-program contract.
 supports repository binaries such as the profiler and structural differ. It does
 not make every stage type a stable external API.
 
-The source comment on `compile` identifies that function and its byte behavior as
+The source comment on `compile` identifies that function and its output behavior as
 the fixed frontend contract. The crate is version `0.1.0`, has no published
 semver policy, and the architecture explicitly permits internal stage boundaries
 and types to change. In particular:

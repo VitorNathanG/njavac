@@ -197,7 +197,7 @@ must be verified against the pinned CLI/observer gates after changes.
 
 ## Fixtures and generated output
 
-`fixtures/` contains recursively discovered Java acceptance cases grouped by
+`fixtures/` contains recursively discovered Java exact-byte regression cases grouped by
 topic. Basenames must be globally unique because current harness output
 directories are flat. Fixtures are compiled in one compiler invocation but remain
 independent one-class sources.
@@ -216,8 +216,9 @@ authority.
 | `docs/book.toml`, `docs/Dockerfile` | Pinned mdBook/Mermaid build configuration |
 | `.github/` | Repository automation |
 
-All byte-identity acceptance runs through Docker. Local `make check` and
-`profile` are compiler-debugging/performance tools, not compatibility gates.
+All exact-byte and behavioral compatibility evidence runs through Docker. Local
+`make check` and `profile` are compiler-debugging/performance tools, not
+compatibility gates.
 
 ## Documentation authorities
 

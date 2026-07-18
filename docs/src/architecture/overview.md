@@ -1,8 +1,8 @@
 # Architecture Overview
 
 njavac is a single Rust crate that compiles one supported Java source to one
-Java 25 class file. Its defining contract is exact output compatibility, not
-merely valid bytecode or equivalent runtime behavior. See the
+Java 25 class file. Its defining contract is behavioral compatibility, with exact
+reference output retained whenever practical. See the
 [compatibility contract](../reference/compatibility-contract.md) for the promise
 and [language support](../reference/language-support.md) for its input boundary.
 
@@ -106,9 +106,9 @@ The `source_file` library argument is metadata only. It supplies the
 `SourceFile` attribute and does not choose `this_class` or an output path. See
 the [library API](../reference/library-api.md).
 
-## Invariants that cross layers
+## Byte-retention invariants
 
-Byte identity depends on a few cross-layer rules:
+Reliable exact-byte retention depends on a few cross-layer rules:
 
 - Syntax distinctions that affect javac output, especially parentheses and
   bracing, survive parsing until lowering has consumed them.

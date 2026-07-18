@@ -33,7 +33,7 @@ Use this map when a fact changes:
 | Fact | Authoritative home |
 | --- | --- |
 | Current accepted Java | [Language support](../reference/language-support.md) |
-| Byte-identity meaning and determinism boundary | [Compatibility contract](../reference/compatibility-contract.md) |
+| Behavioral compatibility, byte retention, and determinism boundary | [Compatibility contract](../reference/compatibility-contract.md) |
 | CLI behavior | [CLI reference](../reference/cli.md) |
 | Library contract | [Library API](../reference/library-api.md) |
 | Current repository structure | [Repository map](../reference/repository-map.md) |
@@ -134,7 +134,7 @@ after an empirically reconstructed concept does not change the black-box policy.
 Documentation is a current guide, not a changelog:
 
 - Delete completed active-work entries.
-- Delete fixed finding entries after the regression fixture lands.
+- Delete fixed finding entries after the regression test lands.
 - Delete superseded mechanics rather than preserving "formerly" narratives.
 - Delete duplicate summaries after replacing them with links.
 - Use git history for why and when a completed change landed.

@@ -10,7 +10,7 @@ measures process-level wall clock in a Docker harness with resource controls.
 | --- | --- | --- |
 | How long does one normal whole-suite compiler invocation take on this controlled host? | `make bench` | Repeated samples, each including process startup, dynamic linking or JVM startup, and compilation of the complete fixture corpus. |
 | Which njavac phase consumes compiler time? | `make profile` | Hot in-process lexing, parsing, semantic analysis, codegen planning, and serialization. No process spawn per compile. |
-| Does output still match javac? | `make correctness` | Fresh byte comparison, not a performance measurement. |
+| Do exact-output fixtures still match javac? | `make correctness` | Fresh byte comparison, not a performance measurement. |
 
 For tiny inputs, process startup dominates the benchmark, especially javac's JVM
 startup. Do not interpret `make bench` as a phase profile. Conversely, the hot
@@ -24,7 +24,7 @@ host load, hypervisor scheduling, power, or thermal state. Compare nearby runs o
 the same host and configuration; do not call the result deterministic.
 
 The timed closures discard compiler output and ignore each timed process's success
-status. The initial correctness result remains authoritative for the tested pass,
+status. The initial fixture result remains authoritative for the tested pass,
 but a compiler that fails during a later warm-up or measured invocation can still
 produce a timing sample and a successful benchmark command. Treat suspiciously
 short samples or intermittent failures as invalid timing evidence and reproduce
@@ -96,7 +96,7 @@ runs on the same machine rather than isolated single measurements.
 
 `make profile` is deliberately local. It does not invoke the configured javac, run in the
 acceptance container, or compare class bytes. A successful or faster profile is
-not acceptance evidence. Run the required Docker correctness gate separately.
+not compatibility evidence. Run the required Docker gates separately.
 
 Forced host execution of the benchmark harness is likewise debugging only. The
 sanctioned process-level timing command is `make bench`, whose CPU and memory

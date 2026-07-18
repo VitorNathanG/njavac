@@ -1,12 +1,12 @@
 # Evidence and Confidence
 
-The research pages preserve the project's broad Java 25 survey and byte-identity
+The research pages preserve the project's broad Java 25 survey and byte-visible
 hazards for language that njavac does not yet support. They are a research queue,
 not a promise of syntax acceptance and not an exhaustive account of Java 25.
 
 Current accepted behavior is authoritative only in
 [Language Support](../reference/language-support.md). The reference compiler and
-byte-identity boundary are defined by the
+compatibility and byte-retention boundary is defined by the
 [Compatibility Contract](../reference/compatibility-contract.md).
 
 ## Confidence labels
@@ -36,7 +36,7 @@ unretained terminal work, or the former page as current evidence.
 
 Research pages may contain many **[U]** rows and no **[O]** row for a distant
 feature. That accurately distinguishes a survey lead from evidence ready to drive
-byte-compatible implementation.
+compatible implementation with deliberate byte-retention choices.
 
 ## Research map
 

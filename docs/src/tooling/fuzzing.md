@@ -25,23 +25,31 @@ flowchart TD
     Same -->|No| Behavior[Hard behavioral finding]
 ```
 
-Javac rejection takes precedence regardless of what njavac did because it means
-the generator did not produce a valid reference case. When javac accepts, the
-outcomes are classified as follows:
+Javac rejection takes precedence regardless of what njavac did because the oracle
+has no usable reference class for that case. This normally means the generator
+produced invalid reference input, but an unexpected count can indicate a worker
+failure as described under [Reference worker](#reference-worker). When javac
+accepts, the outcomes are classified as follows:
 
 | Outcome | Operational treatment | Product meaning |
 | --- | --- | --- |
-| Both emit identical bytes | Exact pass | Compatibility satisfied for this case. |
-| Bytes differ, observations match | Telemetry; normal `make fuzz` can exit zero | Still a product compatibility violation. Behavioral equivalence does not satisfy njavac's byte-identity contract. |
-| Bytes and observations differ | Hard finding and nonzero exit | Behavioral compiler bug as well as compatibility failure. |
+| Both emit identical bytes | Exact pass | Exact fuzzer pass against the worker; worker verification separately checks sampled CLI equivalence. |
+| Bytes differ, observations match | Telemetry; normal `make fuzz` can exit zero | The current generated behavior check passes; the physical difference remains byte-retention telemetry. |
+| Bytes and observations differ | Hard finding and nonzero exit | Behavioral compiler bug. |
 | Javac rejects | `generator-invalid` telemetry | Generator escaped valid Java or the intended reference surface. |
 | Javac accepts, njavac returns `Unsupported` | `njavac-unsupported` telemetry | Valid Java reached a deliberate compiler boundary. Review whether the generator exceeded current scope. |
 | Javac accepts, njavac returns a syntax diagnostic | Hard compiler finding | Invalid rejection of reference-accepted input. |
 | Javac accepts, njavac panics | Hard compiler finding | Internal invariant failure. |
 
-The observer supplies empirical semantic evidence, not proof. Equal stdout,
-stderr, and termination cannot reveal unobserved state. Exact bytes remain the
-product requirement and the fixture acceptance oracle.
+The observer supplies empirical semantic evidence, not universal proof. Equal
+stdout, stderr, and termination cannot reveal unobserved state, but they are the
+sanctioned behavioral oracle for the current generated subset, which prints its
+modeled mutations and branch choices. Exact bytes remain the preferred fast path
+and the strict oracle for fixtures that claim reference-byte retention. A
+persistent nonidentical representation under the optimization exception needs a
+sanctioned durable regression oracle covering any behavior the changed physical
+surface can affect before it becomes a support claim; terminal byte-drift telemetry
+is not that oracle.
 
 ## Reproduction and control
 

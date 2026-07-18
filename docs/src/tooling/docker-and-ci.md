@@ -1,8 +1,8 @@
 # Docker and CI
 
-Docker defines njavac's controlled acceptance environment. Byte identity is
-specific to the content-pinned reference `javac` in the image, so host Java output
-is never a substitute for that image.
+Docker defines njavac's controlled acceptance environment. Exact bytes and
+behavioral comparisons are specific to the content-pinned reference `javac` in the
+image, so host Java output is never a substitute for that image.
 
 ## Main image
 
@@ -79,8 +79,8 @@ read-only repository mount. See [Documentation Tooling](documentation.md).
 | `make profile` | No | No; local pipeline measurement only |
 | Direct host `javac` comparison | No | No; disallowed as reference evidence |
 | `make verify` | Yes | Cached inner-loop evidence; cache may be stale |
-| `make correctness` | Yes | Fresh byte-identity acceptance |
-| `make bench` | Yes | Fresh acceptance plus controlled same-host timing |
+| `make correctness` | Yes | Fresh exact-byte fixture evidence |
+| `make bench` | Yes | Fresh exact-byte fixture evidence plus controlled same-host timing |
 | Fuzzer worker and observer gates | Yes | Evidence for their specific oracle contracts |
 | `make docs-check` | Yes | Documentation rendering and internal-link evidence |
 
@@ -92,16 +92,16 @@ debug internals but cannot establish compatibility against the configured refere
 `.github/workflows/ci.yml` runs `make correctness` on GitHub Actions for every
 push and pull request. The job checks out the repository on `ubuntu-latest`,
 enables BuildKit, builds the main image, and performs the fresh byte comparison.
-It is a correctness-only backstop. The runner and checkout action use mutable
+It is an exact-byte fixture backstop. The runner and checkout action use mutable
 GitHub labels, but the reference JDK and compiler build images remain
 content-pinned by the repository Dockerfile.
 
 The workflow does not run `make verify`, `make bench`, any fuzzer mode, worker or
 observer verification, `make docs-check`, host builds, or profiles. It has no
 declared Docker layer cache. A green GitHub status therefore establishes only the
-fresh fixture byte-identity contract of `make correctness` against the main image
+fresh exact-byte fixture contract of `make correctness` against the main image
 built for that job. It does not establish documentation, fuzz, worker, observer,
-or performance claims.
+accepted alternate representations, or performance claims.
 
 Changes to the workflow should continue to invoke existing Make targets rather
 than recreate their Docker commands. Add the relevant explicit jobs when their

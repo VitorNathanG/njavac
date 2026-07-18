@@ -2,12 +2,12 @@
 name: byte-identity-rung
 description: >-
   Workflow adapter for implementing a language rung or fixing a byte divergence
-  in njavac under the byte-identical-to-javac invariant. Use for new operators,
+  under njavac's compatibility and byte-retention contract. Use for new operators,
   literals, statements, types, control flow, class-file structures, fixture
   mismatches, and fuzz findings.
 ---
 
-# Byte-Identity Work
+# Compatibility and Byte-Retention Work
 
 This skill orchestrates the authoritative human workflow. It does not duplicate
 compiler mechanics.
@@ -33,5 +33,7 @@ Then follow that workflow end to end:
 - Present the end-of-cycle reflection to the user and record only accepted,
   non-active improvements in [deferred work](../../../docs/src/direction/deferred-work.md).
 
-Never inspect javac/OpenJDK implementation sources, accept semantically equivalent
-but different bytes, or silently narrow a rung to avoid a reachable case.
+Never inspect javac/OpenJDK implementation sources, accept a divergent
+representation outside the documented optimization exception or without
+a sanctioned durable behavioral regression oracle, or silently narrow a rung to
+avoid a reachable case.

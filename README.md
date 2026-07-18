@@ -1,9 +1,9 @@
 # njavac
 
 njavac is an experimental Java 25 to JVM bytecode compiler written in Rust. It
-supports a deliberately small language surface under one strict contract: every
-supported source must produce a `.class` file byte-identical to the
-repository-pinned `javac`.
+supports a deliberately small language surface under a strict behavioral
+compatibility contract and retains the repository-pinned `javac` class bytes
+whenever practical.
 
 It is a compiler research project, not a replacement for javac.
 

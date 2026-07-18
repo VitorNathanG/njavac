@@ -80,5 +80,5 @@ separately from the feature.
 No open findings.
 
 When a finding appears, handle one signature at a time: reproduce, minimize, fix,
-run authoritative verification, add a documented regression fixture, and then
-delete the finding from this page before starting another.
+run authoritative verification, add a documented regression test, and then delete
+the finding from this page before starting another.

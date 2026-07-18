@@ -1,8 +1,9 @@
 # Prerequisites
 
-njavac's acceptance environment is Docker. Class-file identity is specific to the
-content-pinned reference `javac` in the main image. A host JDK, even another Java
-25 distribution, is not an acceptance reference. The archive checksum and base
+njavac's acceptance environment is Docker. Exact class bytes and behavioral
+comparisons are specific to the content-pinned reference `javac` in the main
+image. A host JDK, even another Java 25 distribution, is not an acceptance
+reference. The archive checksum and base
 image digests are owned by the root `Dockerfile`; see
 [Docker and CI](../tooling/docker-and-ci.md).
 
@@ -28,7 +29,7 @@ guide explains when to use them.
 
 A host Rust toolchain is useful for local compiler-internal debugging through
 `make check` and for local profiling through `make profile`. These are not test
-or acceptance commands. Their output cannot establish byte identity because they
+or acceptance commands. Their output cannot establish compatibility because they
 do not select the configured in-image reference `javac`.
 
 A host JDK is not required for normal maintenance. Never use host `javac` or
@@ -60,8 +61,8 @@ There is no sanctioned host acceptance run and no `cargo test` substitute.
 | Profile with `make profile` | Yes | No |
 | Compare against host `javac` | No | No |
 | Run `make verify` | Through Docker | Cached, suitable for the inner loop |
-| Run `make correctness` | Through Docker | Yes, fresh and authoritative |
-| Run `make bench` | Through Docker | Yes, plus controlled same-host timing |
+| Run `make correctness` | Through Docker | Fresh exact-byte fixture evidence |
+| Run `make bench` | Through Docker | Fresh exact-byte fixture evidence plus controlled same-host timing |
 | Run fuzzer and worker gates | Through Docker | Yes for their documented contracts |
 
 The detailed gate selection lives in [Command surface](../tooling/command-surface.md)

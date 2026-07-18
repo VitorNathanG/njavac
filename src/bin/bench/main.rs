@@ -6,7 +6,7 @@
 //!      njavac and assert the `.class` bytes are identical. Byte-identity is
 //!      reproducible only against the pinned javac in the Docker harness. It fails
 //!      loudly, with a localized structural and javap diff of the first mismatch,
-//!      so it doubles as the acceptance test.
+//!      so it doubles as the exact-byte fixture gate.
 //!
 //!   2. TIMING (controlled Docker harness only): time compiling the whole suite with
 //!      each compiler. Host timings are noise (JVM startup jitter, scheduler,
@@ -44,7 +44,7 @@ struct Config {
     /// it). Under `target/`, so it is never committed and `cargo clean` drops it.
     golden_dir: String,
     /// Skip the timing pass — run the correctness check only. A fresh, authoritative
-    /// online byte-identity gate without the ~12s timing measurement.
+    /// online exact-byte fixture gate without the ~12s timing measurement.
     no_timing: bool,
 }
 

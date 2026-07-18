@@ -1,12 +1,12 @@
-# njavac — the single command surface. Everything that validates byte-identity
-# runs through Docker: only the configured GraalVM javac in the built image is the
-# golden bytes (see `docs/src/tooling/command-surface.md`). `check` is a LOCAL build for
-# compiler-internal debugging only, never acceptance.
+# njavac — the single command surface. Exact-byte and behavioral reference checks
+# run through Docker: only the configured GraalVM javac in the built image is the
+# reference (see `docs/src/tooling/command-surface.md`). `check` is a LOCAL build
+# for compiler-internal debugging only, never compatibility evidence.
 #
 #   make verify      [FILE=fixtures/x/F.java]  # fast gate: njavac vs cached goldens (may be stale)
-#   make correctness [FILE=..]                 # fresh authoritative online check, no timing
+#   make correctness [FILE=..]                 # fresh authoritative exact fixture check, no timing
 #   make record      [FILE=..]                 # re-record goldens (after fixtures/JDK change), then verify
-#   make bench       [FILE=..]                 # authoritative correctness + controlled same-host timing
+#   make bench       [FILE=..]                 # exact fixture check + controlled same-host timing
 #   make probe       FILE=Probe.java           # disassemble a probe with the configured javac (javap -v -p)
 #   make src-diff    FILE=Probe.java           # diff BOTH compilers on one source (byte + classdiff + javap)
 #   make diff        A=a.class B=b.class       # structural class-file diff, in-container
@@ -78,14 +78,14 @@ verify: image  ## fast gate: njavac vs cached goldens (whole suite, or one FILE=
 	       docker run --rm -v $(VOLUME):$(GOLDENS) $(IMAGE) --record --golden-dir $(GOLDENS); }
 	docker run --rm -v $(VOLUME):$(GOLDENS) $(IMAGE) --offline --golden-dir $(GOLDENS) $(FILE)
 
-correctness: image  ## fresh authoritative online byte-identity check (no timing)
+correctness: image  ## fresh authoritative exact-byte fixture check (no timing)
 	docker run --rm $(IMAGE) --no-timing $(FILE)
 
 record: image  ## re-record goldens from the configured javac, then verify
 	docker run --rm -v $(VOLUME):$(GOLDENS) $(IMAGE) --record --golden-dir $(GOLDENS)
 	docker run --rm -v $(VOLUME):$(GOLDENS) $(IMAGE) --offline --golden-dir $(GOLDENS) $(FILE)
 
-bench: image  ## authoritative correctness + controlled same-host Docker timing
+bench: image  ## exact-byte fixture check + controlled same-host Docker timing
 	docker run --rm \
 	  --cpuset-cpus=$(BENCH_CPU) --cpus=1 \
 	  --memory=$(BENCH_MEM) --memory-swap=$(BENCH_MEM) --pids-limit=256 \

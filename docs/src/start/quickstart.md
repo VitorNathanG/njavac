@@ -1,7 +1,7 @@
 # Quickstart
 
 This path establishes the environment, builds the compiler, and runs a fresh
-byte-identity check. Run commands from the repository root.
+exact-byte fixture check. Run commands from the repository root.
 
 ## Inspect the command surface
 
@@ -36,15 +36,15 @@ verification. Running `make verify` immediately afterward repeats that check.
 Do not diagnose compiler behavior from a cached mismatch until cache freshness is
 known. See [Fixtures and goldens](../tooling/fixtures-and-goldens.md).
 
-## Run fresh acceptance
+## Run the fresh fixture gate
 
 ```sh
 make correctness
 ```
 
-This invokes the configured reference compiler afresh in Docker and byte-compares the
-complete fixture suite. It is the pre-commit correctness gate. A green local build
-or cached verify does not replace it.
+This invokes the configured reference compiler afresh in Docker and byte-compares
+the complete fixture suite. It is the pre-commit exact-byte gate. A green local
+build or cached verify does not replace it.
 
 Use the controlled benchmark only when authoritative timing is also needed:
 

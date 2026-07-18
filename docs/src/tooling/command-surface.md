@@ -29,7 +29,7 @@ flowchart TD
 ```
 
 `make verify` is fast but cache-backed and can be stale. `make correctness` is
-the fresh, authoritative pre-commit byte-identity gate. `make bench` adds repeated
+the fresh, authoritative pre-commit exact-byte fixture gate. `make bench` adds repeated
 whole-suite timing samples under controls that support same-host comparisons; it
 does not make wall-clock results deterministic or portable across hosts. Local
 builds and profiles are never acceptance evidence.
@@ -49,11 +49,11 @@ builds and profiles are never acceptance evidence.
 | Target | Purpose | Gate semantics |
 | --- | --- | --- |
 | `verify` | Compile with njavac in Docker and compare against the persisted golden volume. It auto-records only when that volume has no class files. | Fast cached inner-loop gate. A nonempty cache is not freshness-checked and can be stale. |
-| `correctness` | Compile with both njavac and the configured in-image `javac`, then byte-compare fresh outputs. | Authoritative online correctness gate with no timing pass. This is the normal pre-commit gate. |
+| `correctness` | Compile with both njavac and the configured in-image `javac`, then byte-compare fresh outputs. | Authoritative online exact-byte fixture gate with no timing pass. This is the normal pre-commit gate. |
 | `record` | Rebuild the golden cache from the configured in-image `javac`, then run an offline verification. | Cache-maintenance operation followed by a cached check. With `FILE`, recording still covers the whole suite; only the second verification is filtered. |
-| `bench` | Run fresh correctness, then collect repeated whole-suite process samples for each compiler under Docker CPU and memory controls. Each sample is one compiler invocation. | Authoritative correctness plus controlled same-host timing. With `FILE`, the harness checks only that fixture and skips timing. Timed invocations do not check their later process statuses. |
+| `bench` | Run fresh correctness, then collect repeated whole-suite process samples for each compiler under Docker CPU and memory controls. Each sample is one compiler invocation. | Exact-byte fixture evidence plus controlled same-host timing. With `FILE`, the harness checks only that fixture and skips timing. Timed invocations do not check their later process statuses. |
 | `check` | Build all Rust binaries in release mode on the host. | Local compiler-internal debugging only. It is not a test and not acceptance. |
-| `profile` | Build and run the in-process pipeline profiler on the host. | Local performance investigation only. It neither invokes the reference compiler nor proves byte identity. |
+| `profile` | Build and run the in-process pipeline profiler on the host. | Local performance investigation only. It neither invokes the reference compiler nor establishes compatibility. |
 
 See [Fixtures and Goldens](fixtures-and-goldens.md) for cache lifecycle and
 [Profiling](profiling.md) for the distinction between benchmark and pipeline
@@ -72,13 +72,13 @@ the classes matched or every diagnostic tool succeeded. Read `IDENTICAL`, `bytes
 differ`, and every diagnostic error. GNU Make also reports a recipe failure with
 its own status, so the inner reference-rejected and candidate-rejected exit codes
 are not a stable public status API. Use `correctness` for a status-bearing
-byte-identity gate. See [Differential Debugging](differential-debugging.md).
+exact-byte fixture gate. See [Differential Debugging](differential-debugging.md).
 
 ### Fuzzing
 
 | Target | Purpose | Gate semantics |
 | --- | --- | --- |
-| `fuzz` | Generate random in-scope Java, compare exact bytes, and execute byte-divergent pairs through the observer. | Fails for behavioral differences and invalid njavac syntax rejections or panics. Byte-only drift is operational telemetry and does not fail this target, although it still violates the product's byte-compatibility contract. |
+| `fuzz` | Generate random in-scope Java, compare exact bytes, and execute byte-divergent pairs through the observer. | Fails for behavioral differences and invalid njavac syntax rejections or panics. Observation-equivalent byte drift passes this scoped behavioral oracle and remains byte-retention telemetry. |
 | `fuzz-verify` | Compare the persistent in-memory javac worker with the configured `javac` CLI over a generated sample. | Sampled worker-oracle gate. Run after a JDK bump or worker change. Any observed acceptance or byte disagreement fails; a pass is not exhaustive proof. |
 | `fuzz-selftest` | Capture synthetic candidate outcomes, find a compilable generated case, minimize under its synthetic predicate, and write source and structural-diff artifacts. | Narrow harness plumbing check. It does not exercise the normal observer, behavioral-finding report, worker protocol, keep-going census, or a real compiler bug. |
 | `fuzz-observe-verify` | Exercise observer return, output difference, load failure, throw, timeout, and restart behavior. | Observer lifecycle gate. Run after observer or execution-isolation changes. |

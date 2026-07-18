@@ -1,9 +1,12 @@
 # Fixing a Divergence
 
-A byte difference for an agreed supported program is a compatibility defect even
-when both class files behave the same in one execution observation. A behavioral
-difference is additionally a semantic defect. Work one independently reproducible
-signature through completion before starting another.
+A byte difference for an agreed supported program is a byte-retention divergence
+that requires classification. It is a compatibility defect when either class is
+invalid or relevant behavior differs. It is a candidate acceptable representation
+only when reference-compiler optimization obscures the physical choice or makes it
+impractical to reconstruct, and only after a sanctioned durable regression oracle
+establishes equivalent behavior. Work one independently reproducible signature
+through completion before starting another.
 
 ## Classify the finding
 
@@ -12,16 +15,19 @@ fuzzer. Preserve the distinction between:
 
 | Outcome | Maintainer interpretation |
 | --- | --- |
-| Both accept, bytes differ | Byte-identity defect requiring triage. |
-| Bytes and observations differ | Byte-identity and observed-behavior defect. |
+| Both accept, bytes differ | Byte-retention divergence requiring structural and behavioral triage. |
+| Bytes differ, relevant observations match | Candidate optimization exception; retain as telemetry until a sanctioned durable oracle covers the affected behavior. |
+| Bytes and observations differ | Observed-behavior defect. |
 | javac accepts, njavac returns `Unsupported` | Coverage telemetry unless the input is inside the agreed support contract. |
 | javac accepts, njavac returns a syntax diagnostic | Invalid candidate rejection. |
 | javac accepts, njavac panics | Internal compiler defect. |
 | javac rejects | Invalid generator/probe input for compatibility purposes. |
 
-Execution observation is evidence, not proof of semantic equivalence. It must not
-downgrade a class-file mismatch under the project's exact-byte contract. See
-[Fuzzing](../tooling/fuzzing.md) for the oracle's process-exit and artifact policy.
+Execution observation is evidence, not universal proof of semantic equivalence.
+Use evidence appropriate to the physical surface that changed; the current fuzzer
+observer is the sanctioned behavioral check only for its modeled generated subset.
+See [Fuzzing](../tooling/fuzzing.md) for the oracle's process-exit and artifact
+policy.
 
 ## Reproduce from the pinned environment
 
@@ -42,7 +48,7 @@ verify`. The detailed tool interpretation belongs to [Differential debugging](..
 Reduce the source to the smallest program that preserves the relevant predicate:
 
 - Both compilers still accept when acceptance is part of the finding.
-- The same structural byte signature remains.
+- The same structural byte signature remains for a byte-retention investigation.
 - The same observation difference remains for a behavioral finding.
 - The same diagnostic or panic category remains for a compiler finding.
 
@@ -75,14 +81,15 @@ At the changed decision function, add or update a concise doc comment containing
 Do not duplicate the same rule in general architecture prose. Architecture should
 only explain which component owns the decision.
 
-## Add the regression fixture
+## Add the regression
 
-Every bug fix lands with a fixture in the same change. The fixture must:
+Every bug fix lands with a regression test in the same change. An exact-byte
+fixture must:
 
 - Be the smallest clear program that exercises the repaired edge.
 - Have a globally unique filename matching its public class.
 - Live in the topical fixture directory.
-- State at the top which byte-identity edge it protects and how output previously
+- State at the top which exact-byte edge it protects and how output previously
   diverged.
 - Avoid unrelated coverage that obscures the regression.
 
@@ -90,7 +97,13 @@ Every bug fix lands with a fixture in the same change. The fixture must:
 regression. Follow [Fixtures and goldens](../tooling/fixtures-and-goldens.md) for
 the full fixture contract.
 
-Refresh cached goldens after adding the fixture:
+An intentionally nonidentical representation under the optimization exception
+requires a sanctioned durable behavioral oracle because the current fixture
+harness is strict. Until that oracle exists, the divergence cannot become accepted
+support. Keep the test focused and cover every behavior the changed physical
+surface can affect.
+
+Refresh cached goldens after adding an exact fixture:
 
 ```sh
 make record
@@ -103,22 +116,25 @@ make record
 
 The minimum completion sequence is:
 
-1. The focused fixture is byte-identical.
+1. The focused exact-byte fixture passes, or the sanctioned durable behavioral
+   regression for an accepted alternate representation passes.
 2. `make correctness` passes over the full suite against fresh pinned `javac`.
-3. The original probe or seed no longer reproduces the signature.
-4. `make fuzz` no longer reports the signature over the agreed verification run.
+3. The original probe or seed no longer reproduces the behavioral defect; accepted
+   physical drift remains documented telemetry.
+4. `make fuzz` no longer reports the target behavioral signature over the agreed
+   verification run.
 5. Worker or observer gates pass if those components changed.
 6. The code decision comment and authoritative docs are current.
 
 Only after this sequence should the finding be removed from
 [Active work](../direction/active-work.md). Do not annotate it as fixed or preserve
-a completed backlog story. The lasting record is the code comment, minimal fixture,
-durable evidence, and git commit.
+a completed backlog story. The lasting record is the code comment, focused
+regression, durable evidence, and git commit.
 
 ## Land one bug
 
 Do not combine independent fuzzer signatures or opportunistic refactors in one fix.
-Finish reproduction, model, fix, fixture, authoritative verification, planning
+Finish reproduction, model, fix, regression, authoritative verification, planning
 deletion, and reflection for one signature before beginning the next.
 
 Commit and push authorization is governed solely by

@@ -1,9 +1,9 @@
 # njavac Maintainer Guide
 
 This book is the authoritative human maintainer guide for njavac. The project
-compiles a deliberately limited Java 25 surface to JVM class files under one
-compatibility contract: every supported program must produce the same bytes as
-the repository-pinned reference `javac`.
+compiles a deliberately limited Java 25 surface to behaviorally equivalent JVM
+class files and retains the repository-pinned reference `javac` bytes whenever
+practical.
 
 The root `README.md` is the repository entrance. This book owns durable human
 documentation. Code and executable configuration remain authoritative for
@@ -14,7 +14,7 @@ machine-enforced details, such as exact constants and command-line flags.
 - [Prerequisites](start/prerequisites.md) describes the required Docker-based
   environment and the boundary between local debugging and acceptance.
 - [Quickstart](start/quickstart.md) takes a new maintainer through the first
-  build, compile, and byte-identity check.
+  build, compile, and exact-byte fixture check.
 - [Workflow](contributing/workflow.md) defines how changes are researched,
   separated, verified, reflected on, and explicitly authorized for commit or push.
 
@@ -23,7 +23,7 @@ machine-enforced details, such as exact constants and command-line flags.
 | Question | Authoritative page |
 | --- | --- |
 | What Java compiles today? | [Language support](reference/language-support.md) |
-| What exactly does byte identity promise? | [Compatibility contract](reference/compatibility-contract.md) |
+| What are the behavioral and byte-retention requirements? | [Compatibility contract](reference/compatibility-contract.md) |
 | How does the compiler work now? | [Architecture overview](architecture/overview.md) |
 | Which command should I run? | [Command surface](tooling/command-surface.md), with `make help` as the exact catalog |
 | How do fixtures and cached goldens work? | [Fixtures and goldens](tooling/fixtures-and-goldens.md) |

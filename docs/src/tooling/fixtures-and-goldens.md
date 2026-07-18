@@ -1,8 +1,8 @@
 # Fixtures and Goldens
 
-The fixture corpus is the acceptance suite. Each fixture is compiled by njavac
-and compared byte-for-byte with either a fresh configured `javac` output or a cached
-copy of that output.
+The fixture corpus is the exact-byte regression suite. Each fixture is compiled by
+njavac and compared byte-for-byte with either a fresh configured `javac` output or
+a cached copy of that output.
 
 ## Fixture contract
 
@@ -24,21 +24,23 @@ Each fixture must satisfy these assumptions:
 - Packages, multiple source units per case, and auxiliary emitted classes are not
   represented by the current harness shape.
 
-Choose the topical directory by the byte-identity edge being protected, not by
+Choose the topical directory by the exact-byte edge being protected, not by
 which compiler module was edited. Prefer a small fixture that makes one boundary
 obvious, such as an opcode threshold, pool-order interaction, verifier frame, or
 line-number decision.
 
 ## Regression fixtures
 
-Every bug fix needs a committed regression fixture. Hand-reduce a fuzzer finding
-rather than copying a large generated program into the corpus. The fixture should
-start with a short comment naming the exact compatibility edge and how njavac used
-to diverge.
+Every exact-output bug fix needs a committed regression fixture. Hand-reduce a
+fuzzer finding rather than copying a large generated program into the corpus. The
+fixture should start with a short comment naming the exact compatibility edge and
+how njavac used to diverge. A representation admitted under the compatibility
+contract's optimization exception instead needs the sanctioned durable behavioral
+oracle described by [Fixing a Divergence](../contributing/fixing-a-divergence.md).
 
 Raw files under `fuzz-out/` are evidence for triage, not durable tests. Once the
-case is understood, create the minimal topical fixture, run the focused fresh
-check, then run the full fresh gate. The full bug-fix workflow is in
+case is understood, create the applicable minimal regression, run its focused
+check, then run the required full gates. The full bug-fix workflow is in
 [Fixing a Divergence](../contributing/fixing-a-divergence.md).
 
 ## How the harness compiles
@@ -112,8 +114,8 @@ the whole suite; `FILE` applies only to the subsequent offline verification.
 | Fast whole-suite edit loop | `make verify` | Cached and possibly stale |
 | Fast focused fixture loop | `make verify FILE=fixtures/.../Case.java` | Cached and possibly stale |
 | Fresh focused diagnosis | `make correctness FILE=fixtures/.../Case.java` | Live configured `javac` |
-| Fresh pre-commit acceptance | `make correctness` | Live configured `javac` |
-| Fresh acceptance plus controlled timing | `make bench` | Live configured `javac` |
+| Fresh pre-commit exact-byte gate | `make correctness` | Live configured `javac` |
+| Fresh exact-byte gate plus controlled timing | `make bench` | Live configured `javac` |
 | Refresh cache after fixture or JDK change | `make record` | Rewrites expected goldens from configured `javac` |
 
 Passing one focused fixture is not evidence that the complete corpus still

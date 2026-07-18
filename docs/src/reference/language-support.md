@@ -314,7 +314,7 @@ are defects, not deliberate subset exclusions:
 - **Local slots above 255.** Loads and stores use a one-byte operand and currently
   truncate a larger semantic slot instead of emitting the JVM `wide` prefix.
   `wide iinc` already exists, but general wide loads/stores do not. A method with
-  enough top-level primitive locals can therefore produce wrong bytes and invalid
+  enough top-level primitive locals can therefore produce invalid class bytes and
   behavior.
 - **Long branches.** Every conditional and unconditional branch is currently
   encoded in the narrow signed-16-bit form. If final layout places a target more
@@ -323,7 +323,7 @@ are defects, not deliberate subset exclusions:
 
 Their repair order and the semantic/source defects excluded earlier on this page
 are tracked in [active work](../direction/active-work.md). Until fixed, the
-byte-identity contract excludes programs that reach those signatures even though
+compatibility contract excludes programs that reach those signatures even though
 their syntax and semantics otherwise fit the general operator or source surface.
 
 ## Explicitly unsupported areas

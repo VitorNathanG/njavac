@@ -109,7 +109,7 @@ pinned image. Record conclusions and relevant structural fields; avoid committin
 huge incidental disassemblies when a small source and precise observation are
 sufficient.
 
-Fixtures and probe corpora have different jobs. A fixture is an acceptance guard
-for supported behavior. A corpus preserves enough observations to justify the
-model. Important edge cases often belong in both, linked rather than explained
+Fixtures and probe corpora have different jobs. A fixture guards an exact-output
+claim for supported behavior. A corpus preserves enough observations to justify
+the model. Important edge cases often belong in both, linked rather than explained
 twice.

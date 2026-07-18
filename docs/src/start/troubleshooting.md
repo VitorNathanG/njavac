@@ -131,10 +131,16 @@ The fuzzer's operational hard-fail condition is behavioral difference, invalid
 njavac syntax rejection, or panic. A byte divergence whose observer output matches
 is telemetry, so the process can exit zero.
 
-This does not make the drift acceptable: exact bytes are the product contract.
-Record the seed and structural signature, reduce the case, and add a fixture once
-the mismatch is understood. Normal byte-only telemetry does not write a finding
-bundle, so preserve the printed example before starting another run.
+Matching observations satisfy the fuzzer's behavioral check for its current
+generated subset, while the physical difference remains byte-retention telemetry.
+Record the seed and structural signature and reduce the case. If the reference
+form is practical to retain, add an exact fixture after fixing it. Only the
+compatibility contract's optimization exception permits an alternate
+representation, and it requires a sanctioned durable behavioral regression oracle
+appropriate to the affected surface. Until that oracle exists, the drift remains
+a candidate rather than supported behavior. Normal byte-only telemetry does not
+write a finding bundle, so preserve the printed example before starting another
+run.
 
 ## Fuzzer output is missing
 
@@ -202,8 +208,9 @@ then isolate the relevant worker or direct binary mode.
 ## Local build or profile is green
 
 `make check` proves only that a host release build completed. `make profile`
-measures local in-process performance. Neither invokes the configured javac or compares
-bytes, so neither is acceptance evidence. Run `make correctness` separately.
+measures local in-process performance. Neither invokes the configured javac or
+compares outputs, so neither is compatibility evidence. Run the applicable Docker
+gates separately.
 
 If profile numbers move sharply on macOS, verify that both runs used the same
 power mode and comparable thermal/background conditions. Low Power Mode and
@@ -220,10 +227,9 @@ If `make docs` cannot bind its port, override `DOCS_PORT`. The server publishes 
 loopback only. If generated files have wrong ownership, use the Make target rather
 than a root-run direct container; the target supplies the host UID/GID.
 
-mdBook 0.5.4 currently warns that `mdbook-mermaid` was built against mdBook 0.5.0.
-The configured build is known to complete with this warning. Do not mistake it for
-the configured mdBook version or suppress it; investigate if Mermaid processing
-or the build actually fails.
+The configured `mdbook-mermaid` is built against mdBook 0.5.4 through the committed
+lockfile. Treat a preprocessor version warning as a toolchain mismatch and repair
+the pinned build rather than suppressing it.
 
 ## CI is green but another gate was not run
 

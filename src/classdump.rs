@@ -1,8 +1,8 @@
-//! A structural reader + differ for `.class` files: the byte-identity
-//! localization tool used by the correctness harness.
+//! A structural reader + differ for `.class` files: the physical-divergence
+//! localization tool used by the exact-byte fixture harness.
 //!
-//! `njavac`'s whole game is emitting bytes identical to javac's. When they
-//! diverge, the bench's `javap -v` text diff is a good first look but goes blind
+//! njavac retains javac's bytes whenever practical. When they diverge, the bench's
+//! `javap -v` text diff is a good first look but goes blind
 //! exactly when it matters — it can't see a byte the disassembler normalizes away
 //! ("bytes differ but javap output matches"), and it reports the *first differing
 //! line of text*, which for a one-entry constant-pool shift is a cascade of

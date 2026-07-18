@@ -20,9 +20,9 @@ flowchart TD
     Gate -->|Mismatch| Verbose[classdiff plus verbose javap context]
 ```
 
-Use ad hoc probes to understand behavior. Use fixtures to preserve a rule after it
-is understood. Use a fresh fixture gate, not an ad hoc diagnostic's exit status,
-to establish acceptance.
+Use ad hoc probes to understand behavior. Use fixtures to preserve exact-output
+rules after they are understood. Use a fresh fixture gate, not an ad hoc
+diagnostic's exit status, to establish byte retention for a fixture.
 
 ## `make probe`
 
@@ -65,7 +65,7 @@ statuses for reference and njavac rejection, but GNU Make normally collapses a
 failed recipe to its own nonzero status. Treat the printed rejection label as the
 diagnostic distinction, not the top-level Make status. Never use this command in a
 script as a boolean byte-identity or diagnostic-health gate; parse-free gate
-semantics belong to `make correctness`.
+semantics for exact fixtures belong to `make correctness`.
 
 ## `make diff` and `classdiff`
 
@@ -98,14 +98,17 @@ first failure. It prints:
 
 The harness strips file path, modification time, and checksum header lines from
 the verbose disassembly before comparing it. If class bytes differ but normalized
-`javap` agrees, trust the byte comparison and structural report.
+`javap` agrees, trust the byte comparison and structural report to establish and
+localize physical divergence; neither result alone establishes a behavioral
+defect.
 
 ## Investigation workflow
 
 1. Reproduce with `make correctness FILE=...` for a fixture or `make src-diff`
    for an ad hoc source.
 2. Read the structural path before studying the larger disassembly.
-3. Reduce the source while preserving the same structural signature.
+3. Reduce the source while preserving the structural signature for byte-retention
+   work and the observation signature for behavioral work.
 4. Build a matrix around all relevant operand types, constants, source positions,
    control-flow shapes, and boundary values.
 5. Use `make probe` to collect configured-reference observations for cases njavac does
@@ -113,7 +116,9 @@ the verbose disassembly before comparing it. If class bytes differ but normalize
 6. State a falsifiable rule and test predictions outside the examples that
    suggested it.
 7. Implement one model change.
-8. Add or reduce the durable regression fixture and run the fresh full-suite gate.
+8. Add or reduce the durable exact fixture. For an alternate permitted by the
+   optimization exception, first add the sanctioned durable behavioral regression
+   oracle required for acceptance, then run the applicable full-suite gates.
 
 Stop if a supposedly byte-preserving change creates broad new divergence or a
 probe contradicts the model. Return to the last verified boundary rather than

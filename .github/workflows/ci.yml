@@ -1,6 +1,6 @@
-# Byte-identity correctness gate. The repo commits straight to `main` with no
-# reviewer, so this is the only unconditional backstop against a byte-breaking
-# commit silently becoming the baseline. Correctness only: timing
+# Exact-byte fixture gate. The repo commits straight to `main` with no reviewer,
+# so this is the only unconditional backstop against an unintended byte-breaking
+# commit silently becoming the baseline. Fixture correctness only: timing
 # is host/CI noise, and the fuzzer's fresh-random-seed design makes a fixed CI
 # seed false comfort — neither belongs here.
 #
@@ -8,7 +8,7 @@
 # image each run (no GHA layer cache yet). Only the content-pinned javac reproduces the
 # golden bytes, so `make correctness` builds and runs entirely inside that image.
 # Add layer caching later only if the cold build's runtime hurts.
-name: byte-identity
+name: exact-byte-fixtures
 
 on:
   push:

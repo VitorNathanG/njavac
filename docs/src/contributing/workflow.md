@@ -1,8 +1,9 @@
 # Maintainer Workflow
 
-njavac optimizes for one outcome: byte-identical class files for every supported
-program. Small, independently understandable changes are safer than broad fixes
-because a plausible local rule can hide a wrong model elsewhere in the corpus.
+njavac requires equivalent behavior for every supported program and retains the
+reference class bytes whenever practical. Small, independently understandable
+changes are safer than broad fixes because a plausible local rule can hide a
+wrong model elsewhere in the corpus.
 
 ## Establish the boundary
 
@@ -48,20 +49,24 @@ new divergence census, sibling cases that require unrelated exceptions, or probe
 that contradict the proposed abstraction. Return to the last verified boundary,
 expand the corpus, and redesign.
 
-## No compatibility concessions
+## No behavioral concessions
 
-A supported construct must match the pinned `javac` for every reachable case, not
-only the easy or common cases. Complexity discovered during research is not a
-reason to narrow a rung.
+A supported construct must preserve the pinned `javac` behavior for every
+reachable case, not only the easy or common cases. Retain exact bytes whenever
+practical. Complexity discovered during research is not a reason to narrow a rung
+or accept a physical divergence outside the compatibility contract's narrow
+optimization exception.
 
 Refuse an input only when it genuinely requires an unbuilt subsystem or falls
 outside the agreed language boundary. Such input must receive an `Unsupported`
-diagnostic before class-file emission; it must never compile to known-wrong bytes.
+diagnostic before class-file emission; it must never compile to invalid or
+behaviorally incorrect output.
 Record the boundary in [Language support](../reference/language-support.md) and,
 when it blocks scheduled work, in the appropriate direction page.
 
 Internal invariant failures remain panics. Do not weaken an assertion or convert
-a wrong-byte path into apparent support merely to make a probe compile.
+an invalid or behaviorally wrong path into apparent support merely to make a probe
+compile.
 
 ## Acceptance gates
 
@@ -76,7 +81,7 @@ At minimum:
 | Documentation-only | `make docs-check`; compiler gate if Docker/build context changes |
 | Behavior-preserving compiler tidy | `make correctness` |
 | Language behavior | Focused fresh comparison, refreshed fixture cache, `make correctness`, and in-scope fuzzing |
-| Bug fix | Regression fixture, `make correctness`, and proof that the fuzz signature is gone when applicable |
+| Bug fix | Exact fixture or sanctioned behavioral regression, `make correctness`, and proof that the behavioral fuzz signature is gone when applicable |
 | JDK or javac-worker change | `make fuzz-verify` in addition to correctness |
 | Observer change | `make fuzz-observe-verify` |
 | Timing claim | `make bench` or the documented in-process profiling method, as applicable |

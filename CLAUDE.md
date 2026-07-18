@@ -23,17 +23,21 @@ remain authoritative for machine behavior and exact flags.
 
 ## Non-Negotiable Rules
 
-- The product invariant is byte identity with the repository-pinned javac for
-  every supported program. Semantically equivalent bytes are not sufficient.
+- The product invariant is behavioral equivalence with the repository-pinned
+  javac. Retain exact class bytes whenever practical; a deliberate alternative is
+  allowed only when compiler optimization obscures the reference representation
+  or makes it impractical to reconstruct, with a sanctioned durable regression
+  oracle appropriate to the behavior it can affect.
 - Learn javac behavior only through black-box probes, raw class bytes,
   repository tools, fixtures, and fuzzing. Never inspect or decompile javac or
   OpenJDK implementation sources.
 - Run acceptance tests through the sanctioned Docker-backed Make targets. Host
   `make check` and `make profile` are debugging and measurement tools, not
   correctness evidence.
-- Preserve the supported surface. Never compile an unsupported case to wrong
-  bytes; return a structured unsupported diagnostic when a required subsystem is
-  genuinely absent. Internal invariant failures remain panics.
+- Preserve the supported surface. Never compile an unsupported case to invalid or
+  behaviorally incorrect output; return a structured unsupported diagnostic when
+  a required subsystem is genuinely absent. Internal invariant failures remain
+  panics.
 - Keep semantic decisions out of JVM encoding layers. Respect the ownership and
   dependency rules in the architecture guide.
 - Treat constant-pool order, instruction order and physical form, members,
@@ -41,9 +45,9 @@ remain authoritative for machine behavior and exact flags.
   ordered data.
 - Prefer the smallest correct change. Land a byte-preserving structural tidy
   separately from behavior that uses it.
-- Work one bug signature or one language rung at a time. Reproduce, explain,
-  fix, add a documented regression fixture, and run the final fixture-inclusive
-  gates before moving on.
+- Work one bug signature or one language rung at a time. Reproduce, explain, fix,
+  add a documented regression test, and run the final regression-inclusive gates
+  before moving on.
 - Do not introduce backward-compatibility wrappers without a concrete shipped or
   persisted compatibility requirement.
 - Commit and push authorization is governed by the

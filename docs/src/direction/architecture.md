@@ -21,9 +21,11 @@ flowchart LR
 ```
 
 The central boundary separates Java meaning from JVM mechanics. Semantic
-attribution decides what source means. Lowering decides the exact javac-compatible
-shape used to express that meaning. The assembler owns code layout and verifier
-state. The writer serializes an already complete ordered class plan.
+attribution decides what source means. Lowering normally selects the observed
+javac physical shape and owns any deliberate behaviorally equivalent alternative
+permitted by the compatibility contract's optimization exception. The assembler
+owns code layout and verifier state. The writer serializes an already complete
+ordered class plan.
 
 njavac is deliberately not a generic compiler framework. javac-specific choices
 are first-class policy, not a compatibility rewrite applied after generic
@@ -180,9 +182,11 @@ source tree is prescribed.
 ## Symbolic bytecode
 
 Every instruction passes through one typed emission chokepoint. Lowering selects
-the exact physical form that javac requires; the assembler does not replace it
-with an equivalent opcode. The emission path updates typed stack state and returns
-a stable instruction anchor.
+the physical form, normally retaining the observed javac choice; the assembler
+does not replace it with an equivalent opcode. A deliberate alternate form is an
+explicit lowering policy only under the compatibility contract's optimization
+exception and requires behaviorally appropriate evidence. The emission path
+updates typed stack state and returns a stable instruction anchor.
 
 All PC-bearing metadata remains symbolic until finalization:
 
@@ -280,7 +284,8 @@ The target boundaries are established when:
 - The writer never synthesizes Java artifacts.
 - Constant-pool order remains explicit and encounter-driven.
 - The single-source API delegates to the compilation API.
-- Every supported program remains byte-identical to the pinned reference.
+- Every supported program remains behaviorally equivalent to the pinned reference,
+  with exact bytes retained whenever practical.
 
 ## Non-goals
 
@@ -293,4 +298,5 @@ The target boundaries are established when:
 - Hash-derived output ordering.
 - A whole-backend rewrite.
 - Checked-in golden `.class` files.
-- Control-flow optimization beyond the pinned javac's exact behavior.
+- Control-flow optimization that departs from the observed javac form outside the
+  compatibility contract's optimization exception.

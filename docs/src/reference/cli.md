@@ -9,7 +9,7 @@ njavac [-d <directory>] <file.java> [<file.java> ...]
 
 Run `njavac --help` for the executable's exact current syntax. Building and
 running the binary directly is useful for compiler-internal debugging; only the
-Docker-backed gates establish [byte identity](compatibility-contract.md).
+Docker-backed gates establish [compatibility evidence](compatibility-contract.md).
 
 ## Inputs and outputs
 
@@ -82,5 +82,5 @@ After `make check`:
 
 This proves only that the host-built compiler ran. To compare against the pinned
 reference compiler, use `make src-diff FILE=Example.java` for diagnostics or add a
-fixture and run `make correctness` for an acceptance result. The distinction is
+fixture and run `make correctness` for an exact-byte fixture result. The distinction is
 explained in [Command Surface](../tooling/command-surface.md).

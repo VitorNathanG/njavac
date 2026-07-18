@@ -1,9 +1,10 @@
 # Implementing a Language Rung
 
-A rung brings one new Java construct under the byte-identity contract. It is not
+A rung brings one new Java construct under the compatibility contract. It is not
 complete when the parser accepts the obvious example; it is complete when every
-agreed reachable case matches the pinned `javac`, deliberate subsystem boundaries
-are rejected honestly, and the behavior is fixture-backed and documented.
+agreed reachable case preserves the pinned `javac` behavior, reference bytes are
+retained wherever practical, deliberate subsystem boundaries are rejected
+honestly, and the behavior is regression-backed and documented.
 
 ## Place the work
 
@@ -64,21 +65,24 @@ flowchart LR
 ```
 
 The frontend preserves source distinctions needed by later phases. Semantic
-analysis resolves meaning once. Lowering consumes semantic facts and selects the
-observed physical form. The assembler owns symbolic layout and metadata. The
-class-file backend serializes a complete ordered plan without discovering Java
-semantics.
+analysis resolves meaning once. Lowering consumes semantic facts and normally
+selects the observed physical form. The assembler owns symbolic layout and
+metadata. The class-file backend serializes a complete ordered plan without
+discovering Java semantics.
 
 Do not recompute semantic facts in lowering, make the writer synthesize language
 artifacts, or let hash iteration determine byte-visible order. Document a specific
-javac-matching choice at the function that makes it.
+javac-matching choice at the function that makes it. A deliberate alternate form
+is allowed only under the compatibility contract's optimization exception, belongs
+in lowering policy, and requires evidence appropriate to its observable effects;
+it must not emerge accidentally from encoding.
 
 ## Refuse unsupported edges honestly
 
 When an agreed rung boundary requires unavailable backend capability:
 
 - Reject it before partial class-file emission.
-- Return an `Unsupported` diagnostic, not wrong bytes.
+- Return an `Unsupported` diagnostic, not invalid or behaviorally incorrect output.
 - Keep internal assertions for states that should be impossible after validation.
 - Add a test or fixture for the refusal when it is a significant boundary.
 - Describe the boundary in [Language support](../reference/language-support.md).
@@ -98,6 +102,11 @@ appropriate topical directory. Follow [Fixtures and goldens](../tooling/fixtures
 - Cover presence and absence cases for new attributes or structures.
 - Cover encoding transitions, not only representative middle values.
 - Explain non-obvious regression intent at the top of the fixture.
+
+The current fixture harness requires exact reference bytes. Before a rung can use
+an equivalent nonidentical representation under the optimization exception, add a
+sanctioned durable behavioral regression oracle covering the affected surface.
+Byte-drift telemetry alone is insufficient; do not weaken the exact fixture gate.
 
 After fixture changes, refresh cached goldens before relying on the fast gate:
 
@@ -148,9 +157,12 @@ A rung is done only when:
 - Its complete agreed surface is implemented or explicitly refused at a principled
   subsystem boundary.
 - The inferred model explains the complete probe corpus.
-- Edge fixtures protect byte-visible transitions.
-- Fresh Docker correctness passes for the full suite.
-- Differential fuzzing exercises the new surface without the target divergence.
+- Edge fixtures protect reproducible byte-visible transitions, and any accepted
+  alternate representation has a sanctioned durable behavioral regression oracle
+  scoped to the affected behavior.
+- Fresh Docker exact-byte correctness passes for the full fixture suite.
+- Differential fuzzing exercises the new surface without the target behavioral
+  divergence; accepted physical drift remains documented telemetry.
 - Worker-specific gates pass when their contracts changed or expanded.
 - Authoritative docs and local decision comments are current.
 - Active planning entries completed by the rung are deleted.
