@@ -9,16 +9,20 @@
 //! Expression precedence (loosest to tightest), all binary levels
 //! left-associative:
 //!
-//!   `||` < `&&` < `|` < `^` < `&` < `== !=` < `< <= > >=` < `<< >> >>>` < `+ -` < `* / %` < unary
+//!   `||` < `&&` < `|` < `^` < `&` < `== !=` < `< <= > >=`
+//!   < `<< >> >>>` < `+ -` < `* / %` < unary
 //!
 //! The short-circuit `||`/`&&` are the two loosest levels (below the bitwise `|`).
 //! Unary covers `-`, `~`, `!`, and primitive casts `(T) e`. Parentheses group.
 //! Each statement is tagged with the 1-based source line it begins on so codegen
 //! can rebuild the `LineNumberTable` byte-identically to javac.
 //!
+mod expression;
+mod statement;
+
 use crate::ast::{
-    BinOp, BranchBody, CallArgs, Class, CmpOp, CompilationUnit, ExprArena, ExprId, ExprKind, LogOp,
-    Method, Name, Param, PrimitiveType, Stmt, StmtKind, Type, JAVA_LANG_OBJECT,
+    Class, CompilationUnit, ExprArena, ExprId, ExprKind, Method, Name, Param, PrimitiveType, Type,
+    JAVA_LANG_OBJECT,
 };
 use crate::diagnostic::{CompileResult, Diagnostic};
 use crate::lexer::{Token, TokenKind};
@@ -232,335 +236,11 @@ impl Parser {
         Ok(ty.into())
     }
 
-    // A single statement.
-    fn statement(&mut self) -> CompileResult<Stmt> {
-        let line = self.line();
-        let start = self.span();
-        let kind = if matches!(self.peek(), TokenKind::If) {
-            self.if_statement()?
-        } else if is_primitive_type(self.peek()) {
-            self.local_decl()?
-        } else if matches!(self.peek(), TokenKind::PlusPlus | TokenKind::MinusMinus) {
-            // Prefix `++x;` / `--x;` — in statement position the produced value is
-            // discarded, so pre/post is irrelevant.
-            let op = if matches!(self.peek(), TokenKind::PlusPlus) { BinOp::Add } else { BinOp::Sub };
-            self.bump();
-            let name = self.expect_name()?;
-            self.expect(&TokenKind::Semicolon)?;
-            let value = self.expr(ExprKind::IntLit(1));
-            StmtKind::CompoundAssign { name, op, value }
-        } else if let TokenKind::Ident(name) = self.peek() {
-            if is_unsupported_statement_keyword(name) {
-                return Err(Diagnostic::unsupported_syntax(
-                    self.span(),
-                    format!("unsupported Java statement: {name}"),
-                ));
-            }
-            self.ident_statement()?
-        } else {
-            return Err(Diagnostic::parse(
-                self.span(),
-                format!("unexpected statement start: {:?}", self.peek()),
-            ));
-        };
-        let span = start.join(self.previous_span());
-        Ok(Stmt { span, line, kind })
-    }
-
-    // `if (cond) <then> [else <else>]`. Each arm is a brace-block or a single
-    // statement; `else if` falls out naturally as an `If` in the else arm.
-    fn if_statement(&mut self) -> CompileResult<StmtKind> {
-        self.expect(&TokenKind::If)?;
-        self.expect(&TokenKind::LParen)?;
-        let cond = self.expression()?;
-        self.expect(&TokenKind::RParen)?;
-        let then_branch = self.block_or_statement()?;
-        let else_branch = if matches!(self.peek(), TokenKind::Else) {
-            self.bump();
-            Some(self.block_or_statement()?)
-        } else {
-            None
-        };
-        Ok(StmtKind::If { cond, then_branch, else_branch })
-    }
-
-    // A brace-delimited block, or a single statement (Java allows both after
-    // `if (...)`/`else`). Local declarations are block statements, not statements,
-    // so Java requires braces around them here.
-    fn block_or_statement(&mut self) -> CompileResult<BranchBody> {
-        let start = self.span();
-        if matches!(self.peek(), TokenKind::LBrace) {
-            self.bump();
-            let mut stmts = Vec::new();
-            while !matches!(self.peek(), TokenKind::RBrace) {
-                stmts.push(self.statement()?);
-            }
-            self.expect(&TokenKind::RBrace)?;
-            Ok(BranchBody {
-                span: start.join(self.previous_span()),
-                braced: true,
-                stmts,
-            })
-        } else {
-            let stmt = self.statement()?;
-            if matches!(stmt.kind, StmtKind::LocalDecl { .. }) {
-                return Err(Diagnostic::parse(
-                    stmt.span,
-                    "a local declaration requires a braced if/else body",
-                ));
-            }
-            Ok(BranchBody { span: stmt.span, braced: false, stmts: vec![stmt] })
-        }
-    }
-
-    // `<ty> name = init;` (initializer optional).
-    fn local_decl(&mut self) -> CompileResult<StmtKind> {
-        let ty = self.primitive_type()?;
-        let name = self.expect_name()?;
-        let init = if matches!(self.peek(), TokenKind::Assign) {
-            self.bump();
-            Some(self.expression()?)
-        } else {
-            None
-        };
-        self.expect(&TokenKind::Semicolon)?;
-        Ok(StmtKind::LocalDecl { ty, name, init })
-    }
-
-    // A statement beginning with an identifier: plain/compound assignment,
-    // post-`++`/`--`, or an expression statement (`System.out.println(...)`).
-    fn ident_statement(&mut self) -> CompileResult<StmtKind> {
-        // `System.out.println(...)` is the only expression statement; it is an
-        // identifier followed by `.`, so anything with a `.` next is that form.
-        match self.peek_kind(1) {
-            TokenKind::Assign => {
-                let name = self.expect_name()?;
-                self.expect(&TokenKind::Assign)?;
-                let value = self.expression()?;
-                self.expect(&TokenKind::Semicolon)?;
-                Ok(StmtKind::Assign { name, value })
-            }
-            k if compound_op(k).is_some() => {
-                let name = self.expect_name()?;
-                let op = compound_op(&self.bump().kind).unwrap();
-                let value = self.expression()?;
-                self.expect(&TokenKind::Semicolon)?;
-                Ok(StmtKind::CompoundAssign { name, op, value })
-            }
-            TokenKind::PlusPlus | TokenKind::MinusMinus => {
-                let name = self.expect_name()?;
-                let op = if matches!(self.peek(), TokenKind::PlusPlus) { BinOp::Add } else { BinOp::Sub };
-                self.bump();
-                self.expect(&TokenKind::Semicolon)?;
-                let value = self.expr(ExprKind::IntLit(1));
-                Ok(StmtKind::CompoundAssign { name, op, value })
-            }
-            _ => {
-                let expr = self.expression()?;
-                self.expect(&TokenKind::Semicolon)?;
-                Ok(StmtKind::Expr(expr))
-            }
-        }
-    }
-
     /// Look ahead `n` tokens from the current position (saturating at Eof).
     fn peek_kind(&self, n: usize) -> &TokenKind {
         let i = (self.pos + n).min(self.tokens.len() - 1);
         &self.tokens[i].kind
     }
-
-    // ---- expressions ----
-
-    fn expression(&mut self) -> CompileResult<ExprId> {
-        self.expression_bp(0)
-    }
-
-    /// Parse every binary/logical level from one binding-power table. All current
-    /// operators are left-associative, so the right binding power is one greater
-    /// than the left (`a+b+c` becomes `(a+b)+c`).
-    fn expression_bp(&mut self, min_bp: u8) -> CompileResult<ExprId> {
-        let mut left = self.unary()?;
-        loop {
-            let Some((op, left_bp, right_bp)) = infix_binding_power(self.peek()) else {
-                break;
-            };
-            if left_bp < min_bp {
-                break;
-            }
-            self.bump();
-            let right = self.expression_bp(right_bp)?;
-            let kind = op.apply(left, right);
-            left = self.expr(kind);
-        }
-        Ok(left)
-    }
-
-    // unary -> '-' unary | '~' unary | '(' primitive ')' unary | primary
-    fn unary(&mut self) -> CompileResult<ExprId> {
-        let expr = match self.peek() {
-            TokenKind::Minus => {
-                self.bump();
-                let inner = self.unary()?;
-                self.expr(ExprKind::Neg(inner))
-            }
-            TokenKind::Tilde => {
-                self.bump();
-                let inner = self.unary()?;
-                self.expr(ExprKind::BitNot(inner))
-            }
-            TokenKind::Bang => {
-                self.bump();
-                let inner = self.unary()?;
-                self.expr(ExprKind::Not(inner))
-            }
-            TokenKind::LParen if self.is_cast() => {
-                self.bump(); // (
-                let ty = self.primitive_type()?;
-                self.expect(&TokenKind::RParen)?;
-                let inner = self.unary()?;
-                self.expr(ExprKind::Cast { ty, expr: inner })
-            }
-            _ => return self.primary(),
-        };
-        Ok(expr)
-    }
-
-    /// A `(` begins a cast iff it is immediately followed by a primitive type
-    /// keyword and a `)` — reference casts are out of the subset, so this is
-    /// unambiguous against a parenthesized expression.
-    fn is_cast(&self) -> bool {
-        is_primitive_type(self.peek_kind(1)) && matches!(self.peek_kind(2), TokenKind::RParen)
-    }
-
-    // primary -> literal | '(' expression ')' | qualified-call | name
-    fn primary(&mut self) -> CompileResult<ExprId> {
-        let token = self.bump();
-        let expr = match token.kind {
-            TokenKind::IntLit(v) => self.expr(ExprKind::IntLit(v)),
-            TokenKind::LongLit(v) => self.expr(ExprKind::LongLit(v)),
-            TokenKind::FloatLit(v) => self.expr(ExprKind::FloatLit(v)),
-            TokenKind::DoubleLit(v) => self.expr(ExprKind::DoubleLit(v)),
-            TokenKind::CharLit(v) => self.expr(ExprKind::CharLit(v)),
-            TokenKind::True => self.expr(ExprKind::BoolLit(true)),
-            TokenKind::False => self.expr(ExprKind::BoolLit(false)),
-            TokenKind::StringLit(s) => self.expr(ExprKind::StringLit(s)),
-            TokenKind::LParen => {
-                let inner = self.expression()?;
-                self.expect(&TokenKind::RParen)?;
-                self.expr(ExprKind::Paren(inner))
-            }
-            TokenKind::Ident(name) => self.name_or_call(Name { text: name, span: token.span })?,
-            other => {
-                return Err(Diagnostic::parse(
-                    token.span,
-                    format!("unexpected token in expression: {:?}", other),
-                ));
-            }
-        };
-        Ok(expr)
-    }
-
-    /// Parse a local name or a dotted method invocation without resolving any
-    /// component. Sema owns the supported-target and overload decisions.
-    fn name_or_call(&mut self, first: Name) -> CompileResult<ExprId> {
-        let mut target = self.expr(ExprKind::Name(first));
-        let mut qualified = false;
-        while matches!(self.peek(), TokenKind::Dot) {
-            self.bump();
-            let name = self.expect_name()?;
-            target = self.expr(ExprKind::Select {
-                qualifier: target,
-                name,
-            });
-            qualified = true;
-        }
-        if !matches!(self.peek(), TokenKind::LParen) {
-            if !qualified {
-                return Ok(target);
-            }
-            return Err(Diagnostic::parse(
-                self.previous_span(),
-                "a qualified name is only supported as a method-call target",
-            ));
-        }
-
-        self.bump();
-        let mut first = None;
-        let mut rest = Vec::new();
-        if !matches!(self.peek(), TokenKind::RParen) {
-            first = Some(self.expression()?);
-            while matches!(self.peek(), TokenKind::Comma) {
-                self.bump();
-                rest.push(self.expression()?);
-            }
-        }
-        self.expect(&TokenKind::RParen)?;
-        Ok(self.expr(ExprKind::Call {
-            target,
-            args: CallArgs { first, rest },
-        }))
-    }
-}
-
-#[derive(Clone, Copy)]
-enum InfixOp {
-    Binary(BinOp),
-    Compare(CmpOp),
-    Logical(LogOp),
-}
-
-impl InfixOp {
-    fn apply(self, left: ExprId, right: ExprId) -> ExprKind {
-        match self {
-            InfixOp::Binary(op) => ExprKind::Binary { op, left, right },
-            InfixOp::Compare(op) => ExprKind::Compare { op, left, right },
-            InfixOp::Logical(op) => ExprKind::Logical { op, left, right },
-        }
-    }
-}
-
-fn infix_binding_power(kind: &TokenKind) -> Option<(InfixOp, u8, u8)> {
-    let (op, precedence) = match kind {
-        TokenKind::PipePipe => (InfixOp::Logical(LogOp::Or), 1),
-        TokenKind::AmpAmp => (InfixOp::Logical(LogOp::And), 2),
-        TokenKind::Pipe => (InfixOp::Binary(BinOp::Or), 3),
-        TokenKind::Caret => (InfixOp::Binary(BinOp::Xor), 4),
-        TokenKind::Amp => (InfixOp::Binary(BinOp::And), 5),
-        TokenKind::EqEq => (InfixOp::Compare(CmpOp::Eq), 6),
-        TokenKind::NotEq => (InfixOp::Compare(CmpOp::Ne), 6),
-        TokenKind::Lt => (InfixOp::Compare(CmpOp::Lt), 7),
-        TokenKind::Le => (InfixOp::Compare(CmpOp::Le), 7),
-        TokenKind::Gt => (InfixOp::Compare(CmpOp::Gt), 7),
-        TokenKind::Ge => (InfixOp::Compare(CmpOp::Ge), 7),
-        TokenKind::Shl => (InfixOp::Binary(BinOp::Shl), 8),
-        TokenKind::Shr => (InfixOp::Binary(BinOp::Shr), 8),
-        TokenKind::UShr => (InfixOp::Binary(BinOp::UShr), 8),
-        TokenKind::Plus => (InfixOp::Binary(BinOp::Add), 9),
-        TokenKind::Minus => (InfixOp::Binary(BinOp::Sub), 9),
-        TokenKind::Star => (InfixOp::Binary(BinOp::Mul), 10),
-        TokenKind::Slash => (InfixOp::Binary(BinOp::Div), 10),
-        TokenKind::Percent => (InfixOp::Binary(BinOp::Rem), 10),
-        _ => return None,
-    };
-    Some((op, precedence, precedence + 1))
-}
-
-/// The compound-assignment operator a token denotes, if any.
-fn compound_op(k: &TokenKind) -> Option<BinOp> {
-    Some(match k {
-        TokenKind::PlusEq => BinOp::Add,
-        TokenKind::MinusEq => BinOp::Sub,
-        TokenKind::StarEq => BinOp::Mul,
-        TokenKind::SlashEq => BinOp::Div,
-        TokenKind::PercentEq => BinOp::Rem,
-        TokenKind::AmpEq => BinOp::And,
-        TokenKind::PipeEq => BinOp::Or,
-        TokenKind::CaretEq => BinOp::Xor,
-        TokenKind::ShlEq => BinOp::Shl,
-        TokenKind::ShrEq => BinOp::Shr,
-        TokenKind::UShrEq => BinOp::UShr,
-        _ => return None,
-    })
 }
 
 fn is_primitive_type(k: &TokenKind) -> bool {
@@ -574,22 +254,5 @@ fn is_primitive_type(k: &TokenKind) -> bool {
             | TokenKind::Char
             | TokenKind::Byte
             | TokenKind::Short
-    )
-}
-
-fn is_unsupported_statement_keyword(name: &str) -> bool {
-    matches!(
-        name,
-        "while"
-            | "for"
-            | "do"
-            | "switch"
-            | "return"
-            | "throw"
-            | "try"
-            | "synchronized"
-            | "assert"
-            | "break"
-            | "continue"
     )
 }

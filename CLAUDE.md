@@ -441,10 +441,11 @@ source → lexer::lex → parser::parse → sema::analyze → codegen::generate 
   parser-assigned `ExprId`; `CompilationUnit` owns the append-only `ExprArena` of `ExprKind`
   payloads, statement roots and recursive children are IDs, and sema/codegen resolve
   those IDs through the arena while semantic types remain a parallel dense table.
-- **`parser`** → recursive descent for declarations/statements and a single
-  precedence-climbing loop for expressions; `infix_binding_power` is the ordered
-  operator/associativity table. Dotted invocation syntax remains structural
-  `Name`/`Select`/`Call`; the parser does not resolve `System.out.println`.
+- **`parser`** → the facade owns the token cursor and declaration grammar;
+  `statement` owns statement/branch forms and `expression` owns the single
+  precedence-climbing loop plus its ordered `infix_binding_power` table. Dotted
+  invocation syntax remains structural `Name`/`Select`/`Call`; the parser does not
+  resolve `System.out.println`.
 - **`sema`** → the facade owns the public analysis model and class-shape checks;
   `analyzer` owns method-local scopes, slots, definite assignment, and snapshots,
   its `attribution` child owns expression/call validation, and `constants` owns the
