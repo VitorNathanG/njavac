@@ -18,6 +18,28 @@ Language coverage belongs in [Language Rungs](language-rungs.md), not here.
   `make profile-compare BASE=<rev> PHASE=<phase>` that builds an isolated baseline
   image and compares profile minima under the same container controls, making
   regressions easier to distinguish from residual host noise.
+- **Harden capability-image runtime boundaries.** Add read-only diagnostic mounts,
+  disabled networking, dropped capabilities, `no-new-privileges`, explicit PID
+  limits, and tmpfs scratch paths. Follow with non-root users and read-only root
+  filesystems only after golden-volume and fuzzer-output ownership are modeled and
+  regression-tested.
+- **Harden Docker build inputs and caches.** Qualify architecture-dependent cache
+  IDs, lock concurrent cache sharing, pin the Dockerfile frontend by digest, add
+  Dockerfile-specific ignore files, and attach useful OCI source/toolchain labels.
+  Introduce `docker-bake.hcl` only when multi-target or multi-platform duplication
+  makes direct Make-wrapped builds difficult to maintain.
+- **Expand CI image assurance.** Export and restore BuildKit caches, pin workflow
+  actions by commit, build both supported architectures after Docker or JDK
+  changes, and add selected documentation and fuzzer-infrastructure gates. Keep
+  performance evidence on native architecture rather than emulation.
+- **Fail benchmark samples when a child compiler fails.** The timing pass currently
+  permits a failed warm-up or measured compiler process to appear as an
+  implausibly fast sample. Reject the sample and fail the command without changing
+  the separate fresh fixture comparison.
+- **Add narrower runtime images only on concrete demand.** A classdiff-only image
+  can reduce cold diagnostic setup, and a minimal njavac image can support
+  distribution. Do not add either until a measured workflow or product requirement
+  justifies another capability target.
 - **Guard golden-cache freshness.** `make verify` currently records only when its
   Docker volume is empty. Detect fixture or pinned-JDK changes and refresh the
   cache instead of silently comparing against stale goldens.

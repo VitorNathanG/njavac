@@ -76,7 +76,7 @@ are not source files, are not checked into Git, and must never be hand-edited.
 
 `make verify` follows this lifecycle:
 
-1. Build the current main image.
+1. Build the current acceptance image.
 2. Check whether the golden volume contains any top-level class file.
 3. If none exists, record the whole fixture suite with the configured `javac`.
 4. Run njavac and compare the whole suite, or `FILE`, against the volume.

@@ -83,9 +83,9 @@ divergence:
 make src-diff FILE=scratch-fuzz/Hello.java
 ```
 
-The target uses disposable output directories in the main image and persists only
-terminal diagnostics. The exact accepted language and refusal boundaries live in
-[Language support](../reference/language-support.md).
+The target uses disposable output directories in the acceptance image and
+persists only terminal diagnostics. The exact accepted language and refusal
+boundaries live in [Language support](../reference/language-support.md).
 
 ## Inspect one case
 

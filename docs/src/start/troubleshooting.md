@@ -74,14 +74,15 @@ That following verification is already part of `make record`; an immediate
 
 ## A focused fixture command cannot see an ad hoc source
 
-`verify`, `correctness`, and `bench` use sources copied into the main image and do
-not bind-mount the repository. Their `FILE` mode is intended for fixtures present
-in that image. Use `make src-diff FILE=...` for an ad hoc source under the
+`verify`, `correctness`, and `bench` use sources copied into the acceptance image
+and do not bind-mount the repository. Their `FILE` mode is intended for fixtures
+present in that image. Use `make src-diff FILE=...` for an ad hoc source under the
 repository; that target mounts the working tree.
 
-All main targets rebuild or re-evaluate the image dependency first, so a newly
-added fixture should become visible. If it does not, inspect Docker build context
-and ignore rules before changing the harness.
+Each command rebuilds or re-evaluates its capability-image dependency first, so a
+newly added fixture should become visible to acceptance and profile commands. If
+it does not, inspect the selected Dockerfile target, build context, and ignore
+rules before changing the harness.
 
 ## `src-diff` succeeded but printed a mismatch
 
@@ -113,14 +114,14 @@ other representational differences can remain invisible in disassembly. Use
 
 ## Fuzzer workers cannot start
 
-Errors naming `tools/FuzzJavac.java` or `tools/FuzzObserve.java` usually mean the
-fuzz binary was run in the image without the repository mount or from the wrong
-working directory. The main image deliberately does not contain those Java source
-files.
+The dedicated fuzz image contains `FuzzJavac.java` and `FuzzObserve.java` under
+`/opt/njavac/tools` and sets absolute worker paths. A missing-worker error therefore
+indicates a stale or incorrectly built fuzz image, an explicit path override, or a
+direct invocation that did not use the `fuzz` Dockerfile target.
 
-Run the corresponding `make fuzz...` target from the repository root. It mounts
-the repository at `/w` and sets `/w` as the container workdir. If worker paths were
-explicitly overridden, restore paths visible inside that mount.
+Run the corresponding `make fuzz...` target from the repository root so Make
+re-evaluates that target. If worker paths were explicitly overridden, remove the
+override and use the paths baked into the image.
 
 The Make targets do not forward arbitrary host environment variables into the
 container. Host `JAVA`, `JAVAC`, `FUZZ_WORKER`, and `FUZZ_OBSERVER` values affect a
@@ -146,18 +147,18 @@ run.
 ## Fuzzer output is missing
 
 Hard findings normally persist under ignored `fuzz-out/` because Make bind-mounts
-the repository. Byte-only behavior matches print telemetry but do not write a
-normal artifact bundle. Unsupported and worker mismatch dumps are capped, so the
-summary count may exceed the number of saved examples.
+that directory into the fuzz image. Byte-only behavior matches print telemetry but
+do not write a normal artifact bundle. Unsupported and worker mismatch dumps are
+capped, so the summary count may exceed the number of saved examples.
 
 With the default stop-on-finding mode, the run exits after its first hard finding.
 Use the binary's documented keep-going mode through `FUZZFLAGS` only when a census
 is useful; always retain the printed seed.
 
 The fuzzer container runs as root, so persisted bind-mount output can be
-root-owned. Only repository-root `fuzz-out/` is ignored. Put a custom `--out-dir`
-below that directory or add an intentional ignore rule; otherwise generated
-findings can appear as untracked source-tree files.
+root-owned. Only repository-root `fuzz-out/` is mounted and ignored. Put a custom
+`--out-dir` below `fuzz-out/`; another container path is ephemeral and disappears
+with `--rm`.
 
 ## A fuzz run hangs, passes without cases, or ignores a value
 
@@ -208,9 +209,10 @@ then isolate the relevant worker or direct binary mode.
 
 ## Image build or profile is green
 
-`make image` proves only that the pinned build completed. `make profile` measures
-in-process performance in that image. Neither compares compiler outputs, so neither
-is compatibility evidence. Run the applicable correctness or fuzz gates separately.
+`make image` proves only that the pinned acceptance build completed. `make profile`
+measures in-process performance in its separate JDK-free image. Neither compares
+compiler outputs, so neither is compatibility evidence. Run the applicable
+correctness or fuzz gates separately.
 
 If profile numbers move sharply on macOS, verify that both runs used the same
 power mode and comparable thermal/background conditions. Low Power Mode and

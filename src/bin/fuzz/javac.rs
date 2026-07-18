@@ -155,8 +155,8 @@ pub(super) fn assert_no_unexpected_classes(javac_out: &Path, progs: &[Prog]) {
     }
 }
 
-/// The worker's Java source. Under `make fuzz` the repo is bind-mounted at the
-/// container CWD, so the relative default resolves; `FUZZ_WORKER` overrides it.
+/// The worker's Java source. The sanctioned fuzz image sets `FUZZ_WORKER` to its
+/// baked source; the relative path is the direct-binary fallback.
 pub(super) fn worker_src_path() -> PathBuf {
     std::env::var("FUZZ_WORKER")
         .map(PathBuf::from)

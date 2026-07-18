@@ -1,8 +1,9 @@
 # Profiling
 
-njavac has two intentionally different performance measurements in the same main
-Docker image and under the same CPU and memory controls. `make bench` measures
-process-level wall clock; `make profile` measures the compiler pipeline itself
+njavac has two intentionally different performance measurements built from the
+same pinned Rust stage and run under the same CPU and memory controls. `make bench`
+uses the reference-bearing acceptance image to measure process-level wall clock;
+`make profile` uses a JDK-free image to measure the compiler pipeline itself
 in-process.
 
 ## Choose the measurement
@@ -33,10 +34,12 @@ with explicit compiler diagnostics.
 
 ## Profile method
 
-`make profile` builds the main image, starts its `profile` binary with the
-`BENCH_CPU` and `BENCH_MEM` controls, loads the fixture snapshot copied into that
-image, and invokes compiler stages directly. It warms the pipeline once, then
-processes every fixture for each configured round and trial.
+`make profile` builds the explicit `profile` Dockerfile target, starts its binary
+with the `BENCH_CPU` and `BENCH_MEM` controls, loads the fixture snapshot copied
+into that image, and invokes compiler stages directly. The image uses the pinned
+Debian runtime but deliberately omits the reference JDK and unrelated tools. The
+profiler warms the pipeline once, then processes every fixture for each configured
+round and trial.
 
 ```mermaid
 flowchart LR
@@ -79,7 +82,7 @@ accounting for that change.
 Keep all of these stable when comparing revisions:
 
 - Host machine and architecture.
-- Docker engine, VM allocation, and main image contents.
+- Docker engine, VM allocation, and profile image contents.
 - `BENCH_CPU` and `BENCH_MEM`.
 - Fixture corpus.
 - `ROUNDS`, `TRIALS`, and selected phase.
@@ -98,8 +101,8 @@ runs on the same machine rather than isolated single measurements.
 
 ## Trust boundary
 
-`make profile` uses the controlled main image but does not invoke the configured
-javac or compare class bytes. A successful or faster profile is not compatibility
-evidence. Run the required correctness or fuzz gates separately. The shared
-container controls and residual host boundary are described in
-[Docker and CI](docker-and-ci.md).
+`make profile` uses its controlled JDK-free image and does not invoke the
+configured javac or compare class bytes. A successful or faster profile is not
+compatibility evidence. Run the required correctness or fuzz gates separately.
+The shared build stage, container controls, and residual host boundary are
+described in [Docker and CI](docker-and-ci.md).

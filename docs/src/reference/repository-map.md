@@ -211,7 +211,7 @@ is not used by sanctioned Make targets. Neither is source authority.
 | --- | --- |
 | `Cargo.toml`, `Cargo.lock` | One dependency-free Rust 2024 crate and locked package metadata |
 | `Makefile` | Sanctioned command surface; `make help` is the exact catalog |
-| `Dockerfile` | Pinned Java reference, Rust build, and runtime image for compiler tools |
+| `Dockerfile` | Shared pinned Java/Rust stages and explicit acceptance, reference, fuzz, and profile targets |
 | `docs/book.toml`, `docs/Dockerfile` | Pinned mdBook/Mermaid build configuration |
 | `.github/` | Repository automation |
 

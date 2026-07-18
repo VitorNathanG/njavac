@@ -43,7 +43,7 @@ build or profile run is never compatibility evidence.
 | Target | Purpose | Gate semantics |
 | --- | --- | --- |
 | `help` | Print the current Make target catalog. | Informational. It is the authority for target invocation syntax. |
-| `image` | Build the main compiler, reference JDK, benchmark, profiler, differ, and fuzzer image. | Sole compiler build path and prerequisite for main-image targets. A successful image build does not compare compiler output. |
+| `image` | Build the explicit `acceptance` target containing the reference JDK, compiler, fixture harness, and differ. | Acceptance-image prerequisite only. A successful image build does not compare compiler output. |
 | `docs-image` | Build the separate pinned mdBook and Mermaid image. | Documentation-tool prerequisite only. |
 
 ### Correctness and timing
@@ -54,7 +54,7 @@ build or profile run is never compatibility evidence.
 | `correctness` | Compile with both njavac and the configured in-image `javac`, then byte-compare fresh outputs. | Authoritative online exact-byte fixture gate with no timing pass. This is the normal pre-commit gate. |
 | `record` | Rebuild the golden cache from the configured in-image `javac`, then run an offline verification. | Cache-maintenance operation followed by a cached check. With `FILE`, recording still covers the whole suite; only the second verification is filtered. |
 | `bench` | Run fresh correctness, then collect repeated whole-suite process samples for each compiler under Docker CPU and memory controls. Each sample is one compiler invocation. | Exact-byte fixture evidence plus controlled same-host timing. With `FILE`, the harness checks only that fixture and skips timing. Timed invocations do not check their later process statuses. |
-| `profile` | Run the main image's in-process pipeline profiler under the benchmark CPU and memory controls. | Controlled phase-performance evidence only. It neither invokes the reference compiler nor establishes compatibility. |
+| `profile` | Build and run the JDK-free `profile` target under the benchmark CPU and memory controls. | Controlled phase-performance evidence only. It neither invokes the reference compiler nor establishes compatibility. |
 
 See [Fixtures and Goldens](fixtures-and-goldens.md) for cache lifecycle and
 [Profiling](profiling.md) for the distinction between benchmark and pipeline
@@ -85,9 +85,9 @@ exact-byte fixture gate. See [Differential Debugging](differential-debugging.md)
 | `fuzz-observe-verify` | Exercise observer return, output difference, load failure, throw, timeout, and restart behavior. | Observer lifecycle gate. Run after observer or execution-isolation changes. |
 
 The fuzzer is not CPU-pinned because it is a differential search tool, not a
-timing benchmark. Its worker source files are not baked into the main image;
-the Make targets bind-mount the repository so `tools/FuzzJavac.java` and
-`tools/FuzzObserve.java` are available. See [Fuzzing](fuzzing.md).
+timing benchmark. Its dedicated image contains the worker source files and pins
+their absolute paths. Make mounts only repository-root `fuzz-out/` for durable
+artifacts. See [Fuzzing](fuzzing.md).
 
 ### Documentation
 
@@ -118,7 +118,10 @@ does not pass.
 | `ROUNDS`, `TRIALS`, `PHASE` | `profile` | Control repeated corpus passes, minimum-reduced trials, and the cumulative pipeline phase to measure. |
 | `DOCS_PORT` | `docs` | Change the host loopback port used by the documentation server. |
 | `DOCS_IMAGE` | documentation targets | Override the local tag used for the pinned documentation image. |
-| `IMAGE` | main Docker targets | Override the local tag of the main njavac image. |
+| `IMAGE` | acceptance targets | Override the local acceptance-image tag. |
+| `REFERENCE_IMAGE` | `probe` | Override the local reference-image tag. |
+| `FUZZ_IMAGE` | fuzzer targets | Override the local self-contained fuzzer-image tag. |
+| `PROFILE_IMAGE` | `profile` | Override the local JDK-free profiler-image tag. |
 | `VOLUME`, `GOLDENS` | `verify`, `record` | Override the Docker golden-volume name and its in-container path. These are normally implementation details. |
 
 The Makefile computes `DOCS_UID` and `DOCS_GID` from the host so documentation
@@ -138,32 +141,35 @@ Direct `bench` execution reads `JAVAC`, `JAVAP`,
 `NJAVAC_BENCH_ALLOW_HOST`, and the container marker
 `NJAVAC_IN_CONTAINER`. Direct `fuzz` execution reads `JAVAC`, `JAVA`,
 `FUZZ_WORKER`, and `FUZZ_OBSERVER`. These are binary-level debugging controls,
-not all Make controls. The Docker recipes do not pass arbitrary host environment
-variables with `docker run -e`; use the Make variables and flags that each recipe
-explicitly forwards. In particular, `FUZZFLAGS` reaches only `make fuzz`.
+not all Make controls. The fuzz target sets worker paths inside its image. Docker
+recipes do not pass arbitrary host environment variables with `docker run -e`;
+use the Make variables and flags that each recipe explicitly forwards. In
+particular, `FUZZFLAGS` reaches only `make fuzz`.
 
-Use repository-relative paths for `FILE`, `A`, `B`, worker paths, and fuzzer
-output paths. The relevant recipes interpolate some values into shell commands or
-expand them as unquoted argument lists, so whitespace, quotes, shell
-metacharacters, and leading option-like path components are unsupported. Keep ad
-hoc inputs under a simple ignored repository path such as `scratch-fuzz/`.
+Use repository-relative paths for `FILE`, `A`, and `B`. The relevant recipes
+interpolate some values into shell commands or expand them as unquoted argument
+lists, so whitespace, quotes, shell metacharacters, and leading option-like path
+components are unsupported. Keep ad hoc inputs under a simple ignored repository
+path such as `scratch-fuzz/`. Fuzzer worker paths are fixed inside `FUZZ_IMAGE`,
+and only output below container path `fuzz-out/` persists through Make's narrow
+host mount.
 
 ## Artifact map
 
 | Operation | Durable artifact |
 | --- | --- |
-| `make image` | Local Docker image under `IMAGE`; BuildKit may retain Cargo registry and Rust target caches outside Git. |
+| `make image` | Local acceptance image under `IMAGE`; BuildKit may retain shared JDK, Cargo registry, and Rust target caches outside Git. |
 | `make docs-image` | Local Docker image under `DOCS_IMAGE`; downloaded mdBook and Mermaid archives are verified during the build. |
-| `make profile` | Terminal timing report only; the profiler binary and fixture snapshot come from `IMAGE`. |
+| `make probe` | Local reference image under `REFERENCE_IMAGE`; probe classes remain inside the disposable container. |
+| `make profile` | Local JDK-free image under `PROFILE_IMAGE` plus a terminal timing report. |
 | `make record` or first empty-cache `make verify` | Class files in the named Docker golden volume; never committed. BuildKit cache removal does not remove this volume. |
-| `make fuzz` and fuzzer verification modes | Findings under host `fuzz-out/` because the repository is bind-mounted. Containers run as root, so created files may be root-owned. Only the default top-level directory is ignored. |
+| `make fuzz` and fuzzer verification modes | Local fuzz image under `FUZZ_IMAGE` plus findings under the bind-mounted host `fuzz-out/`. Containers run as root, so created files may be root-owned. |
 | `make docs-build`, `make docs-check`, or `make docs` | Rendered host `docs/book/`; the directory is ignored. |
-| `make probe` or `make src-diff` | Terminal output only; temporary classes disappear with the container. |
+| `make src-diff` | Terminal output only; temporary classes disappear with the container. |
 | `make correctness` or `make bench` | Terminal result only under the Make wrapper; benchmark output directories are inside the disposable container. |
 
-A custom fuzzer `--out-dir` is not automatically ignored. Place it below
-`fuzz-out/` or add an intentional ignore rule before generating artifacts; do not
-leave findings in an unignored source directory.
+A custom fuzzer `--out-dir` must remain below `fuzz-out/` to use Make's host mount.
+Output elsewhere in the container disappears with `--rm`.
 
 For environment failures and misleading success states, see
 [Troubleshooting](../start/troubleshooting.md).

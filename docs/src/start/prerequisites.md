@@ -1,9 +1,9 @@
 # Prerequisites
 
 njavac's acceptance environment is Docker. Exact class bytes and behavioral
-comparisons are specific to the content-pinned reference `javac` in the main
-image. A host JDK, even another Java 25 distribution, is not an acceptance
-reference. The archive checksum and base
+comparisons are specific to the content-pinned reference `javac` in the
+reference-derived images. A host JDK, even another Java 25 distribution, is not an
+acceptance reference. The archive checksum and base
 image digests are owned by the root `Dockerfile`; see
 [Docker and CI](../tooling/docker-and-ci.md).
 
@@ -28,17 +28,19 @@ guide explains when to use them.
 ## No host language toolchains
 
 A host Rust toolchain and host JDK are not required for normal maintenance. The
-main image is the sole compiler build and execution environment exposed by Make.
-Never substitute direct host Cargo, `javac`, or `javap` output for repository
-build, compatibility, or performance evidence.
+root Dockerfile's explicit acceptance, reference, fuzz, and profile targets are the
+compiler build and execution environments exposed by Make. Never substitute direct
+host Cargo, `javac`, or `javap` output for repository build, compatibility, or
+performance evidence.
 
 ## Docker resources
 
-The initial image build installs the configured GraalVM distribution and compiles
-the Rust binaries, so it is slower and more network-intensive than later cached
-builds. The benchmark and profiler targets also constrain CPU and memory to reduce
-same-host variance. If the default CPU index does not exist on the host, select an
-available one with `BENCH_CPU=<index>` on either command.
+The initial reference-derived image build installs the configured GraalVM
+distribution, and the first Rust-derived image compiles the binaries. Shared
+stages make later target builds incremental. The benchmark and profiler targets
+also constrain CPU and memory to reduce same-host variance. If the default CPU
+index does not exist on the host, select an available one with
+`BENCH_CPU=<index>` on either command.
 
 Timing results are meaningful only through `make bench` or `make profile`. Host
 scheduling, power mode, thermal state, and VM noise make ad hoc timing unsuitable
@@ -52,7 +54,7 @@ There is no sanctioned host acceptance run and no `cargo test` substitute.
 
 | Activity | Execution | Evidence |
 | --- | --- | --- |
-| Run `make image` | Docker | Pinned compiler build only |
+| Run `make image` | Docker | Acceptance-image build only |
 | Run `make profile` | Docker | Controlled phase-performance evidence only |
 | Compare against host `javac` | Unsanctioned | None |
 | Run `make verify` | Docker | Cached, suitable for the inner loop |

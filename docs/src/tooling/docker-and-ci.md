@@ -1,57 +1,61 @@
 # Docker and CI
 
-Docker defines njavac's controlled acceptance environment. Exact bytes and
-behavioral comparisons are specific to the content-pinned reference `javac` in the
-image, so host Java output is never a substitute for that image.
+Docker defines njavac's controlled build and execution environments. Exact bytes
+and behavioral comparisons are specific to the content-pinned reference `javac`
+shared by the reference-derived images, so host Java output is never a substitute.
 
-## Main image
+## Root image graph
 
-The root `Dockerfile` has four stages: JDK fetch/verification, JDK runtime,
-compiler build, and final main-tool runtime.
+The root `Dockerfile` has two shared build stages and four capability targets:
 
 ```mermaid
 flowchart LR
-    JDK[Digest-pinned Debian plus verified GraalVM archive] --> Runtime[Main tool runtime]
-    Rust[Digest-pinned Rust image] --> Build[Locked dependency build]
-    Build --> Binaries[njavac bench profile classdiff fuzz]
-    Binaries --> Runtime
-    Fixtures[fixtures directory] --> Runtime
-    Runtime --> Gates[Make compiler and performance targets]
+    Fetch[jdk-fetch] --> Reference[reference]
+    Rust[rust-build] --> Acceptance[acceptance]
+    Rust --> Fuzz[fuzz]
+    Rust --> Profile[profile]
+    Reference --> Acceptance
+    Reference --> Fuzz
+    Fixtures[fixtures] --> Acceptance
+    Fixtures --> Profile
+    Workers[tools/Fuzz*.java] --> Fuzz
 ```
 
 The fetch stage selects the GraalVM 25.0.2 archive by Docker target architecture
 and verifies its repository-recorded SHA-256 before extraction. The runtime and
 Rust base images are digest-pinned; the Rust build also uses `Cargo.lock` through
-`cargo build --release --locked`. The runtime copies the verified JDK, fixture
-corpus, and release binaries, sets `NJAVAC_IN_CONTAINER`, and uses `bench` as its
-default entrypoint.
+`cargo build --release --locked`. BuildKit caches the Cargo registry and target
+data across local rebuilds.
 
-The runtime image includes `njavac`, `bench`, `profile`, `classdiff`, and `fuzz`.
-It does not include the Java sources under `tools/`. Fuzzer Make targets therefore
-mount the repository at `/w` and run there so the source-launched workers resolve.
-Probe and class-file-diff targets also mount the repository because they consume ad
-hoc host files. Fixture and profile runs use the fixture snapshot copied into the
-newly built image.
+| Target | Image variable | Contents and purpose |
+| --- | --- | --- |
+| `reference` | `REFERENCE_IMAGE` | Complete verified JDK and reference tools; used by `probe` and as the base for reference-dependent targets. |
+| `acceptance` | `IMAGE` | Reference JDK, `njavac`, `bench`, `classdiff`, and the fixture snapshot. It sets `NJAVAC_IN_CONTAINER` and defaults to the benchmark harness. |
+| `fuzz` | `FUZZ_IMAGE` | Reference JDK, `fuzz`, and the two source-launched Java workers copied from `tools/`. Absolute worker paths bind the image to one repository revision. |
+| `profile` | `PROFILE_IMAGE` | Pinned Debian, `profile`, and the fixture snapshot. It deliberately contains no JDK. |
 
-BuildKit caches the Cargo registry and Cargo target data across image rebuilds.
-The reference archive is accepted only after checksum verification, so cache
-state cannot silently select different javac bytes.
+Every image recipe using the root compiler Dockerfile names its target explicitly.
+Adding another stage cannot silently change a public compiler image tag merely by
+becoming the last stage. The reference archive is accepted only after checksum
+verification, so cache state cannot silently select different javac bytes.
 
 ## Runtime isolation by target
 
-| Target family | Repository mount | Golden volume | Resource controls |
-| --- | ---: | ---: | --- |
-| `verify`, `record` | No | Yes | No timing controls |
-| `correctness` | No | No | No timing controls |
-| `bench` | No | No | One selected CPU, fixed CPU quota, memory and swap cap, PID limit |
-| `profile` | No | No | Same controls as `bench` |
-| `probe`, `src-diff`, `diff` | Yes | No | Diagnostic only |
-| Fuzzer targets | Yes | No | Not CPU-pinned; fuzzing is not a timing benchmark |
+| Target family | Image | Host mount or volume | Resource controls |
+| --- | --- | --- | --- |
+| `verify`, `record` | Acceptance | Golden volume | No timing controls |
+| `correctness` | Acceptance | None | No timing controls |
+| `bench` | Acceptance | None | One selected CPU, fixed CPU quota, memory and swap cap, PID limit |
+| `profile` | Profile | None | Same controls as `bench` |
+| `probe` | Reference | Repository source mount | Diagnostic only |
+| `src-diff`, `diff` | Acceptance | Repository source/class mount | Diagnostic only |
+| Fuzzer targets | Fuzz | Only repository-root `fuzz-out/` | Not CPU-pinned; fuzzing is not a timing benchmark |
 
-Every main Docker target depends on `image`, so Docker evaluates the current build
-context before running it. Outputs under the benchmark's default in-container
-`target/bench-out` disappear with the `--rm` container. The golden volume and
-bind-mounted `fuzz-out/` are the intentional durable exceptions.
+Every Docker-backed execution command depends on the capability image it requires,
+so Docker evaluates the relevant current build context before execution. Outputs
+under the benchmark's default in-container `target/bench-out` disappear with the
+`--rm` container. The golden volume and bind-mounted `fuzz-out/` are the
+intentional durable exceptions.
 
 `make bench` and `make profile` use `BENCH_CPU` and `BENCH_MEM` to account for host
 topology and available resources. The selected CPU index must exist in Docker's
@@ -78,7 +82,7 @@ read-only repository mount. See [Documentation Tooling](documentation.md).
 
 | Activity | Docker-backed? | Acceptance evidence? |
 | --- | ---: | ---: |
-| `make image` | Yes | Build evidence only |
+| `make image` | Yes | Acceptance-image build evidence only |
 | `make profile` | Yes | Controlled pipeline-performance evidence only |
 | Direct host `javac` comparison | No | No; disallowed as reference evidence |
 | `make verify` | Yes | Cached inner-loop evidence; cache may be stale |
@@ -94,17 +98,17 @@ uses the Docker-backed diagnostic targets from the command surface.
 
 `.github/workflows/ci.yml` runs `make correctness` on GitHub Actions for every
 push and pull request. The job checks out the repository on `ubuntu-latest`,
-enables BuildKit, builds the main image, and performs the fresh byte comparison.
-It is an exact-byte fixture backstop. The runner and checkout action use mutable
-GitHub labels, but the reference JDK and compiler build images remain
-content-pinned by the repository Dockerfile.
+enables BuildKit, builds the explicit `acceptance` target, and performs the fresh
+byte comparison. It is an exact-byte fixture backstop. The runner and checkout
+action use mutable GitHub labels, but the reference JDK and compiler build images
+remain content-pinned by the repository Dockerfile.
 
 The workflow does not run `make verify`, `make bench`, `make profile`, any fuzzer
 mode, worker or observer verification, or `make docs-check`. It has no
 declared Docker layer cache. A green GitHub status therefore establishes only the
-fresh exact-byte fixture contract of `make correctness` against the main image
-built for that job. It does not establish documentation, fuzz, worker, observer,
-accepted alternate representations, or performance claims.
+fresh exact-byte fixture contract of `make correctness` against the acceptance
+image built for that job. It does not establish documentation, fuzz, worker,
+observer, accepted alternate representations, or performance claims.
 
 Changes to the workflow should continue to invoke existing Make targets rather
 than recreate their Docker commands. Add the relevant explicit jobs when their

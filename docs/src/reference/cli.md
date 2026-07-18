@@ -74,7 +74,7 @@ current language contract. Consult [Language Support](language-support.md#charac
 
 ## Debugging example
 
-Use the main image to compare the CLI with the pinned reference:
+Use the acceptance image through Make to compare the CLI with the pinned reference:
 
 ```bash
 make src-diff FILE=Example.java

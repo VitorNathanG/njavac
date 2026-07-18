@@ -1,12 +1,10 @@
 # syntax=docker/dockerfile:1
 #
-# Deterministic benchmark environment for njavac.
+# Deterministic build and execution environments for njavac.
 #
-# Ordering rationale: the JDK is set up FIRST and is the base of the final
-# image. It's the slowest, most stable layer (a ~350 MB GraalVM install that
-# almost never changes), so keeping it at the bottom of the stack means every
-# rebuild after a code change reuses it from cache and only re-lays the tiny
-# binary/reference layers on top.
+# Shared stages isolate the pinned reference JDK from the Rust build. Final
+# targets then add only the capabilities needed by reference probes, fixture
+# acceptance, fuzzing, or in-process profiling.
 #
 # Caching:
 #   * cargo registry + target/ -> cache mounts, so dependency and incremental
@@ -35,19 +33,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certifi
     && mkdir -p /opt/graalvm \
     && tar -xzf /tmp/graalvm.tar.gz --strip-components=1 -C /opt/graalvm
 
-# ---- Stage 2: exact runtime JDK on a content-addressed base -----------------
-FROM debian:bookworm-slim@sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bbd5acbfca6ec875818 AS jdk
+# ---- Stage 2: runnable pinned reference environment -------------------------
+FROM debian:bookworm-slim@sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bbd5acbfca6ec875818 AS reference
 COPY --from=jdk-fetch /opt/graalvm /opt/graalvm
 ENV JAVA_HOME=/opt/graalvm
 ENV JAVAC=$JAVA_HOME/bin/javac
 
 # ---- Stage 3: build njavac with pinned toolchain + cached compilation -------
-FROM rust:1.95-slim-bookworm@sha256:d7482085ff5b415f84dba5647ae71606650bdef00db7aeb69f4b3d170c3e4082 AS build
+FROM rust:1.95-slim-bookworm@sha256:d7482085ff5b415f84dba5647ae71606650bdef00db7aeb69f4b3d170c3e4082 AS rust-build
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
 # target/ is a cache mount (not in the layer), so copy the binaries out to a
-# real path for the final stage to pull from.
+# real path for downstream capability targets.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/target \
     cargo build --release --locked \
@@ -55,23 +53,32 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     && cp target/release/njavac target/release/bench target/release/classdiff \
           target/release/fuzz target/release/profile /out/
 
-# ---- Stage 4: main runtime — JDK + the frequently-changing tool layers -------
-FROM jdk AS bench
+# ---- Stage 4: fixture acceptance, benchmarking, and paired diagnostics ------
+FROM reference AS acceptance
 WORKDIR /work
 # Marks this as the controlled harness so `bench` will produce timings.
 ENV NJAVAC_IN_CONTAINER=1
-# fixtures change rarely; binaries change most, so copy them last.
 COPY fixtures ./fixtures
-COPY --from=build /out/njavac    /usr/local/bin/njavac
-COPY --from=build /out/bench     /usr/local/bin/bench
+COPY --from=rust-build /out/njavac    /usr/local/bin/njavac
+COPY --from=rust-build /out/bench     /usr/local/bin/bench
 # The structural class-file differ, reachable for debugging via `make diff`; it
 # also backs the diff `bench` prints on a mismatch.
-COPY --from=build /out/classdiff /usr/local/bin/classdiff
-# The two-layer differential fuzzer, documented in `docs/src/tooling/fuzzing.md`
-# (entrypoint override). Its source-launched workers use the pinned JDK.
-COPY --from=build /out/fuzz     /usr/local/bin/fuzz
-# The hot in-process pipeline profiler, run with the same container controls as
-# the process-level benchmark through `make profile`.
-COPY --from=build /out/profile  /usr/local/bin/profile
+COPY --from=rust-build /out/classdiff /usr/local/bin/classdiff
 ENTRYPOINT ["bench", "--njavac", "/usr/local/bin/njavac"]
 CMD ["--njavac-runs", "1000", "--javac-runs", "5", "--warmup", "5"]
+
+# ---- Stage 5: self-contained differential fuzzing ---------------------------
+FROM reference AS fuzz
+WORKDIR /work
+COPY --from=rust-build /out/fuzz /usr/local/bin/fuzz
+COPY tools/FuzzJavac.java tools/FuzzObserve.java /opt/njavac/tools/
+ENV FUZZ_WORKER=/opt/njavac/tools/FuzzJavac.java
+ENV FUZZ_OBSERVER=/opt/njavac/tools/FuzzObserve.java
+ENTRYPOINT ["fuzz"]
+
+# ---- Stage 6: JDK-free hot pipeline profiling -------------------------------
+FROM debian:bookworm-slim@sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bbd5acbfca6ec875818 AS profile
+WORKDIR /work
+COPY fixtures ./fixtures
+COPY --from=rust-build /out/profile /usr/local/bin/profile
+ENTRYPOINT ["profile"]

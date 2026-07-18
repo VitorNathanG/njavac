@@ -55,12 +55,14 @@ is not that oracle.
 
 A bare `make fuzz` chooses a fresh seed and prints it before compiling. The seed
 recreates the generator stream only when the generator code and relevant mode are
-unchanged. Reproducing the full run also requires the same commit, built main
-image/reference JDK, worker and observer sources, `COUNT`, `BATCH`, forwarded
-flags, and output/stop mode. `COUNT` determines how much of the stream is visited;
-`BATCH` changes which source units share one javac task and can therefore affect
-the oracle even though it does not change generation order. Record the complete
-printed header and invocation, not only `SEED`.
+unchanged. Reproducing the full run also requires the same commit and
+self-contained fuzz image, `COUNT`, `BATCH`, forwarded flags, and output/stop mode.
+That image binds the fuzzer binary, reference JDK, worker, and observer sources to
+one build context.
+`COUNT` determines how much of the stream is visited; `BATCH` changes which source
+units share one javac task and can therefore affect the oracle even though it does
+not change generation order. Record the image identity, complete printed header,
+and invocation, not only `SEED`.
 
 `COUNT` and `BATCH` must be positive decimal integers. The current parser does not
 validate that contract reliably: malformed named values can silently retain a
@@ -113,11 +115,11 @@ missing classes. Unexpected rejection counts require investigation even when the
 protocol stays alive; use worker verification and direct CLI probes to separate
 generator rejection from worker failure.
 
-The main Dockerfile does not copy either Java worker source into the image.
-`make fuzz`, `make fuzz-verify`, `make fuzz-selftest`, and
-`make fuzz-observe-verify` bind-mount the repository at the container workdir so
-the default `tools/...` paths resolve. Running the `fuzz` image entrypoint without
-that mount fails to start its workers.
+The root Dockerfile copies both Java worker sources into the dedicated `fuzz`
+target and sets `FUZZ_WORKER` and `FUZZ_OBSERVER` to absolute in-image paths. A
+worker edit therefore invalidates that image target and cannot be paired silently
+with an older fuzzer binary or reference JDK. Fuzzer commands do not require a
+repository source mount.
 
 ## Execution observer
 
@@ -172,10 +174,11 @@ feature absent from the generator is not necessarily unsupported by the compiler
 
 ## Artifacts
 
-The Make targets mount the repository, so the default ignored `fuzz-out/`
-directory persists on the host. Fuzzer containers run as root rather than the
-host UID/GID, so created directories and files can be root-owned. This differs
-from documentation targets, which explicitly select the host identity.
+The Make targets mount only repository-root `fuzz-out/` at `/work/fuzz-out`, so
+default artifacts persist on the host without exposing the rest of the checkout
+to the container. Fuzzer containers run as root rather than the host UID/GID, so
+created directories and files can be root-owned. This differs from documentation
+targets, which explicitly select the host identity.
 
 | Outcome | Artifact |
 | --- | --- |
@@ -186,11 +189,11 @@ from documentation targets, which explicitly select the host identity.
 | Self-test | A synthetic minimized Java source and structural diff at the output root. |
 | Byte-only drift | Signature and example in terminal telemetry; no normal finding bundle is written. |
 
-Only the repository-root `/fuzz-out` directory is ignored by the current Git
-rules. A custom `--out-dir` supplied through `FUZZFLAGS` is not automatically
-ignored; put custom output below `fuzz-out/` unless it is intentionally durable.
-The self-test Make target does not forward `FUZZFLAGS`, `SEED`, or a custom output
-directory.
+Only `/work/fuzz-out` is bind-mounted by the Make targets. A custom `--out-dir`
+supplied through `FUZZFLAGS` must remain below `fuzz-out/` to persist on the host;
+another container path disappears with `--rm`. Repository-root `fuzz-out/` is
+ignored by Git. The self-test Make target does not forward `FUZZFLAGS`, `SEED`, or
+a custom output directory.
 
 Behavioral findings intentionally remain raw because the current minimizer does
 not have an observation-aware predicate. Byte-only reduction could preserve a

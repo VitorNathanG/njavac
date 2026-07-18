@@ -70,8 +70,8 @@ semantics for exact fixtures belong to `make correctness`.
 ## `make diff` and `classdiff`
 
 `make diff A=... B=...` bind-mounts the repository and invokes `classdiff` in the
-main image. The first path is conventionally the reference class and the second
-the candidate.
+acceptance image. The first path is conventionally the reference class and the
+second the candidate.
 
 The structural differ parses class files into ordered fields and reports the first
 substantive divergent path with its byte offset and readable values. Count and
