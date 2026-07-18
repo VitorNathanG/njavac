@@ -1,0 +1,19 @@
+[book]
+title = "njavac Maintainer Guide"
+description = "Authoritative developer documentation for njavac"
+authors = ["njavac maintainers"]
+language = "en"
+src = "src"
+
+[build]
+build-dir = "book"
+create-missing = false
+
+[preprocessor.mermaid]
+command = "mdbook-mermaid"
+
+[output.html]
+additional-js = ["mermaid.min.js", "mermaid-init.js"]
+git-repository-url = "https://github.com/VitorNathanG/njavac"
+edit-url-template = "https://github.com/VitorNathanG/njavac/edit/main/docs/{path}"
+no-section-label = true

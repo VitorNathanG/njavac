@@ -17,6 +17,9 @@
 #   make image                                 # build the pinned image
 #   make check                                 # LOCAL release build (debugging only; NOT a test)
 #   make profile [ROUNDS=n] [TRIALS=n] [PHASE=all|lex|parse|sema|codegen|full]  # LOCAL hot profile
+#   make docs                                  # serve the maintainer guide at localhost:3000
+#   make docs-build                            # build the maintainer guide through Docker
+#   make docs-check                            # build and check internal links through Docker
 
 IMAGE     := njavac-bench
 VOLUME    := njavac-goldens
@@ -37,8 +40,12 @@ FUZZFLAGS ?=
 ROUNDS    ?= 1000
 TRIALS    ?= 5
 PHASE     ?= all
+DOCS_IMAGE ?= njavac-docs:mdbook-0.5.4
+DOCS_PORT  ?= 3000
+DOCS_UID   := $(shell id -u)
+DOCS_GID   := $(shell id -g)
 
-.PHONY: help image probe src-diff verify correctness record bench diff fuzz fuzz-verify fuzz-selftest fuzz-observe-verify check profile
+.PHONY: help image probe src-diff verify correctness record bench diff fuzz fuzz-verify fuzz-selftest fuzz-observe-verify check profile docs-image docs docs-build docs-check
 
 help:  ## show this help
 	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | sed -E 's/:.*## /\t/' | sort
@@ -108,3 +115,29 @@ check:  ## LOCAL release build only — compiler-internal debugging, NOT accepta
 profile:  ## LOCAL hot compiler profile: make profile [ROUNDS=1000] [TRIALS=5] [PHASE=all|lex|parse|sema|codegen|full]
 	cargo build --release --bin profile
 	./target/release/profile $(ROUNDS) $(TRIALS) $(PHASE)
+
+docs-image:  ## build the pinned mdBook + Mermaid documentation image
+	docker build -f docs/Dockerfile -t $(DOCS_IMAGE) .
+
+docs: docs-image  ## serve the maintainer guide at http://localhost:3000 (override DOCS_PORT)
+	docker run --rm --init \
+	  --user "$(DOCS_UID):$(DOCS_GID)" \
+	  --mount type=bind,source="$(CURDIR)",target=/work \
+	  --workdir /work \
+	  --publish "127.0.0.1:$(DOCS_PORT):3000" \
+	  $(DOCS_IMAGE) \
+	  mdbook serve docs --hostname 0.0.0.0 --port 3000
+
+docs-build: docs-image  ## build the maintainer guide through Docker
+	docker run --rm \
+	  --user "$(DOCS_UID):$(DOCS_GID)" \
+	  --mount type=bind,source="$(CURDIR)",target=/work \
+	  --workdir /work \
+	  $(DOCS_IMAGE) \
+	  mdbook build docs
+
+docs-check: docs-build  ## build and check rendered internal links through Docker
+	docker run --rm \
+	  --mount type=bind,source="$(CURDIR)/docs/book",target=/input,readonly \
+	  lycheeverse/lychee:0.24.2@sha256:e2d19e57cf6ab037026f20b8e449a1f30d9d7f81eef4194763aab2eab20bd28d \
+	  --offline --no-progress --include-fragments=anchor-only --root-dir /input /input
