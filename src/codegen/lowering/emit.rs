@@ -1,5 +1,5 @@
 use crate::ast::{BinOp, PrimitiveType};
-use crate::sema::StackTy;
+use super::super::stack::StackTy;
 
 use super::super::constant::*;
 use super::super::instruction::*;

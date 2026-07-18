@@ -1,12 +1,13 @@
 use crate::ast::{CmpOp, ExprId, ExprKind, LogOp, PrimitiveType, Stmt};
 use crate::classfile::VerificationType;
-use crate::sema::{self, StackTy};
+use crate::sema;
 use crate::span::Span;
 
 use super::super::condition::*;
 use super::super::constant::*;
 use super::super::instruction::*;
 use super::super::ops::*;
+use super::super::stack::StackTy;
 use super::Gen;
 
 impl Gen<'_> {

@@ -543,8 +543,9 @@ separate lowering and assembly responsibilities. The facade owns class planning;
 children own value/statement lowering, control-flow lowering, and physical-form
 emission; top-level `condition` owns the pure `CondItem` state model, `constant`
 folding, `ops` opcode selection, `preflight` backend capability checks, and
-`instruction`/`assembler` the symbolic physical stream and final layout. The fully
-typed emitter covers:
+`stack` owns the semantic-type-to-JVM computational projection, and
+`instruction`/`assembler` own the symbolic physical stream and final layout. The
+fully typed emitter covers:
 the per-type constant-load ladders (`iconst`/`bipush`/`sipush`/`ldc` by
 magnitude; `lconst`/`ldc2_w`; `fconst`/`ldc`; `dconst`/`ldc2_w`, floats compared
 by *bit pattern* so `-0.0` pools separately); per-type load/store families with

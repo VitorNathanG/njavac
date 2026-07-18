@@ -20,29 +20,6 @@ use crate::diagnostic::{CompileResult, Diagnostic};
 use crate::fxhash::{FxHashMap, FxHashSet};
 use crate::span::Span;
 
-impl PrimitiveType {
-    /// The JVM *computational* type this value occupies on the operand stack. The
-    /// sub-int types (`boolean`/`char`/`byte`/`short`) are all `Int` on the stack.
-    pub fn stack(self) -> StackTy {
-        match self {
-            PrimitiveType::Long => StackTy::Long,
-            PrimitiveType::Float => StackTy::Float,
-            PrimitiveType::Double => StackTy::Double,
-            _ => StackTy::Int,
-        }
-    }
-}
-
-/// The four JVM operand-stack computational types produced by primitive values.
-/// References stay in `Type` and never enter numeric opcode selection.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum StackTy {
-    Int,
-    Long,
-    Float,
-    Double,
-}
-
 /// Stable identity of one local declaration within a method.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct LocalId(usize);

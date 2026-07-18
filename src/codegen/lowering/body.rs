@@ -1,9 +1,10 @@
 use crate::ast::{BinOp, ExprId, ExprKind, Name, PrimitiveType, Stmt, StmtKind, Type};
-use crate::sema::{self, ResolvedCall, StackTy};
+use crate::sema::{self, ResolvedCall};
 
 use super::super::constant::*;
 use super::super::instruction::*;
 use super::super::ops::*;
+use super::super::stack::StackTy;
 use super::Gen;
 
 impl Gen<'_> {

@@ -31,6 +31,7 @@ mod instruction;
 mod lowering;
 mod ops;
 mod preflight;
+mod stack;
 
 use crate::ast::CompilationUnit;
 use crate::classfile::{ClassFile, ConstantPool};
