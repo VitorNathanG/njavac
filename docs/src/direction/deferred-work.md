@@ -16,8 +16,8 @@ Language coverage belongs in [Language Rungs](language-rungs.md), not here.
   normalization change.
 - **Automate baseline/current profiling comparisons.** Add a helper such as
   `make profile-compare BASE=<rev> PHASE=<phase>` that builds an isolated baseline
-  and compares same-host profile minima, making regressions easier to distinguish
-  from host noise.
+  image and compares profile minima under the same container controls, making
+  regressions easier to distinguish from residual host noise.
 - **Guard golden-cache freshness.** `make verify` currently records only when its
   Docker volume is empty. Detect fixture or pinned-JDK changes and refresh the
   cache instead of silently comparing against stale goldens.

@@ -7,7 +7,7 @@
 //! (lex / parse / sema / codegen / classfile serialization),
 //! so we can see where the compiler's own time actually goes.
 //!
-//!   cargo run --release --bin profile [rounds] [trials] [phase]
+//!   make profile [ROUNDS=n] [TRIALS=n] [PHASE=all|lex|parse|sema|codegen|full]
 //!
 //! Phase times are measured cumulatively (each phase re-runs the prior ones),
 //! then differenced, so every phase figure is non-negative by construction.

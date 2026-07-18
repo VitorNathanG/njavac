@@ -16,7 +16,7 @@
 #   * GraalVM 25.0.2 archives are selected by architecture and SHA-256 verified.
 #   * Base images are digest-pinned; Rust dependencies use `cargo build --locked`.
 # Timing repeatability (CPU pinning, memory caps) lives in the Makefile `bench`
-# target's `docker run` flags.
+# and `profile` targets' `docker run` flags.
 
 # ---- Stage 1: fetch and verify the exact reference JDK ----------------------
 FROM debian:bookworm-slim@sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bbd5acbfca6ec875818 AS jdk-fetch
@@ -52,9 +52,10 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/target \
     cargo build --release --locked \
     && mkdir -p /out \
-    && cp target/release/njavac target/release/bench target/release/classdiff target/release/fuzz /out/
+    && cp target/release/njavac target/release/bench target/release/classdiff \
+          target/release/fuzz target/release/profile /out/
 
-# ---- Stage 4: runtime — JDK base + the small, frequently-changing layers ----
+# ---- Stage 4: main runtime — JDK + the frequently-changing tool layers -------
 FROM jdk AS bench
 WORKDIR /work
 # Marks this as the controlled harness so `bench` will produce timings.
@@ -69,5 +70,8 @@ COPY --from=build /out/classdiff /usr/local/bin/classdiff
 # The two-layer differential fuzzer, documented in `docs/src/tooling/fuzzing.md`
 # (entrypoint override). Its source-launched workers use the pinned JDK.
 COPY --from=build /out/fuzz     /usr/local/bin/fuzz
+# The hot in-process pipeline profiler, run with the same container controls as
+# the process-level benchmark through `make profile`.
+COPY --from=build /out/profile  /usr/local/bin/profile
 ENTRYPOINT ["bench", "--njavac", "/usr/local/bin/njavac"]
 CMD ["--njavac-runs", "1000", "--javac-runs", "5", "--warmup", "5"]

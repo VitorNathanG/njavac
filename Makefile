@@ -1,7 +1,7 @@
 # njavac — the single command surface. Exact-byte and behavioral reference checks
 # run through Docker: only the configured GraalVM javac in the built image is the
-# reference (see `docs/src/tooling/command-surface.md`). `check` is a LOCAL build
-# for compiler-internal debugging only, never compatibility evidence.
+# reference, and every compiler build or execution uses that image (see
+# `docs/src/tooling/command-surface.md`).
 #
 #   make verify      [FILE=fixtures/x/F.java]  # fast gate: njavac vs cached goldens (may be stale)
 #   make correctness [FILE=..]                 # fresh authoritative exact fixture check, no timing
@@ -15,8 +15,7 @@
 #   make fuzz-selftest                         # exercise narrow synthetic outcome/minimizer plumbing
 #   make fuzz-observe-verify                   # exercise the persistent execution observer
 #   make image                                 # build the version-selected main image
-#   make check                                 # LOCAL release build (debugging only; NOT a test)
-#   make profile [ROUNDS=n] [TRIALS=n] [PHASE=all|lex|parse|sema|codegen|full]  # LOCAL hot profile
+#   make profile [ROUNDS=n] [TRIALS=n] [PHASE=all|lex|parse|sema|codegen|full]  # controlled hot profile
 #   make docs                                  # serve the maintainer guide at localhost:3000
 #   make docs-build                            # build the maintainer guide through Docker
 #   make docs-check                            # build and check internal links through Docker
@@ -24,7 +23,7 @@
 IMAGE     := njavac-bench
 VOLUME    := njavac-goldens
 GOLDENS   := /goldens
-# Bench controls reduce same-host noise: pin one core, fix memory, no swap.
+# Performance controls reduce same-host noise: pin one core, fix memory, no swap.
 BENCH_CPU ?= 2
 BENCH_MEM ?= 2g
 FILE      ?=
@@ -45,7 +44,7 @@ DOCS_PORT  ?= 3000
 DOCS_UID   := $(shell id -u)
 DOCS_GID   := $(shell id -g)
 
-.PHONY: help image probe src-diff verify correctness record bench diff fuzz fuzz-verify fuzz-selftest fuzz-observe-verify check profile docs-image docs docs-build docs-check
+.PHONY: help image probe src-diff verify correctness record bench diff fuzz fuzz-verify fuzz-selftest fuzz-observe-verify profile docs-image docs docs-build docs-check
 
 help:  ## show this help
 	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | sed -E 's/:.*## /\t/' | sort
@@ -109,12 +108,11 @@ fuzz-selftest: image  ## exercise narrow synthetic outcome/minimizer plumbing
 fuzz-observe-verify: image  ## exercise the persistent JVM observer and its timeout restart
 	docker run --rm -v "$(CURDIR):/w" -w /w --entrypoint fuzz $(IMAGE) --verify-observer
 
-check:  ## LOCAL release build only — compiler-internal debugging, NOT acceptance
-	cargo build --release
-
-profile:  ## LOCAL hot compiler profile: make profile [ROUNDS=1000] [TRIALS=5] [PHASE=all|lex|parse|sema|codegen|full]
-	cargo build --release --bin profile
-	./target/release/profile $(ROUNDS) $(TRIALS) $(PHASE)
+profile: image  ## controlled in-process profile: make profile [ROUNDS=1000] [TRIALS=5] [PHASE=all|lex|parse|sema|codegen|full]
+	docker run --rm \
+	  --cpuset-cpus=$(BENCH_CPU) --cpus=1 \
+	  --memory=$(BENCH_MEM) --memory-swap=$(BENCH_MEM) --pids-limit=256 \
+	  --entrypoint profile $(IMAGE) $(ROUNDS) $(TRIALS) $(PHASE)
 
 docs-image:  ## build the pinned mdBook + Mermaid documentation image
 	docker build -f docs/Dockerfile -t $(DOCS_IMAGE) .

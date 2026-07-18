@@ -7,9 +7,9 @@ The `njavac` binary is a thin filesystem wrapper around the single-source
 njavac [-d <directory>] <file.java> [<file.java> ...]
 ```
 
-Run `njavac --help` for the executable's exact current syntax. Building and
-running the binary directly is useful for compiler-internal debugging; only the
-Docker-backed gates establish [compatibility evidence](compatibility-contract.md).
+The binary's `--help` output owns its exact current syntax. Repository development
+invokes it through Docker-backed Make targets; use `make src-diff FILE=...` for an
+ad hoc source and `make correctness FILE=...` for an exact fixture result.
 
 ## Inputs and outputs
 
@@ -74,13 +74,12 @@ current language contract. Consult [Language Support](language-support.md#charac
 
 ## Debugging example
 
-After `make check`:
+Use the main image to compare the CLI with the pinned reference:
 
 ```bash
-./target/release/njavac -d target/example-classes Example.java
+make src-diff FILE=Example.java
 ```
 
-This proves only that the host-built compiler ran. To compare against the pinned
-reference compiler, use `make src-diff FILE=Example.java` for diagnostics or add a
-fixture and run `make correctness` for an exact-byte fixture result. The distinction is
-explained in [Command Surface](../tooling/command-surface.md).
+This is a diagnostic command and intentionally does not use mismatch as its final
+status. Add a fixture and run `make correctness` for an exact-byte fixture result.
+The distinction is explained in [Command Surface](../tooling/command-surface.md).

@@ -25,45 +25,40 @@ Its output owns target names and short invocation hints. The `Makefile` itself i
 authoritative for variable defaults and which values each recipe forwards; this
 guide explains when to use them.
 
-## Optional local tools
+## No host language toolchains
 
-A host Rust toolchain is useful for local compiler-internal debugging through
-`make check` and for local profiling through `make profile`. These are not test
-or acceptance commands. Their output cannot establish compatibility because they
-do not select the configured in-image reference `javac`.
-
-A host JDK is not required for normal maintenance. Never use host `javac` or
-`javap` output as compatibility evidence.
+A host Rust toolchain and host JDK are not required for normal maintenance. The
+main image is the sole compiler build and execution environment exposed by Make.
+Never substitute direct host Cargo, `javac`, or `javap` output for repository
+build, compatibility, or performance evidence.
 
 ## Docker resources
 
 The initial image build installs the configured GraalVM distribution and compiles
 the Rust binaries, so it is slower and more network-intensive than later cached
-builds. The benchmark target also constrains CPU and memory to reduce same-host
-variance.
-If its default CPU index does not exist on the host, select an available one with
-`make bench BENCH_CPU=<index>`.
+builds. The benchmark and profiler targets also constrain CPU and memory to reduce
+same-host variance. If the default CPU index does not exist on the host, select an
+available one with `BENCH_CPU=<index>` on either command.
 
-Timing results are meaningful only in the benchmark harness. Host scheduling,
-power mode, thermal state, and JVM startup noise make ad hoc timing unsuitable
+Timing results are meaningful only through `make bench` or `make profile`. Host
+scheduling, power mode, thermal state, and VM noise make ad hoc timing unsuitable
 for regression decisions. See [Profiling](../tooling/profiling.md) for the
-separate in-process methodology.
+process-level and in-process methodologies.
 
 ## Acceptance boundary
 
 All correctness tests run through the repository's Docker-backed Make targets.
 There is no sanctioned host acceptance run and no `cargo test` substitute.
 
-| Activity | Host execution allowed? | Acceptance evidence? |
-| --- | ---: | ---: |
-| Build binaries with `make check` | Yes | No |
-| Run a locally built `njavac` while debugging | Yes | No |
-| Profile with `make profile` | Yes | No |
-| Compare against host `javac` | No | No |
-| Run `make verify` | Through Docker | Cached, suitable for the inner loop |
-| Run `make correctness` | Through Docker | Fresh exact-byte fixture evidence |
-| Run `make bench` | Through Docker | Fresh exact-byte fixture evidence plus controlled same-host timing |
-| Run fuzzer and worker gates | Through Docker | Yes for their documented contracts |
+| Activity | Execution | Evidence |
+| --- | --- | --- |
+| Run `make image` | Docker | Pinned compiler build only |
+| Run `make profile` | Docker | Controlled phase-performance evidence only |
+| Compare against host `javac` | Unsanctioned | None |
+| Run `make verify` | Docker | Cached, suitable for the inner loop |
+| Run `make correctness` | Docker | Fresh exact-byte fixture evidence |
+| Run `make bench` | Docker | Fresh exact-byte fixture evidence plus controlled same-host timing |
+| Run fuzzer and worker gates | Docker | Evidence for their documented contracts |
 
 The detailed gate selection lives in [Command surface](../tooling/command-surface.md)
 and [Maintainer workflow](../contributing/workflow.md).
@@ -74,7 +69,7 @@ Confirm the constraints that shape the change before designing tooling:
 
 - Acceptance remains Docker-only.
 - The reference compiler remains a black box.
-- Reproducibility takes precedence over a faster host-only loop.
+- Reproducibility takes precedence over adding a host-only loop.
 - The Makefile remains the sanctioned command surface.
 - Checked-in golden `.class` files are not used.
 

@@ -31,9 +31,9 @@ remain authoritative for machine behavior and exact flags.
 - Learn javac behavior only through black-box probes, raw class bytes,
   repository tools, fixtures, and fuzzing. Never inspect or decompile javac or
   OpenJDK implementation sources.
-- Run acceptance tests through the sanctioned Docker-backed Make targets. Host
-  `make check` and `make profile` are debugging and measurement tools, not
-  correctness evidence.
+- Run all compiler builds, executions, and acceptance tests through the sanctioned
+  Docker-backed Make targets. Direct host toolchains are not correctness or
+  performance evidence.
 - Preserve the supported surface. Never compile an unsupported case to invalid or
   behaviorally incorrect output; return a structured unsupported diagnostic when
   a required subsystem is genuinely absent. Internal invariant failures remain

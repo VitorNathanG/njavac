@@ -17,11 +17,12 @@ A Cargo registry or target cache miss makes a build slower. The JDK and mdBook
 archives are checksum-verified and base images are digest-pinned; a checksum
 failure is a hard supply or version mismatch and must not be bypassed.
 
-## Benchmark rejects the CPU selection
+## A performance target rejects the CPU selection
 
-`make bench` pins one CPU by host index. If Docker reports an invalid CPU set,
-choose an index visible to Docker with `BENCH_CPU`. On constrained desktop Docker
-VMs, the host's logical CPU numbers and Docker's available set may differ.
+`make bench` and `make profile` pin one CPU by host index. If Docker reports an
+invalid CPU set, choose an index visible to Docker with `BENCH_CPU`. On constrained
+desktop Docker VMs, the host's logical CPU numbers and Docker's available set may
+differ.
 
 Keep `BENCH_MEM` fixed between compared runs. Changing CPU or memory settings can
 make the command run, but the resulting timing is not comparable to a baseline
@@ -205,12 +206,11 @@ path, filesystem error, worker failure, protocol invariant, or harness defect; i
 is not automatically an njavac compiler finding. Recheck mounts and ownership,
 then isolate the relevant worker or direct binary mode.
 
-## Local build or profile is green
+## Image build or profile is green
 
-`make check` proves only that a host release build completed. `make profile`
-measures local in-process performance. Neither invokes the configured javac or
-compares outputs, so neither is compatibility evidence. Run the applicable Docker
-gates separately.
+`make image` proves only that the pinned build completed. `make profile` measures
+in-process performance in that image. Neither compares compiler outputs, so neither
+is compatibility evidence. Run the applicable correctness or fuzz gates separately.
 
 If profile numbers move sharply on macOS, verify that both runs used the same
 power mode and comparable thermal/background conditions. Low Power Mode and
@@ -234,7 +234,7 @@ the pinned build rather than suppressing it.
 ## CI is green but another gate was not run
 
 The hosted workflow runs only `make correctness` on pushes and pull requests. It
-does not run documentation, fuzz, worker, observer, benchmark, local build, or
-profile targets. Run those explicitly when the change requires them. See
+does not run documentation, fuzz, worker, observer, benchmark, or profile targets.
+Run those explicitly when the change requires them. See
 [Docker and CI](../tooling/docker-and-ci.md) for the current automation boundary
 and [Command Surface](../tooling/command-surface.md) for gate selection.

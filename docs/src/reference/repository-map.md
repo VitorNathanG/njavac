@@ -165,7 +165,7 @@ Cargo auto-discovers the crate's binaries from `src/main.rs`, `src/bin/*.rs`, an
 | `bench` | `src/bin/bench/main.rs` | Fixture correctness and controlled whole-suite timing harness |
 | `classdiff` | `src/bin/classdiff.rs` | Dump or structurally compare class files |
 | `fuzz` | `src/bin/fuzz/main.rs` | Generate in-scope programs and run exact plus behavioral differential oracles |
-| `profile` | `src/bin/profile.rs` | Local in-process cumulative pipeline profiler |
+| `profile` | `src/bin/profile.rs` | Containerized in-process cumulative pipeline profiler |
 
 `src/bin/bench/correctness.rs` owns fixture discovery outcomes, live/cached
 reference comparison, and mismatch reports. `src/bin/bench/timing.rs` owns the
@@ -202,9 +202,8 @@ topic. Basenames must be globally unique because current harness output
 directories are flat. Fixtures are compiled in one compiler invocation but remain
 independent one-class sources.
 
-`fuzz-out/` is git-ignored raw finding/telemetry output. `target/` contains Rust
-build artifacts, benchmark outputs, and optional local caches. Neither is source
-authority.
+`fuzz-out/` is git-ignored raw finding/telemetry output. `target/` is ignored and
+is not used by sanctioned Make targets. Neither is source authority.
 
 ## Build and environment files
 
@@ -212,13 +211,12 @@ authority.
 | --- | --- |
 | `Cargo.toml`, `Cargo.lock` | One dependency-free Rust 2024 crate and locked package metadata |
 | `Makefile` | Sanctioned command surface; `make help` is the exact catalog |
-| `Dockerfile` | Pinned Java reference and Rust build image used by correctness tooling |
+| `Dockerfile` | Pinned Java reference, Rust build, and runtime image for compiler tools |
 | `docs/book.toml`, `docs/Dockerfile` | Pinned mdBook/Mermaid build configuration |
 | `.github/` | Repository automation |
 
-All exact-byte and behavioral compatibility evidence runs through Docker. Local
-`make check` and `profile` are compiler-debugging/performance tools, not
-compatibility gates.
+All compiler builds, executions, exact-byte checks, behavioral checks, and
+performance measurements run through Docker-backed Make targets.
 
 ## Documentation authorities
 

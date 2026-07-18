@@ -70,9 +70,10 @@ compile.
 
 ## Acceptance gates
 
-All acceptance testing runs through Docker-backed Make targets. Local builds and
-host toolchains are debugging aids only. The exact target surface belongs to
-`make help`; gate purposes belong to [Command surface](../tooling/command-surface.md).
+All compiler builds, executions, and acceptance testing run through Docker-backed
+Make targets. Direct host toolchains are outside the sanctioned workflow. The
+exact target surface belongs to `make help`; gate purposes belong to
+[Command surface](../tooling/command-surface.md).
 
 At minimum:
 

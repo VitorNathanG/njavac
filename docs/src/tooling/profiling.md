@@ -1,8 +1,9 @@
 # Profiling
 
-njavac has two intentionally different performance measurements. `make bench`
-measures process-level wall clock in a Docker harness with resource controls.
-`make profile` measures the compiler pipeline itself in-process on the host.
+njavac has two intentionally different performance measurements in the same main
+Docker image and under the same CPU and memory controls. `make bench` measures
+process-level wall clock; `make profile` measures the compiler pipeline itself
+in-process.
 
 ## Choose the measurement
 
@@ -32,9 +33,10 @@ with explicit compiler diagnostics.
 
 ## Profile method
 
-`make profile` performs a local release build of the `profile` binary, recursively
-loads the fixture corpus, and invokes compiler stages directly. It warms the
-pipeline once, then processes every fixture for each configured round and trial.
+`make profile` builds the main image, starts its `profile` binary with the
+`BENCH_CPU` and `BENCH_MEM` controls, loads the fixture snapshot copied into that
+image, and invokes compiler stages directly. It warms the pipeline once, then
+processes every fixture for each configured round and trial.
 
 ```mermaid
 flowchart LR
@@ -46,7 +48,8 @@ flowchart LR
     Difference --> Report[ns per compile and throughput]
 ```
 
-In all-phase mode, the profiler measures cumulative prefixes and differences them:
+In all-phase mode, the profiler measures cumulative prefixes and takes their
+differences:
 
 | Reported phase | Cumulative endpoint |
 | --- | --- |
@@ -76,7 +79,8 @@ accounting for that change.
 Keep all of these stable when comparing revisions:
 
 - Host machine and architecture.
-- Rust toolchain and release-build settings.
+- Docker engine, VM allocation, and main image contents.
+- `BENCH_CPU` and `BENCH_MEM`.
 - Fixture corpus.
 - `ROUNDS`, `TRIALS`, and selected phase.
 - Background workload and thermal state.
@@ -94,11 +98,8 @@ runs on the same machine rather than isolated single measurements.
 
 ## Trust boundary
 
-`make profile` is deliberately local. It does not invoke the configured javac, run in the
-acceptance container, or compare class bytes. A successful or faster profile is
-not compatibility evidence. Run the required Docker gates separately.
-
-Forced host execution of the benchmark harness is likewise debugging only. The
-sanctioned process-level timing command is `make bench`, whose CPU and memory
-controls and residual host boundary are described in
+`make profile` uses the controlled main image but does not invoke the configured
+javac or compare class bytes. A successful or faster profile is not compatibility
+evidence. Run the required correctness or fuzz gates separately. The shared
+container controls and residual host boundary are described in
 [Docker and CI](docker-and-ci.md).

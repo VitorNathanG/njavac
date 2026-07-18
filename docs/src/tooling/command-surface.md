@@ -15,13 +15,15 @@ flowchart TD
     Edit[Edit code or fixture] --> Fast[make verify]
     Fast --> Fresh[make correctness]
     Fresh --> Kind{What changed?}
-    Kind -->|Timing claim| Bench[make bench]
+    Kind -->|Process timing| Bench[make bench]
+    Kind -->|Pipeline phase timing| Profile[make profile]
     Kind -->|Language behavior| Fuzz[make fuzz]
     Kind -->|JDK or javac worker| Worker[make fuzz-verify]
     Kind -->|Observer| Observer[make fuzz-observe-verify]
     Kind -->|Documentation| Docs[make docs-check]
     Kind -->|None of these| Complete[Required gate complete]
     Bench --> Complete
+    Profile --> Complete
     Fuzz --> Complete
     Worker --> Complete
     Observer --> Complete
@@ -31,8 +33,8 @@ flowchart TD
 `make verify` is fast but cache-backed and can be stale. `make correctness` is
 the fresh, authoritative pre-commit exact-byte fixture gate. `make bench` adds repeated
 whole-suite timing samples under controls that support same-host comparisons; it
-does not make wall-clock results deterministic or portable across hosts. Local
-builds and profiles are never acceptance evidence.
+does not make wall-clock results deterministic or portable across hosts. An image
+build or profile run is never compatibility evidence.
 
 ## Target catalog
 
@@ -41,7 +43,7 @@ builds and profiles are never acceptance evidence.
 | Target | Purpose | Gate semantics |
 | --- | --- | --- |
 | `help` | Print the current Make target catalog. | Informational. It is the authority for target invocation syntax. |
-| `image` | Build the main compiler, reference-JDK, benchmark, differ, and fuzzer image. | Build prerequisite only. A successful image build does not compare compiler output. |
+| `image` | Build the main compiler, reference JDK, benchmark, profiler, differ, and fuzzer image. | Sole compiler build path and prerequisite for main-image targets. A successful image build does not compare compiler output. |
 | `docs-image` | Build the separate pinned mdBook and Mermaid image. | Documentation-tool prerequisite only. |
 
 ### Correctness and timing
@@ -52,8 +54,7 @@ builds and profiles are never acceptance evidence.
 | `correctness` | Compile with both njavac and the configured in-image `javac`, then byte-compare fresh outputs. | Authoritative online exact-byte fixture gate with no timing pass. This is the normal pre-commit gate. |
 | `record` | Rebuild the golden cache from the configured in-image `javac`, then run an offline verification. | Cache-maintenance operation followed by a cached check. With `FILE`, recording still covers the whole suite; only the second verification is filtered. |
 | `bench` | Run fresh correctness, then collect repeated whole-suite process samples for each compiler under Docker CPU and memory controls. Each sample is one compiler invocation. | Exact-byte fixture evidence plus controlled same-host timing. With `FILE`, the harness checks only that fixture and skips timing. Timed invocations do not check their later process statuses. |
-| `check` | Build all Rust binaries in release mode on the host. | Local compiler-internal debugging only. It is not a test and not acceptance. |
-| `profile` | Build and run the in-process pipeline profiler on the host. | Local performance investigation only. It neither invokes the reference compiler nor establishes compatibility. |
+| `profile` | Run the main image's in-process pipeline profiler under the benchmark CPU and memory controls. | Controlled phase-performance evidence only. It neither invokes the reference compiler nor establishes compatibility. |
 
 See [Fixtures and Goldens](fixtures-and-goldens.md) for cache lifecycle and
 [Profiling](profiling.md) for the distinction between benchmark and pipeline
@@ -111,7 +112,7 @@ does not pass.
 | --- | --- | --- |
 | `FILE` | `probe`, `src-diff`, `verify`, `correctness`, `record`, `bench` | Select one source or fixture where supported. `probe` and `src-diff` require it. `record FILE=...` records the whole suite before filtering verification. |
 | `A`, `B` | `diff` | Paths to the two class files, visible through the repository bind mount. |
-| `BENCH_CPU`, `BENCH_MEM` | `bench` | Select the Docker-visible CPU index and container memory limit used to reduce same-host timing noise. |
+| `BENCH_CPU`, `BENCH_MEM` | `bench`, `profile` | Select the Docker-visible CPU index and container memory limit shared by both performance measurements. |
 | `SEED`, `COUNT`, `BATCH` | `fuzz`, `fuzz-verify` | Select the generator seed, case count, and javac-worker batch size. `COUNT` and `BATCH` must be positive decimal integers. Omitting `SEED` chooses and prints a fresh seed in these two modes. |
 | `FUZZFLAGS` | `fuzz` only | Append raw fuzzer command-line tokens. Consult `fuzz --help`; this value is not shell-safe quoting and is not forwarded by the other fuzzer targets. |
 | `ROUNDS`, `TRIALS`, `PHASE` | `profile` | Control repeated corpus passes, minimum-reduced trials, and the cumulative pipeline phase to measure. |
@@ -153,7 +154,7 @@ hoc inputs under a simple ignored repository path such as `scratch-fuzz/`.
 | --- | --- |
 | `make image` | Local Docker image under `IMAGE`; BuildKit may retain Cargo registry and Rust target caches outside Git. |
 | `make docs-image` | Local Docker image under `DOCS_IMAGE`; downloaded mdBook and Mermaid archives are verified during the build. |
-| `make check` or `make profile` | Host `target/release/` binaries; `target/` is ignored. |
+| `make profile` | Terminal timing report only; the profiler binary and fixture snapshot come from `IMAGE`. |
 | `make record` or first empty-cache `make verify` | Class files in the named Docker golden volume; never committed. BuildKit cache removal does not remove this volume. |
 | `make fuzz` and fuzzer verification modes | Findings under host `fuzz-out/` because the repository is bind-mounted. Containers run as root, so created files may be root-owned. Only the default top-level directory is ignored. |
 | `make docs-build`, `make docs-check`, or `make docs` | Rendered host `docs/book/`; the directory is ignored. |

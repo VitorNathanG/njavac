@@ -43,8 +43,8 @@ make correctness
 ```
 
 This invokes the configured reference compiler afresh in Docker and byte-compares
-the complete fixture suite. It is the pre-commit exact-byte gate. A green local
-build or cached verify does not replace it.
+the complete fixture suite. It is the pre-commit exact-byte gate. A successful
+Docker image build or cached verify does not replace it.
 
 Use the controlled benchmark only when authoritative timing is also needed:
 
@@ -56,18 +56,10 @@ The benchmark collects repeated process samples under CPU and memory controls.
 Those controls improve same-host comparability but do not make timing
 deterministic or portable between hosts.
 
-## Optional host build
+## Compile an ad hoc source
 
-A host Rust toolchain is optional. When compiler-internal debugging or direct CLI
-use is useful, build release binaries locally:
-
-```sh
-make check
-```
-
-This writes binaries under `target/release/`; it is not an acceptance test. Keep
-ad hoc sources below the already ignored `scratch-fuzz/` directory because files
-created directly at the repository root are not ignored:
+Keep ad hoc sources below the already ignored `scratch-fuzz/` directory because
+files created directly at the repository root are not ignored:
 
 ```sh
 mkdir -p scratch-fuzz
@@ -84,15 +76,15 @@ public class Hello {
 }
 ```
 
-Then compile it with the host binary:
+Then compile it with both configured compilers and inspect any physical
+divergence:
 
 ```sh
-./target/release/njavac scratch-fuzz/Hello.java
+make src-diff FILE=scratch-fuzz/Hello.java
 ```
 
-This writes `scratch-fuzz/Hello.class`. It demonstrates only that the host binary
-runs; it does not compare against the configured reference compiler. The exact
-accepted language and refusal boundaries live in
+The target uses disposable output directories in the main image and persists only
+terminal diagnostics. The exact accepted language and refusal boundaries live in
 [Language support](../reference/language-support.md).
 
 ## Inspect one case
@@ -109,12 +101,10 @@ Use a fresh comparison when cache state should not be involved:
 make correctness FILE=fixtures/basics/Empty.java
 ```
 
-For an ad hoc source, `make src-diff FILE=scratch-fuzz/Hello.java` compares both
-compilers and prints structural and disassembly diagnostics on a mismatch. Use
-repository-relative paths without whitespace, quotes, shell metacharacters, or a
-leading option-like component; these Make recipes do not provide general
-shell-safe path forwarding. The complete investigation path is documented in
-[Differential debugging](../tooling/differential-debugging.md).
+For ad hoc sources, use repository-relative paths without whitespace, quotes,
+shell metacharacters, or a leading option-like component; these Make recipes do
+not provide general shell-safe path forwarding. The complete investigation path
+is documented in [Differential debugging](../tooling/differential-debugging.md).
 
 ## Choose the next path
 
