@@ -18,7 +18,8 @@ Language coverage belongs in [Language Rungs](language-rungs.md), not here.
   compiler and compare its unified benchmark JSON with the candidate under the
   same current runner, corpus fingerprint, and container controls. Interleave
   subject order and report per-metric deltas without introducing a composite
-  score.
+  score. Decide whether immutable versioned workload cohorts are necessary only
+  if evolving fixture fingerprints become a concrete obstacle.
 - **Harden capability-image runtime boundaries.** Add read-only diagnostic mounts,
   disabled networking, dropped capabilities, `no-new-privileges`, explicit PID
   limits, and tmpfs scratch paths. Follow with non-root users and read-only root
