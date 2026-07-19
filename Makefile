@@ -187,13 +187,19 @@ docs-build: docs-image  ## build the maintainer guide through Docker
 	  $(DOCS_IMAGE) \
 	  mdbook build docs
 
-docs-check: docs-build  ## inventory sources, then check rendered internal links through Docker
+docs-check: docs-build  ## validate documentation sources, code references, and rendered links
 	docker run --rm \
 	  --user "$(DOCS_UID):$(DOCS_GID)" \
 	  --mount type=bind,source="$(CURDIR)",target=/work,readonly \
 	  --workdir /work \
 	  $(DOCS_IMAGE) \
 	  sh docs/check-summary.sh
+	docker run --rm \
+	  --user "$(DOCS_UID):$(DOCS_GID)" \
+	  --mount type=bind,source="$(CURDIR)",target=/work,readonly \
+	  --workdir /work \
+	  $(DOCS_IMAGE) \
+	  sh docs/check-code-references.sh
 	docker run --rm \
 	  --mount type=bind,source="$(CURDIR)/docs/book",target=/input,readonly \
 	  lycheeverse/lychee:0.24.2@sha256:e2d19e57cf6ab037026f20b8e449a1f30d9d7f81eef4194763aab2eab20bd28d \

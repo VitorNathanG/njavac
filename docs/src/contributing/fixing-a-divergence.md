@@ -40,8 +40,9 @@ make fuzz SEED=<seed>
 ```
 
 Read classdiff's first substantive structural field before following cascading
-`javap` differences. Confirm cache freshness when the report came from `make
-verify`. The detailed tool interpretation belongs to [Differential debugging](../tooling/differential-debugging.md).
+`javap` differences. Confirm cache freshness when the report came from
+`make verify`. The detailed tool interpretation belongs to
+[Differential debugging](../tooling/differential-debugging.md).
 
 ## Minimize without changing the bug
 

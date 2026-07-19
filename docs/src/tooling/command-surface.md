@@ -60,10 +60,10 @@ and the distinction between uninstrumented and profiled measurements.
 | `diff` | Run the structural `classdiff` tool on two existing class files inside Docker. | Focused comparison. Zero means identical. Nonzero can mean either different bytes or a read/parse/usage failure, so read stderr and stdout; this does not exercise the corpus or compilers. |
 
 The success status of `src-diff` means the shell recipe reached its end, not that
-the classes matched or every diagnostic tool succeeded. Read `IDENTICAL`, `bytes
-differ`, and every diagnostic error. GNU Make also reports a recipe failure with
-its own status, so the inner reference-rejected and candidate-rejected exit codes
-are not a stable public status API. Use `correctness` for a status-bearing
+the classes matched or every diagnostic tool succeeded. Read `IDENTICAL`,
+`bytes differ`, and every diagnostic error. GNU Make also reports a recipe failure
+with its own status, so the inner reference-rejected and candidate-rejected exit
+codes are not a stable public status API. Use `correctness` for a status-bearing
 exact-byte fixture gate. See [Differential Debugging](differential-debugging.md).
 
 ### Fuzzing
@@ -86,7 +86,7 @@ artifacts. See [Fuzzing](fuzzing.md).
 | --- | --- | --- |
 | `docs` | Serve the mdBook through the documentation container on a loopback port. | Interactive preview, not a complete documentation gate. |
 | `docs-build` | Build the mdBook through the pinned documentation image. | Validates mdBook parsing, preprocessing, and rendering for pages included by `SUMMARY.md`. |
-| `docs-check` | Build the book, inventory recursive Markdown sources against `SUMMARY.md`, then run the pinned link checker against rendered output in offline mode. | Documentation source-inclusion, build, and internal-link gate. |
+| `docs-check` | Build the book, inventory recursive Markdown sources, validate inline repository and mapped Rust API references, then run the pinned link checker against rendered output in offline mode. | Documentation source-inclusion, code-reference, build, and internal-link gate. |
 
 See [Documentation Tooling](documentation.md) for generated artifacts, Mermaid,
 and link-check behavior.

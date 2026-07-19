@@ -155,4 +155,6 @@ Before landing documentation changes, verify:
 - Code comments and prose do not claim authority from javac internals.
 - Completed planning entries were deleted.
 - New page links use expected stable paths.
+- Inline repository paths and mapped Rust API references pass the documentation
+  code-reference check.
 - `make docs-check` passes.

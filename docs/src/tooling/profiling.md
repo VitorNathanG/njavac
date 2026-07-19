@@ -57,8 +57,8 @@ flowchart LR
 
 The public Make target has one mode: complete performance/resource reporting.
 The in-image harness retains explicit correctness, golden-cache, and
-instrumentation-verification modes for `make test`, `make correctness`, `make
-verify`, and `make record`; those modes do not publish performance reports.
+instrumentation-verification modes for `make test`, `make correctness`,
+`make verify`, and `make record`; those modes do not publish performance reports.
 `--json`, `--samples`, `--warmup`, `--rounds`, and `--allocation-rounds` apply only
 to report mode. Malformed, missing, zero where positive is required, and
 overflowing values return status 2 rather than panicking. `--warmup 0` is valid.

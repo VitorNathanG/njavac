@@ -1,0 +1,5 @@
+# Document<TAB>inline code<TAB>reason
+docs/src/reference/library-api.md	src/Example.java	example input metadata path, not a repository source path
+docs/src/contributing/documentation-policy.md	docs/src/assets/images/	reserved asset location that exists only when an image is required
+docs/src/tooling/documentation.md	docs/src/assets/images/	reserved asset location that exists only when an image is required
+docs/src/research/evidence.md	fixtures/current-support	evidence identifier, not a repository path

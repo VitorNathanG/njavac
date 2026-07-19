@@ -27,12 +27,13 @@ legal class-file forms, but not which legal byte sequence the pinned javac emits
 ## Status of the migrated survey
 
 The **[U]** leads came from the former root `README.md` coverage survey introduced
-by the git-history entry titled `Document the Java 25 language surface still to
-implement`. That survey reported manual checks with throwaway programs against the
-then-pinned compiler. Neither the source probes nor their output records were
-retained. The maintainer-guide migration preserved the leads but lowered their
-confidence to **[U]**. This records provenance without treating a commit hash,
-unretained terminal work, or the former page as current evidence.
+by the git-history entry titled
+`Document the Java 25 language surface still to implement`. That survey reported
+manual checks with throwaway programs against the then-pinned compiler. Neither
+the source probes nor their output records were retained. The maintainer-guide
+migration preserved the leads but lowered their confidence to **[U]**. This
+records provenance without treating a commit hash, unretained terminal work, or
+the former page as current evidence.
 
 Research pages may contain many **[U]** rows and no **[O]** row for a distant
 feature. That accurately distinguishes a survey lead from evidence ready to drive

@@ -220,8 +220,8 @@ then isolate the relevant worker or direct binary mode.
 
 `make image` proves only that the pinned acceptance build completed. The
 performance sections of `make benchmark` measure speed and resources; they are not
-compatibility evidence. The benchmark has no compatibility section; run `make
-test` for deterministic correctness and infrastructure evidence.
+compatibility evidence. The benchmark has no compatibility section; run
+`make test` for deterministic correctness and infrastructure evidence.
 
 If benchmark numbers move sharply on macOS, verify that both runs used the same
 power mode and comparable thermal/background conditions. Low Power Mode and

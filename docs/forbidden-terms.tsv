@@ -1,0 +1,5 @@
+# Forbidden literal<TAB>replacement guidance
+single Rust crate	use current Cargo workspace terminology
+one Rust crate	use current Cargo workspace terminology
+classdump::reader	use njavac_classdump or a current repository path
+Dependency-free (`std` only)	describe workspace dependencies or narrow the std-only claim

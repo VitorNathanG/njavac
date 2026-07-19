@@ -30,8 +30,10 @@ flowchart LR
     Image --> Build[make docs-build]
     Build --> Book[docs/book]
     Source --> Inventory[SUMMARY source inventory]
+    Source --> References[Code-reference validation]
     Book --> Links[Rendered link check]
     Inventory --> Check[make docs-check]
+    References --> Check
     Links --> Check
 ```
 
@@ -40,7 +42,7 @@ flowchart LR
 | `make docs-image` | Build the pinned mdBook and Mermaid tool image. | Local Docker image only. |
 | `make docs` | Serve the book for interactive review on the configured loopback port. | Live preview plus generated `docs/book/`; stop with the foreground process. |
 | `make docs-build` | Render the book once through Docker. | Replaces or updates `docs/book/`; fails on mdBook or preprocessor errors. |
-| `make docs-check` | Build first, inventory Markdown sources against `SUMMARY.md`, then inspect rendered links and fragments with pinned Lychee. | Documentation source-inclusion, rendering, and internal-link gate. |
+| `make docs-check` | Build first, inventory Markdown sources, validate inline repository and Rust API references, then inspect rendered links and fragments with pinned Lychee. | Documentation source-inclusion, code-reference, rendering, and internal-link gate. |
 
 `DOCS_PORT` changes the host preview port and `DOCS_IMAGE` changes the local image
 tag. `make help` owns target names and short target hints; `Makefile` owns variable
@@ -92,6 +94,26 @@ The link checker sees rendered pages, not every Markdown file in the source tree
 a literal page link in `SUMMARY.md`. Before considering a new page integrated,
 ensure the navigation owner adds it, then run `make docs-check`. A build success
 alone does not prove that an unlisted source page rendered; the full gate does.
+
+## Code references
+
+`docs/check-code-references.sh` scans paired single-backtick inline code outside
+fenced examples, including blockquotes. It rejects unsupported multiline or
+double-backtick spans and backticks in ambiguous indented content; use a fenced
+block for indented examples. It requires concrete repository paths to exist,
+requires repository globs to match, checks file-qualified symbol boundaries
+textually, and resolves selected crate-qualified APIs through
+`docs/code-references.tsv`. A path segment written as `...` is an explicit
+placeholder rather than a concrete path.
+Intentional non-repository examples require a reason in
+`docs/code-reference-exceptions.tsv`. Known obsolete terminology belongs in
+`docs/forbidden-terms.tsv`; the check covers guide Markdown and line-form Rust doc
+comments.
+
+This is a deterministic stale-reference check, not a Rust name resolver. Prefer a
+repository-relative file path plus a named symbol when documenting implementation
+authority. Keep public API mappings narrow and delete exceptions when their
+referenced example disappears.
 
 ## Documentation workflow
 
