@@ -166,7 +166,7 @@ pub(super) fn selftest(cfg: &Config) -> i32 {
     let mut g = Gen { rng: Rng::new(cfg.seed) };
     let mut h = SelftestHarness { inner: MinHarness::new(&cfg.javac, cfg.seed) };
     for k in 0..200 {
-        let prog = g.gen_prog(k);
+        let prog = g.gen_random_prog(k);
         let (want, got) = h.inner.compile_both(&prog);
         if let (Some(_), Some(mut bytes)) = (want, got) {
             let minimized = minimize_selftest(&prog, &mut h);

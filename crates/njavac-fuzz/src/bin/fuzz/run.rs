@@ -14,6 +14,8 @@ use crate::Config;
 
 #[derive(Default)]
 struct Tally {
+    scheduled: u64,
+    scheduled_failures: u64,
     exact: u64,
     byte_divergent: u64,
     behavior_match: u64,
@@ -77,13 +79,34 @@ pub(super) fn run(cfg: &Config) -> ! {
         assert_batch_classes(&classes, &progs);
 
         for (p, s) in progs.iter().zip(&sources) {
+            if p.kind.is_scheduled() {
+                tally.scheduled += 1;
+            }
             tally.lines += s.lines().count() as u64;
             let want = classes.get(&p.name.class);
             let t_njavac = Instant::now();
             let got = njavac_compile(s, &p.name.source_arg);
             tally.njavac_time += t_njavac.elapsed();
             match classify(want.map(Vec::as_slice), got) {
-                ByteOutcome::GeneratorInvalid => tally.generator_invalid += 1,
+                ByteOutcome::GeneratorInvalid => {
+                    tally.generator_invalid += 1;
+                    if p.kind.is_scheduled() {
+                        tally.scheduled_failures += 1;
+                        report_compiler_finding(
+                            cfg,
+                            p,
+                            s,
+                            "scheduled-generator-invalid",
+                            &format!(
+                                "guaranteed {} case was rejected by javac",
+                                p.kind.label()
+                            ),
+                        );
+                        if !cfg.keep_going {
+                            finish_and_exit(&tally, cfg.count, &byte_sigs, &behavior_sigs);
+                        }
+                    }
+                }
                 ByteOutcome::NjavacUnsupported(diagnostic) => {
                     tally.njavac_unsupported += 1;
                     if unsupported_dumped < 20 {
@@ -95,6 +118,19 @@ pub(super) fn run(cfg: &Config) -> ! {
                             diagnostic.render(&p.name.source_arg, s),
                         );
                         unsupported_dumped += 1;
+                    }
+                    if p.kind.is_scheduled() {
+                        tally.scheduled_failures += 1;
+                        report_compiler_finding(
+                            cfg,
+                            p,
+                            s,
+                            "scheduled-unsupported",
+                            &diagnostic.render(&p.name.source_arg, s),
+                        );
+                        if !cfg.keep_going {
+                            finish_and_exit(&tally, cfg.count, &byte_sigs, &behavior_sigs);
+                        }
                     }
                 }
                 ByteOutcome::NjavacSyntaxError(diagnostic) => {
@@ -173,8 +209,8 @@ pub(super) fn run(cfg: &Config) -> ! {
 
         n += this;
         println!(
-            "  progress {n}/{}  exact={} behavior-match={} byte-divergent={} gen-invalid={} njavac-unsupported={} njavac-syntax-error={} njavac-internal-panic={} behavioral-findings={} lines={}",
-            cfg.count, tally.exact, tally.behavior_match, tally.byte_divergent,
+            "  progress {n}/{}  scheduled-long={} exact={} behavior-match={} byte-divergent={} gen-invalid={} njavac-unsupported={} njavac-syntax-error={} njavac-internal-panic={} behavioral-findings={} lines={}",
+            cfg.count, tally.scheduled, tally.exact, tally.behavior_match, tally.byte_divergent,
             tally.generator_invalid, tally.njavac_unsupported, tally.njavac_syntax_error,
             tally.njavac_internal_panic, tally.findings, tally.lines
         );
@@ -195,8 +231,8 @@ fn summary(t: &Tally, count: u64) {
         + t.njavac_syntax_error
         + t.njavac_internal_panic;
     println!(
-        "\nfuzz done: {processed}/{count} cases  exact={} behavior-match={} byte-divergent={} gen-invalid={} njavac-unsupported={} njavac-syntax-error={} njavac-internal-panic={} behavioral-findings={}  ({} lines compiled)",
-        t.exact, t.behavior_match, t.byte_divergent, t.generator_invalid,
+        "\nfuzz done: {processed}/{count} cases  scheduled-long={} exact={} behavior-match={} byte-divergent={} gen-invalid={} njavac-unsupported={} njavac-syntax-error={} njavac-internal-panic={} behavioral-findings={}  ({} lines compiled)",
+        t.scheduled, t.exact, t.behavior_match, t.byte_divergent, t.generator_invalid,
         t.njavac_unsupported, t.njavac_syntax_error, t.njavac_internal_panic,
         t.findings, t.lines
     );
@@ -215,6 +251,12 @@ fn summary(t: &Tally, count: u64) {
     if t.findings > 0 {
         println!("  -> {} behavioral finding(s); see the fuzz-out/ dir", t.findings);
     }
+    if t.scheduled_failures > 0 {
+        println!(
+            "  -> {} scheduled long-branch coverage failure(s); see the fuzz-out/ dir",
+            t.scheduled_failures
+        );
+    }
     let compiler_findings = t.njavac_syntax_error + t.njavac_internal_panic;
     if compiler_findings > 0 {
         println!("  -> {compiler_findings} compiler finding(s); see the fuzz-out/ dir");
@@ -229,7 +271,10 @@ fn summary(t: &Tally, count: u64) {
 }
 
 fn has_hard_findings(t: &Tally) -> bool {
-    t.findings > 0 || t.njavac_syntax_error > 0 || t.njavac_internal_panic > 0
+    t.scheduled_failures > 0
+        || t.findings > 0
+        || t.njavac_syntax_error > 0
+        || t.njavac_internal_panic > 0
 }
 
 fn finish_and_exit(

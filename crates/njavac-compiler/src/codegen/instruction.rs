@@ -115,6 +115,7 @@ pub(super) const IF_ICMPGE: u8 = 0xa2;
 pub(super) const IF_ICMPGT: u8 = 0xa3;
 pub(super) const IF_ICMPLE: u8 = 0xa4;
 pub(super) const GOTO: u8 = 0xa7;
+pub(super) const GOTO_W: u8 = 0xc8;
 
 pub(super) const ICONST_1: u8 = 0x04;
 
@@ -144,11 +145,9 @@ pub(super) struct CodePosition(pub(super) usize);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(super) struct Label(pub(super) usize);
 
-/// One already-selected physical JVM instruction form. Lowering chooses exact
-/// forms (`ldc` vs `ldc_w`, short/indexed/wide local forms, narrow vs wide
-/// `iinc`); the emitter records that choice and derives its stack effect.
-/// Finalization only lays out and encodes it; it never substitutes an equivalent
-/// form.
+/// One symbolic JVM instruction. Lowering chooses exact non-branch forms and
+/// branch polarity/topology; final layout chooses the method-wide narrow or fat
+/// physical branch representation required by the pinned compiler.
 #[derive(Clone, Copy)]
 pub(super) enum Instruction {
     Simple(u8),
@@ -221,7 +220,7 @@ impl Instruction {
         }
     }
 
-    pub(super) fn encoded_len(self) -> usize {
+    pub(super) fn narrow_encoded_len(self) -> usize {
         match self {
             Instruction::Simple(_) => 1,
             Instruction::U8 { .. } => 2,
@@ -240,11 +239,36 @@ impl Instruction {
     }
 
     pub(super) fn is_cond_branch(self) -> bool {
-        matches!(self, Instruction::Branch { opcode, .. } if (IFEQ..=IF_ICMPLE).contains(&opcode))
+        matches!(self, Instruction::Branch { opcode, .. } if is_cond_branch_opcode(opcode))
     }
 
     pub(super) fn is_return(self) -> bool {
         matches!(self, Instruction::Simple(RETURN))
+    }
+}
+
+pub(super) fn is_cond_branch_opcode(opcode: u8) -> bool {
+    (IFEQ..=IF_ICMPLE).contains(&opcode)
+}
+
+/// Invert one JVM conditional branch. Fat branch encoding uses the inverse to
+/// skip its following `goto_w`; lowering uses the same table for source-level
+/// condition polarity.
+pub(super) fn negate_conditional(opcode: u8) -> u8 {
+    match opcode {
+        IFEQ => IFNE,
+        IFNE => IFEQ,
+        IFLT => IFGE,
+        IFGE => IFLT,
+        IFGT => IFLE,
+        IFLE => IFGT,
+        IF_ICMPEQ => IF_ICMPNE,
+        IF_ICMPNE => IF_ICMPEQ,
+        IF_ICMPLT => IF_ICMPGE,
+        IF_ICMPGE => IF_ICMPLT,
+        IF_ICMPGT => IF_ICMPLE,
+        IF_ICMPLE => IF_ICMPGT,
+        other => panic!("not a conditional branch opcode: {other:#x}"),
     }
 }
 

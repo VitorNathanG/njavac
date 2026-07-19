@@ -145,21 +145,7 @@ pub(super) fn int_zero_branch(op: CmpOp, jump_when: bool) -> u8 {
 /// radius helper (a drift here silently breaks every comparison fixture), so it is
 /// derived and debug-checked rather than trusted.
 pub(super) fn negate_op(op: u8) -> u8 {
-    match op {
-        IFEQ => IFNE,
-        IFNE => IFEQ,
-        IFLT => IFGE,
-        IFGE => IFLT,
-        IFGT => IFLE,
-        IFLE => IFGT,
-        IF_ICMPEQ => IF_ICMPNE,
-        IF_ICMPNE => IF_ICMPEQ,
-        IF_ICMPLT => IF_ICMPGE,
-        IF_ICMPGE => IF_ICMPLT,
-        IF_ICMPGT => IF_ICMPLE,
-        IF_ICMPLE => IF_ICMPGT,
-        other => panic!("negate_op: not a conditional branch opcode {other:#x}"),
-    }
+    negate_conditional(op)
 }
 
 /// Debug guard: `negate_op` must invert both branch-opcode tables and be an

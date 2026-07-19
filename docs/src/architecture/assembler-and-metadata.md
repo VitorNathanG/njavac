@@ -1,10 +1,10 @@
 # Assembler and Metadata
 
-`crates/njavac-compiler/src/codegen/assembler.rs` owns the symbolic per-method
-storage and recording
-mechanics plus the single final layout pass. Lowering chooses the instruction
-sequence and forms, places labels, marks source lines, and requests frame states;
-the assembler records those decisions without performing Java lowering.
+`crates/njavac-compiler/src/codegen/assembler.rs` owns symbolic per-method storage,
+recording, branch-mode selection, and final layout. Lowering chooses the
+instruction sequence, non-branch forms, and branch polarity, places labels, marks
+source lines, and requests frame states; the assembler records those decisions
+without performing Java lowering.
 `crates/njavac-compiler/src/codegen/instruction.rs` defines the currently reachable opcodes, exact
 physical instruction forms, and their stack-word effects.
 
@@ -20,11 +20,12 @@ physical instruction forms, and their stack-word effects.
 | `Iinc`, `WideIinc` | Narrow and `wide iinc` forms |
 | `Field` | Constant-pool field operand plus explicit push words |
 | `Invoke` | Constant-pool method operand plus explicit argument/return words |
-| `Branch` | Narrow branch opcode with symbolic `Label` target |
+| `Branch` | Conditional or unconditional opcode with symbolic `Label` target; final layout chooses its physical form |
 
 There is no generic instruction-selection pass after recording. For example,
 `ldc` versus `ldc_w` and a slot-0 short load versus an operand-bearing load have
-already been decided.
+already been decided. Branch width is the layout-owned exception because the
+selected form depends on final target distance.
 
 The symbolic coordinate types are deliberately distinct:
 
@@ -53,20 +54,27 @@ is not verifier dataflow analysis.
 
 ## Finalization
 
-`Emitter::finish` owns one mutation and one layout:
+`Emitter::finish` owns the narrow probe, optional global fat retry, and one final
+layout:
 
 ```mermaid
 flowchart TD
     Stream["instructions + labels<br/>line events + frame requests"]
-    Compact["compact_gotos to fixpoint"]
-    Layout["layout final PCs"]
+    Save["save original stream"]
+    Compact["narrow goto compaction"]
+    Probe["layout narrow PCs"]
+    Choice{"all offsets fit i16?"}
+    Restore["restore original stream<br/>remove unreachable gotos"]
+    Layout["layout final narrow/fat PCs"]
     Targets["collect live branch target PCs"]
     Lines["resolve surviving line anchors"]
     Frames["sort, filter, deduplicate frames"]
     Encode["encode instructions"]
     Out["AssembledCode"]
 
-    Stream --> Compact --> Layout
+    Stream --> Save --> Compact --> Probe --> Choice
+    Choice -->|yes| Layout
+    Choice -->|no| Restore --> Layout
     Layout --> Targets --> Frames
     Layout --> Lines
     Layout --> Encode
@@ -78,10 +86,11 @@ flowchart TD
 ### Goto compaction
 
 `compact_gotos` computes reachability over the symbolic stream, threads branch
-targets through unconditional gotos, and tombstones only unconditional gotos
-that are unreachable or target the next live instruction. It repeats until no
-additional goto can be deleted. Tombstones preserve all original anchor and
-boundary indices.
+targets through unconditional gotos, and tombstones selected unconditional gotos
+to a fixpoint. Narrow mode removes both unreachable and goto-to-next instructions.
+Fat mode starts again from the saved original stream and removes only unreachable
+gotos, retaining redundant goto-to-next forms observed in pinned output.
+Tombstones preserve all original anchor and boundary indices.
 
 This is a narrow javac-compatibility transform, not a general optimizer. Exact
 preconditions and target-threading behavior live in the doc comments on
@@ -90,15 +99,16 @@ preconditions and target-threading behavior live in the doc comments on
 ### PC layout and encoding
 
 `layout` assigns a `u32` PC to every original instruction index, adding length
-only for live entries. It enforces the 65,535-byte JVM `Code` length ceiling with
-an assertion before metadata is narrowed to `u16`; oversized code therefore
-panics rather than returning a diagnostic. `encode` then walks the same live
-stream and asserts that its output position and each encoded length agree with
-layout.
+only for live entries. A compacted narrow layout first tests every offset. If one
+does not fit `i16`, the assembler restores the original stream and selects global
+fat mode: every goto becomes `goto_w`, and every conditional becomes its inverse
+over a following `goto_w`. Final layout includes those longer forms before the
+65,535-byte JVM `Code` ceiling is enforced and metadata is narrowed to `u16`.
 
-All current branches are encoded as an opcode plus signed 16-bit relative offset.
-Targets are threaded before offset calculation. No equivalent branch form is
-selected during this pass.
+Encoding walks the same final stream and asserts that output positions and lengths
+agree with layout. Fat conditional fallthroughs are new physical branch targets;
+latent verifier-local snapshots recorded at conditional emission become frames
+only in fat mode.
 
 ## Line numbers
 
@@ -145,17 +155,9 @@ emitter state.
 This is the main infrastructure boundary blocking general non-empty-stack boolean
 materialization and future object/control-flow forms.
 
-## Current encoding limits
+## Current encoding scope
 
-One absent form is reachable from otherwise supported syntax:
-
-- **Long branches:** `Instruction::Branch` has only the three-byte narrow form.
-  `encode` panics when the final relative offset does not fit `i16`; it cannot
-  emit `goto_w` or expand a long conditional branch.
-
-This is a defect, not a deliberate diagnostic.
-
-Other current limits follow the supported language: there are no switches and
+Current limits follow the supported language: there are no switches and
 therefore no alignment-sensitive instructions, no exception ranges, no local
 variable ranges, and no uninitialized-object verification values.
 

@@ -7,34 +7,27 @@ Language-feature ordering lives in [Language Rungs](language-rungs.md). Unordere
 non-active improvements live in [Deferred Work](deferred-work.md). Target
 boundaries live in [Architecture Direction](architecture.md).
 
-## 1. Long branches
-
-Add javac-compatible branch-form selection during final symbolic layout for
-conditional and unconditional targets outside the signed 16-bit range. The
-implementation must account for layout changes caused by widened branches rather
-than patching offsets after a fixed layout.
-
-## 2. Bare-CR/LF line tracking
+## 1. Bare-CR/LF line tracking
 
 Treat a bare CR as a Java line terminator for source positions and line-number
 events while continuing to count CRLF as one terminator. Add a focused fixture
 that distinguishes bare CR, LF, and CRLF without combining another lexer change.
 
-## 3. Integral zero-divisor rejection
+## 2. Integral zero-divisor rejection
 
 Remove the ordinary-expression `/` and `%` zero-divisor rejection. Java permits
 these expressions and they complete abruptly at runtime; contexts that require a
 constant expression must enforce that separate rule when such contexts are added.
 Add focused runtime fixtures for literal and non-literal left operands.
 
-## 4. Implicit narrowing range validation
+## 3. Implicit narrowing range validation
 
 Validate the folded value before accepting implicit constant assignment narrowing
 to `byte`, `short`, or `char`. Reject an out-of-range constant instead of allowing
 lowering to truncate it. Keep this separate from explicit casts and compound
 assignment, which have different narrowing rules.
 
-## 5. Complete attribution facts
+## 4. Complete attribution facts
 
 Record conversions and promoted types selected during semantic attribution so
 lowering does not recompute semantic expression results. Expand resolved
@@ -50,7 +43,7 @@ Lowering must consume these facts without reconstructing library signatures. Do
 not create a generic type arena, resolver environment, or source-type hierarchy
 until a language rung gives each one a concrete responsibility.
 
-## 6. Model the typed operand stack
+## 5. Model the typed operand stack
 
 Replace word-depth-only tracking with typed symbolic operand-stack state. Derive
 field and invocation effects from modeled types or descriptors. Frame requests
@@ -61,7 +54,7 @@ This is the byte-preserving prerequisite for non-empty-stack boolean
 materialization and the conditional-expression rung. Land it before changing the
 accepted language.
 
-## 7. Resume language rungs
+## 6. Resume language rungs
 
 After the preceding defects and infrastructure items are green, continue with the
 ordered [language rungs](language-rungs.md). If a rung exposes another structural

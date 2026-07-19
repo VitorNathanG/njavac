@@ -143,8 +143,6 @@ The current boundaries are useful but incomplete:
   conversion sequences. Lowering currently recomputes those facts.
 - `Emitter` tracks only operand-stack depth in words, not typed stack values or
   full control-flow state.
-- Long branch selection is absent. This is a reachable defect, not a deliberate
-  Java subset boundary.
 - The class-file model is intentionally closed over the four attributes and
   constant kinds needed today.
 - The compilation contract produces one byte vector and cannot represent

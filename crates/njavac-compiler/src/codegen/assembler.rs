@@ -1,8 +1,15 @@
 use crate::classfile::{StackFrame, VerificationType};
 
 use super::instruction::{
-    CodePosition, Instruction, InstructionAnchor, Label, GOTO, IINC, WIDE,
+    CodePosition, Instruction, InstructionAnchor, Label, GOTO, GOTO_W, IINC, WIDE,
+    is_cond_branch_opcode, negate_conditional,
 };
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BranchMode {
+    Narrow,
+    Fat,
+}
 
 #[derive(Clone, Copy)]
 struct InstructionEntry {
@@ -35,12 +42,13 @@ pub(super) struct AssembledCode {
 
 /// Symbolic per-method bytecode state. This is the single path for instruction
 /// recording, pending-line consumption, and stack accounting; `finish` owns the
-/// one final layout and encoding pass.
+/// narrow probe, branch-mode selection, final layout, and encoding pass.
 pub(super) struct Emitter {
     instructions: Vec<InstructionEntry>,
     labels: Vec<LabelBinding>,
     line_events: Vec<LineEvent>,
     frames: Vec<FrameReq>,
+    fat_fallthrough_frames: Vec<FrameReq>,
     pending_line: Option<u16>,
     at_control_entry: bool,
     max_stack: u16,
@@ -54,6 +62,7 @@ impl Emitter {
             labels: Vec::new(),
             line_events: Vec::with_capacity(16),
             frames: Vec::new(),
+            fat_fallthrough_frames: Vec::new(),
             pending_line: None,
             at_control_entry: false,
             max_stack: 0,
@@ -107,8 +116,23 @@ impl Emitter {
         binding.position = Some(position);
     }
 
-    pub(super) fn emit_branch(&mut self, opcode: u8, target: Label) -> InstructionAnchor {
-        self.emit(Instruction::Branch { opcode, target })
+    pub(super) fn emit_branch(
+        &mut self,
+        opcode: u8,
+        target: Label,
+        fallthrough_locals: Option<Vec<VerificationType>>,
+    ) -> InstructionAnchor {
+        debug_assert_eq!(fallthrough_locals.is_some(), is_cond_branch_opcode(opcode));
+        let anchor = self.emit(Instruction::Branch { opcode, target });
+        if let Some(locals) = fallthrough_locals {
+            debug_assert_eq!(self.cur, 0, "conditional branch leaves a non-empty stack");
+            self.fat_fallthrough_frames.push(FrameReq {
+                position: CodePosition(anchor.0 + 1),
+                locals,
+                stack: Vec::new(),
+            });
+        }
+        anchor
     }
 
     pub(super) fn instruction_count(&self) -> usize {
@@ -200,9 +224,11 @@ impl Emitter {
         self.thread_from_position(self.label_position(label))
     }
 
-    /// Delete only unreachable and goto-to-next gotos, preserving javac's
-    /// observed fixpoint behavior. Tombstones keep every symbolic anchor stable.
-    fn compact_gotos(&mut self) {
+    /// Delete unreachable gotos and, in narrow mode, goto-to-next instructions,
+    /// preserving javac's observed fixpoint behavior. Fat mode retains redundant
+    /// gotos but still removes unreachable chains. Tombstones keep every symbolic
+    /// anchor stable.
+    fn compact_gotos(&mut self, remove_redundant: bool) {
         if !self
             .instructions
             .iter()
@@ -247,8 +273,9 @@ impl Emitter {
                     unreachable!()
                 };
                 if !reachable[index]
-                    || self.thread_target(target)
-                        == self.next_live_position(CodePosition(index + 1))
+                    || (remove_redundant
+                        && self.thread_target(target)
+                            == self.next_live_position(CodePosition(index + 1)))
                 {
                     dead.push(index);
                 }
@@ -297,23 +324,74 @@ impl Emitter {
         }
     }
 
-    fn layout(&self) -> Vec<u32> {
+    fn encoded_len(instruction: Instruction, mode: BranchMode) -> usize {
+        match (mode, instruction) {
+            (BranchMode::Fat, Instruction::Branch { opcode: GOTO, .. }) => 5,
+            (BranchMode::Fat, Instruction::Branch { opcode, .. })
+                if is_cond_branch_opcode(opcode) =>
+            {
+                8
+            }
+            _ => instruction.narrow_encoded_len(),
+        }
+    }
+
+    fn layout(&self, mode: BranchMode) -> Vec<u32> {
         let mut pcs = Vec::with_capacity(self.instructions.len() + 1);
         let mut pc = 0u32;
         for entry in &self.instructions {
             pcs.push(pc);
             if entry.live {
                 pc = pc
-                    .checked_add(entry.instruction.encoded_len() as u32)
+                    .checked_add(Self::encoded_len(entry.instruction, mode) as u32)
                     .expect("method code length overflow");
             }
         }
         pcs.push(pc);
-        assert!(
-            pc <= u16::MAX as u32,
-            "method code exceeds JVM Code attribute limit"
-        );
         pcs
+    }
+
+    fn branch_target_position(&self, target: Label, mode: BranchMode) -> CodePosition {
+        match mode {
+            BranchMode::Narrow => self.thread_target(target),
+            BranchMode::Fat => self.label_position(target),
+        }
+    }
+
+    fn narrow_branch_overflows(&self, pcs: &[u32]) -> bool {
+        self.instructions.iter().enumerate().any(|(index, entry)| {
+            let Instruction::Branch { target, .. } = entry.instruction else {
+                return false;
+            };
+            if !entry.live {
+                return false;
+            }
+            let target_pc = pcs[self.branch_target_position(target, BranchMode::Narrow).0] as i64;
+            let branch_pc = pcs[index] as i64;
+            i16::try_from(target_pc - branch_pc).is_err()
+        })
+    }
+
+    /// Pinned javac retries the complete method in global fat-code mode when any
+    /// branch in the compacted narrow layout overflows. The retry restores the
+    /// original stream, removes only unreachable goto chains, expands every
+    /// conditional, and writes every retained goto as `goto_w`.
+    /// `LongBranchBoundary.java`, `LongBranchFat.java`, and `LongGotoFat.java`
+    /// cover the threshold and both retry triggers.
+    fn select_branch_mode(&mut self) -> (BranchMode, Vec<u32>) {
+        let original_instructions = self.instructions.clone();
+        let original_labels = self.labels.clone();
+
+        self.compact_gotos(true);
+        let narrow_pcs = self.layout(BranchMode::Narrow);
+        if !self.narrow_branch_overflows(&narrow_pcs) {
+            return (BranchMode::Narrow, narrow_pcs);
+        }
+
+        self.instructions = original_instructions;
+        self.labels = original_labels;
+        self.compact_gotos(false);
+        (BranchMode::Fat, self.layout(BranchMode::Fat))
     }
 
     fn resolve_lines(&self, pcs: &[u32]) -> Vec<(u16, u16)> {
@@ -329,22 +407,32 @@ impl Emitter {
         out
     }
 
-    fn live_target_pcs(&self, pcs: &[u32]) -> std::collections::HashSet<u32> {
-        self.instructions
-            .iter()
-            .filter(|entry| entry.live)
-            .filter_map(|entry| match entry.instruction {
-                Instruction::Branch { target, .. } => Some(pcs[self.thread_target(target).0]),
-                _ => None,
-            })
-            .collect()
+    fn live_target_pcs(&self, pcs: &[u32], mode: BranchMode) -> std::collections::HashSet<u32> {
+        let mut targets = std::collections::HashSet::new();
+        for (index, entry) in self.instructions.iter().enumerate() {
+            let Instruction::Branch { opcode, target } = entry.instruction else {
+                continue;
+            };
+            if !entry.live {
+                continue;
+            }
+            targets.insert(pcs[self.branch_target_position(target, mode).0]);
+            if mode == BranchMode::Fat && is_cond_branch_opcode(opcode) {
+                targets.insert(pcs[index + 1]);
+            }
+        }
+        targets
     }
 
     fn resolve_frames(
         &mut self,
         pcs: &[u32],
         live_targets: &std::collections::HashSet<u32>,
+        mode: BranchMode,
     ) -> Vec<StackFrame> {
+        if mode == BranchMode::Fat {
+            self.frames.append(&mut self.fat_fallthrough_frames);
+        }
         self.frames.sort_by_key(|frame| pcs[frame.position.0]);
         let mut out: Vec<StackFrame> = Vec::new();
         for frame in &self.frames {
@@ -370,7 +458,7 @@ impl Emitter {
         out
     }
 
-    fn encode(&self, pcs: &[u32]) -> Vec<u8> {
+    fn encode(&self, pcs: &[u32], mode: BranchMode) -> Vec<u8> {
         let mut code = Vec::with_capacity(*pcs.last().unwrap() as usize);
         for (index, entry) in self.instructions.iter().enumerate() {
             if !entry.live {
@@ -415,27 +503,53 @@ impl Emitter {
                     push_u16(&mut code, delta as u16);
                 }
                 Instruction::Branch { opcode, target } => {
-                    let target_pc = pcs[self.thread_target(target).0] as i64;
+                    let target_pc = pcs[self.branch_target_position(target, mode).0] as i64;
                     let branch_pc = pcs[index] as i64;
-                    let offset = i16::try_from(target_pc - branch_pc)
-                        .expect("branch offset exceeds selected narrow form");
-                    code.push(opcode);
-                    code.extend_from_slice(&offset.to_be_bytes());
+                    match mode {
+                        BranchMode::Narrow => {
+                            let offset = i16::try_from(target_pc - branch_pc)
+                                .expect("branch offset exceeds selected narrow form");
+                            code.push(opcode);
+                            code.extend_from_slice(&offset.to_be_bytes());
+                        }
+                        BranchMode::Fat if opcode == GOTO => {
+                            let offset = i32::try_from(target_pc - branch_pc)
+                                .expect("goto_w offset exceeds i32");
+                            code.push(GOTO_W);
+                            code.extend_from_slice(&offset.to_be_bytes());
+                        }
+                        BranchMode::Fat if is_cond_branch_opcode(opcode) => {
+                            code.push(negate_conditional(opcode));
+                            code.extend_from_slice(&8i16.to_be_bytes());
+                            let goto_pc = branch_pc + 3;
+                            let offset = i32::try_from(target_pc - goto_pc)
+                                .expect("conditional goto_w offset exceeds i32");
+                            code.push(GOTO_W);
+                            code.extend_from_slice(&offset.to_be_bytes());
+                        }
+                        BranchMode::Fat => panic!("unsupported branch opcode: {opcode:#x}"),
+                    }
                 }
             }
-            debug_assert_eq!(code.len() - before, entry.instruction.encoded_len());
+            debug_assert_eq!(
+                code.len() - before,
+                Self::encoded_len(entry.instruction, mode)
+            );
         }
         debug_assert_eq!(code.len(), *pcs.last().unwrap() as usize);
         code
     }
 
     pub(super) fn finish(mut self) -> AssembledCode {
-        self.compact_gotos();
-        let pcs = self.layout();
-        let live_targets = self.live_target_pcs(&pcs);
+        let (mode, pcs) = self.select_branch_mode();
+        assert!(
+            *pcs.last().unwrap() <= u16::MAX as u32,
+            "method code exceeds JVM Code attribute limit"
+        );
+        let live_targets = self.live_target_pcs(&pcs, mode);
         let line_numbers = self.resolve_lines(&pcs);
-        let stack_frames = self.resolve_frames(&pcs, &live_targets);
-        let code = self.encode(&pcs);
+        let stack_frames = self.resolve_frames(&pcs, &live_targets, mode);
+        let code = self.encode(&pcs, mode);
         AssembledCode {
             code,
             line_numbers,

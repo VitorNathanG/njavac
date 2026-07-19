@@ -98,8 +98,13 @@ impl Gen<'_> {
                 }
             }
             _ => {
+                // Preserve the unoptimized one-arm shape for final branch-mode
+                // selection. Narrow-mode goto compaction removes this jump to the
+                // next instruction; fat mode retains it as javac does.
+                let end = (!is_false).then(|| self.branch_to_new(GOTO));
                 self.install_stmt_exit(stmt_span);
                 self.resolve_chain(else_chain);
+                self.resolve_chain(end);
             }
         }
     }

@@ -111,13 +111,9 @@ Returned diagnostics represent expected source failures and deliberate
 unsupported boundaries. Panics represent compiler invariant violations or
 currently unreported hard limits, such as an analysis paired with the wrong
 expression arena, stack accounting underflow, an unresolved label, a missing pool
-entry, an unrepresentable branch offset, oversized method code, or an oversized
-modified-UTF-8 payload. The unchecked `u16` source-line counter panics in debug
-builds and wraps in release builds rather than returning a diagnostic.
-
-Known long-branch overflow currently panics because branch-form selection is
-missing. It is a documented reachable defect, not an addition to the diagnostic
-surface.
+entry, oversized method code, or an oversized modified-UTF-8 payload. The
+unchecked `u16` source-line counter panics in debug builds and wraps in release
+builds rather than returning a diagnostic.
 
 The library does not catch panics. The CLI catches no panics either; it only
 continues to the next source after a returned `Diagnostic` or filesystem error.

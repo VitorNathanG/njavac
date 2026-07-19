@@ -113,8 +113,13 @@ pub(super) fn report_compiler_finding(
     kind: &str,
     detail: &str,
 ) {
+    let heading = if kind.starts_with("scheduled-") {
+        "SCHEDULED COVERAGE FAILURE"
+    } else {
+        "NJAVAC COMPILER FINDING"
+    };
     println!(
-        "\nNJAVAC COMPILER FINDING [{kind}]: {} ({})\n{detail}",
+        "\n{heading} [{kind}]: {} ({})\n{detail}",
         prog.name.class, prog.name.source_arg,
     );
     let dir = cfg.out_dir.join("compiler-findings").join(kind);

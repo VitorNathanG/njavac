@@ -72,6 +72,28 @@ Internal invariant failures remain panics. Do not weaken an assertion or convert
 an invalid or behaviorally wrong path into apparent support merely to make a probe
 compile.
 
+## Grow the fuzzer with the compiler
+
+Every compiler peculiarity established by a rung, divergence fix, or black-box
+probe must become a deterministic fuzzer scenario before the work is complete.
+A peculiarity is a distinct byte-visible or behavior-visible compiler decision,
+including boundary transitions, method-wide modes, physical instruction forms,
+synthetic control-flow artifacts, and accepted or rejected source shapes. Random
+generation is not evidence that the scenario will be reached routinely.
+
+Express the scenario through the typed generator model when possible. Reserve a
+stable scheduled case when random generation cannot reliably reach the required
+shape or scale, and continue consuming the normal random case so later generated
+programs retain their established seed mapping. A scheduled case is guaranteed
+coverage: rejection by javac, an njavac unsupported diagnostic, syntax failure,
+internal panic, or behavioral mismatch must fail the fuzz run rather than enter
+an expected-rejection tally.
+
+The exact fixture remains the authoritative regression oracle. The fuzzer case
+complements it by exercising the same compiler peculiarity routinely across the
+differential pipeline. Document the relationship in the generator and in the
+[fuzzing guide](../tooling/fuzzing.md).
+
 ## Acceptance gates
 
 All compiler builds, executions, and acceptance testing run through Docker-backed

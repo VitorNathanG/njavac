@@ -26,6 +26,11 @@ Then follow that workflow end to end:
 - Build durable black-box evidence before encoding a hidden javac choice.
 - Keep structural preparation separate from behavior.
 - Add edge-focused fixtures with globally unique matching basenames.
+- Add a deterministic fuzzer scenario for every newly established compiler
+  peculiarity. If random generation cannot reliably reach the required shape or
+  scale, schedule a stable typed-model case, preserve the later RNG stream, and
+  treat rejection or unsupported compilation as a hard finding. Link the case to
+  its exact fixture; the fixture remains the authoritative regression oracle.
 - Use `make help` and the [command guide](../../../docs/src/tooling/command-surface.md) to select cached, fresh, fuzz, worker, observer, and timing gates correctly.
 - Update the authoritative support, architecture, research, and planning pages in
   the same change; delete completed planning entries.

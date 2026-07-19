@@ -1,6 +1,6 @@
 use super::expression::{INTEGRAL, NUMERIC};
 use super::{BoolMode, Gen, CAPS};
-use crate::model::{ident, BinOp, CmpOp, FExpr, FStmt, LogOp, PrintArg, Prog, Ty, Val};
+use crate::model::{ident, BinOp, CaseKind, CmpOp, FExpr, FStmt, LogOp, PrintArg, Prog, Ty, Val};
 use Ty::*;
 
 const STRINGS: [&str; 6] = ["", "x", "hello", "a b c", "12345", "Java"];
@@ -271,7 +271,7 @@ impl Gen {
         }
     }
 
-    pub(crate) fn gen_prog(&mut self, n: u64) -> Prog {
+    pub(crate) fn gen_random_prog(&mut self, n: u64) -> Prog {
         let mut env: Vec<Ty> = Vec::new();
         let nstmt = 5 + self.rng.below(10);
         let mut body = Vec::with_capacity(nstmt);
@@ -282,6 +282,11 @@ impl Gen {
         if CAPS.definite_assignment_paths && self.rng.ratio(1, 3) {
             self.gen_definite_assignment_path(&mut env, &mut body);
         }
-        Prog { name: ident(n), locals: env, body }
+        Prog { name: ident(n), kind: CaseKind::Random, locals: env, body }
+    }
+
+    pub(crate) fn gen_prog(&mut self, n: u64) -> Prog {
+        let random = self.gen_random_prog(n);
+        super::long_branch::scheduled(n).unwrap_or(random)
     }
 }

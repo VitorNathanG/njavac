@@ -131,7 +131,9 @@ impl<'a> Gen<'a> {
 
     /// Emit a branch whose target remains symbolic until final layout.
     fn emit_branch_op(&mut self, opcode: u8, label: Label) {
-        self.emitter.emit_branch(opcode, label);
+        let fallthrough_locals =
+            is_cond_branch_opcode(opcode).then(|| verification_locals(self.semantic_locals));
+        self.emitter.emit_branch(opcode, label, fallthrough_locals);
     }
 
     /// Request a stack-map frame at the current instruction boundary, capturing

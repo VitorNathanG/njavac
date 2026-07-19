@@ -1,9 +1,11 @@
 # Fuzzing
 
-The differential fuzzer generates random programs inside its modeled subset,
-compiles each program with both compilers, compares exact class bytes, and invokes
-an execution observer only when those bytes differ. It complements fixtures by
-searching combinations maintainers did not anticipate.
+The differential fuzzer generates random programs inside its modeled subset and
+runs stable scheduled programs for structural boundaries that random generation
+cannot reach routinely. It compiles each program with both compilers, compares
+exact class bytes, and invokes an execution observer only when those bytes differ.
+It complements fixtures by searching unanticipated combinations and exercising
+known compiler peculiarities on every sufficiently large run.
 
 ## Oracle
 
@@ -12,9 +14,12 @@ flowchart TD
     Program[Seeded generated program] --> Javac[Persistent in-memory javac worker]
     Program --> Njavac[njavac in process]
     Javac --> Accepted{Did javac emit a class?}
-    Accepted -->|No| Invalid[generator-invalid telemetry]
+    Accepted -->|No| ScheduledReject{Scheduled case?}
+    ScheduledReject -->|No| Invalid[generator-invalid telemetry]
+    ScheduledReject -->|Yes| Coverage[Hard scheduled coverage finding]
     Accepted -->|Yes| Candidate{njavac outcome}
-    Candidate -->|Unsupported| Unsupported[njavac-unsupported telemetry]
+    Candidate -->|Unsupported random| Unsupported[njavac-unsupported telemetry]
+    Candidate -->|Unsupported scheduled| Coverage
     Candidate -->|Syntax diagnostic| Syntax[Hard compiler finding]
     Candidate -->|Panic| Panic[Hard compiler finding]
     Candidate -->|Class bytes| Bytes{Bytes identical?}
@@ -26,18 +31,20 @@ flowchart TD
 ```
 
 Javac rejection takes precedence regardless of what njavac did because the oracle
-has no usable reference class for that case. This normally means the generator
-produced invalid reference input, but an unexpected count can indicate a worker
-failure as described under [Reference worker](#reference-worker). When javac
-accepts, the outcomes are classified as follows:
+has no usable reference class for that case. For a random case this normally means
+the generator produced invalid reference input, but an unexpected count can
+indicate a worker failure as described under [Reference worker](#reference-worker).
+For a scheduled case, javac rejection means guaranteed coverage failed and is a
+hard finding. When javac accepts, the outcomes are classified as follows:
 
 | Outcome | Operational treatment | Product meaning |
 | --- | --- | --- |
 | Both emit identical bytes | Exact pass | Exact fuzzer pass against the worker; worker verification separately checks sampled CLI equivalence. |
 | Bytes differ, observations match | Telemetry; normal `make fuzz` can exit zero | The current generated behavior check passes; the physical difference remains byte-retention telemetry. |
 | Bytes and observations differ | Hard finding and nonzero exit | Behavioral compiler bug. |
-| Javac rejects | `generator-invalid` telemetry | Generator escaped valid Java or the intended reference surface. |
-| Javac accepts, njavac returns `Unsupported` | `njavac-unsupported` telemetry | Valid Java reached a deliberate compiler boundary. Review whether the generator exceeded current scope. |
+| Javac rejects a random case | `generator-invalid` telemetry | Generator escaped valid Java or the intended reference surface. |
+| Javac accepts a random case, njavac returns `Unsupported` | `njavac-unsupported` telemetry | Valid Java reached a deliberate compiler boundary. Review whether the generator exceeded current scope. |
+| Scheduled case is rejected by javac or unsupported by njavac | Hard compiler finding and nonzero exit | Guaranteed structural coverage failed. |
 | Javac accepts, njavac returns a syntax diagnostic | Hard compiler finding | Invalid rejection of reference-accepted input. |
 | Javac accepts, njavac panics | Hard compiler finding | Internal invariant failure. |
 
@@ -71,7 +78,10 @@ default or consume the next option, `COUNT=0` can pass without testing a case, a
 trusting a run.
 
 The generator creates every program in a batch before either compiler runs, so a
-compiler failure cannot perturb the seed-determined generation order.
+compiler failure cannot perturb the seed-determined generation order. Each
+scheduled index first consumes and discards the random program for that index.
+Adding stable scheduled coverage therefore does not perturb the random stream at
+later indices.
 
 Use `FUZZFLAGS` for additional options such as continuing after findings, changing
 the output directory, or dumping generated sources without compiling. The binary
@@ -173,6 +183,26 @@ reads confined to dead `&&`/`||` operands. These scenarios are appended after
 ordinary random statements and leave every new local assigned after its final
 observed read.
 
+The first three generated indices are a stable scheduled prefix:
+
+| Index | Scenario | Exact fixture |
+| --- | --- | --- |
+| `0` | Largest compacted narrow conditional offset, `+32767` | `fixtures/branches/LongBranchBoundary.java` |
+| `1` | Conditional overflow at `+32768` and global fat-code behavior | `fixtures/branches/LongBranchFat.java` |
+| `2` | Unconditional overflow at `+32768` and global fat-code behavior | `fixtures/branches/LongGotoFat.java` |
+
+These cases use the typed model and normal renderer. They intentionally exceed
+the random generator's usual method size and local count. Their source shape and
+byte-count arithmetic live in
+`crates/njavac-fuzz/src/bin/fuzz/generate/long_branch.rs`; `CaseKind` in
+`model.rs` carries the guaranteed-coverage classification through the run policy
+and worker verifier. The fixtures remain the exact regression authority, while the
+scheduled cases routinely exercise the corresponding compiler decisions.
+Unit tests pin the byte-count arithmetic and prove that scheduled substitution
+does not change the later random stream. The fixed three-case fuzz smoke compiles
+the rendered cases through pinned javac and njavac, while `make correctness`
+enforces the corresponding exact fixture bytes.
+
 This is a generator coverage boundary, not the authoritative language-support
 ledger. A feature is not proven merely because the fuzzer can generate it, and a
 feature absent from the generator is not necessarily unsupported by the compiler.
@@ -189,6 +219,7 @@ targets, which explicitly select the host identity.
 | --- | --- |
 | Behavioral finding | Raw `<Class>.java`, structural `<Class>.diff` when available, and `<Class>.observe` at the output root. |
 | Syntax rejection or panic | Source and details under `compiler-findings/syntax-error/` or `compiler-findings/internal-panic/`. |
+| Scheduled rejection or unsupported result | Source and details under the corresponding `compiler-findings/scheduled-*/` directory. |
 | Unsupported case | Up to the first 20 sources and diagnostics under `unsupported/`. |
 | Worker/CLI mismatch | Up to the first 20 sources and available `.cli.class` and `.worker.class` files under `worker-mismatch/`. |
 | Self-test | A synthetic minimized Java source and structural diff at the output root. |
@@ -220,7 +251,8 @@ candidate outcome classification, selects a compilable generated program,
 minimizes with an acceptance-only synthetic predicate, and writes a Java source
 plus structural diff. It does not exercise a normal behavioral finding, observer
 capture, worker protocol equivalence, keep-going aggregation, or every artifact
-kind.
+kind. Its minimizer corpus uses random-only generation because the large stable
+scheduled programs are coverage probes rather than useful reduction-pass inputs.
 
 Fuzzer compile-time statistics are useful operational feedback but are not a
 benchmark. Use [Benchmarking and Profiling](profiling.md) or `make benchmark` for

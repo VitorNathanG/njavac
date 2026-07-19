@@ -288,8 +288,9 @@ basename is emitted as `SourceFile`.
 ## Class-file size limits
 
 Each assembled method body must be at most 65,535 code bytes. The assembler checks
-that JVM limit after goto compaction and panics when it is exceeded. Each modified
-UTF-8 payload and source line must also fit the `u16` limits documented above.
+that JVM limit after final narrow-or-fat branch layout and panics when it is
+exceeded. Each modified UTF-8 payload and source line must also fit the `u16`
+limits documented above.
 These failures are not structured unsupported diagnostics; the valid-reference
 precondition still excludes source that the pinned compiler rejects for its own
 class-file limits.
@@ -308,21 +309,6 @@ Other out-of-subset syntax may fail earlier with an ordinary lexical, parse, or
 semantic diagnostic rather than an unsupported code. Unsupported diagnostics are
 part of the compiler's current boundary; they are not claims that arbitrary Java
 outside this page is diagnosed gracefully.
-
-## Known reachable defects
-
-One current assembler gap is reachable from otherwise supported source. It is a
-defect, not a deliberate subset exclusion:
-
-- **Long branches.** Every conditional and unconditional branch is currently
-  encoded in the narrow signed-16-bit form. If final layout places a target more
-  than 32,767 bytes away (or less than -32,768), assembly panics instead of
-  selecting javac-compatible long forms and conditional expansion.
-
-Its repair order and the semantic/source defects excluded earlier on this page are
-tracked in [active work](../direction/active-work.md). Until fixed, the
-compatibility contract excludes programs that reach those signatures even though
-their syntax and semantics otherwise fit the general operator or source surface.
 
 ## Explicitly unsupported areas
 

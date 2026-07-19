@@ -61,6 +61,7 @@ pub(crate) fn verify_worker(cfg: &Config) -> i32 {
             let cli = std::fs::read(cli_out.join(format!("{}.class", p.name.class))).ok();
             let wrk = wclasses.get(&p.name.class).cloned();
             let same = match (&cli, &wrk) {
+                (None, None) if p.kind.is_scheduled() => false,
                 (None, None) => {
                     agree_reject += 1;
                     true
@@ -75,6 +76,7 @@ pub(crate) fn verify_worker(cfg: &Config) -> i32 {
                 diverge += 1;
                 if dumped < 20 {
                     let kind = match (&cli, &wrk) {
+                        (None, None) => "scheduled case rejected by CLI and worker",
                         (Some(_), None) => "CLI accepted, worker rejected",
                         (None, Some(_)) => "CLI rejected, worker accepted",
                         _ => "bytes differ",

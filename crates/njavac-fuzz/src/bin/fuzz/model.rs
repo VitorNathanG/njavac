@@ -159,11 +159,36 @@ pub(super) enum FStmt {
     If { cond: FExpr, then_b: Vec<FStmt>, else_b: Option<Vec<FStmt>> },
 }
 
+/// Whether a program is random input or a guaranteed structural coverage case.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum CaseKind {
+    Random,
+    LongConditionalBoundary,
+    LongConditionalFat,
+    LongGotoFat,
+}
+
+impl CaseKind {
+    pub(super) fn is_scheduled(self) -> bool {
+        self != CaseKind::Random
+    }
+
+    pub(super) fn label(self) -> &'static str {
+        match self {
+            CaseKind::Random => "random",
+            CaseKind::LongConditionalBoundary => "long-conditional-32767",
+            CaseKind::LongConditionalFat => "long-conditional-32768",
+            CaseKind::LongGotoFat => "long-goto-32768",
+        }
+    }
+}
+
 /// A whole program: the class name (via `ident`), the flat local-type env in
 /// declaration/slot order, and the `main` body. `Local(usize)` indexes `locals`.
 #[derive(Clone, Debug)]
 pub(super) struct Prog {
     pub(super) name: Ident,
+    pub(super) kind: CaseKind,
     /// The flat local-type env in declaration/slot order. Not read after
     /// construction today (render derives everything from `Decl`/`Local`), but the
     /// scope-agnostic flat env is what makes block scope (loops) an env-only change.
