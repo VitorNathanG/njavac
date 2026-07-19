@@ -1,9 +1,21 @@
-[package]
-name = "njavac"
+[workspace]
+members = [
+    "crates/njavac",
+    "crates/njavac-benchmark",
+    "crates/njavac-classdump",
+    "crates/njavac-compiler",
+    "crates/njavac-fuzz",
+]
+resolver = "3"
+
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
 
-[dependencies]
+[workspace.dependencies]
+njavac = { path = "crates/njavac" }
+njavac-classdump = { path = "crates/njavac-classdump" }
+njavac-compiler = { path = "crates/njavac-compiler" }
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0.140"

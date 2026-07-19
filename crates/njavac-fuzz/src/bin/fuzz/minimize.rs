@@ -178,7 +178,7 @@ pub(super) fn selftest(cfg: &Config) -> i32 {
                     let last = bytes.len() - 1;
                     bytes[last] ^= 0xFF;
                 }
-                if let Some(rep) = njavac::classdump::diff_report(&a, &bytes) {
+                if let Some(rep) = njavac_classdump::diff_report(&a, &bytes) {
                     let _ = std::fs::write(
                         cfg.out_dir.join(format!("{}.diff", minimized.name.class)),
                         &rep,

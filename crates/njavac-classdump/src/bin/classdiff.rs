@@ -5,7 +5,7 @@
 //!
 //! The diff reports the first structurally-divergent field with its byte offset,
 //! which localizes to the *cause* even when `javap` output matches (see
-//! `njavac::classdump`). Exit status: 0 if identical (or on a plain dump), 1 if the
+//! `njavac_classdump`). Exit status: 0 if identical (or on a plain dump), 1 if the
 //! two files differ.
 
 use std::process::ExitCode;
@@ -14,9 +14,9 @@ fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.as_slice() {
         [one] => match read(one) {
-            Ok(bytes) => match njavac::classdump::dump(&bytes) {
+            Ok(bytes) => match njavac_classdump::dump(&bytes) {
                 Ok(fields) => {
-                    print!("{}", njavac::classdump::render_dump(&fields));
+                    print!("{}", njavac_classdump::render_dump(&fields));
                     ExitCode::SUCCESS
                 }
                 Err(e) => {
@@ -37,7 +37,7 @@ fn main() -> ExitCode {
                     return ExitCode::FAILURE;
                 }
             };
-            match njavac::classdump::diff_report(&ba, &bb) {
+            match njavac_classdump::diff_report(&ba, &bb) {
                 None => {
                     println!("identical ({} bytes)", ba.len());
                     ExitCode::SUCCESS

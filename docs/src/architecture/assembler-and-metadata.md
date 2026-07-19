@@ -1,10 +1,11 @@
 # Assembler and Metadata
 
-`src/codegen/assembler.rs` owns the symbolic per-method storage and recording
+`crates/njavac-compiler/src/codegen/assembler.rs` owns the symbolic per-method
+storage and recording
 mechanics plus the single final layout pass. Lowering chooses the instruction
 sequence and forms, places labels, marks source lines, and requests frame states;
 the assembler records those decisions without performing Java lowering.
-`src/codegen/instruction.rs` defines the currently reachable opcodes, exact
+`crates/njavac-compiler/src/codegen/instruction.rs` defines the currently reachable opcodes, exact
 physical instruction forms, and their stack-word effects.
 
 ## Symbolic instruction model

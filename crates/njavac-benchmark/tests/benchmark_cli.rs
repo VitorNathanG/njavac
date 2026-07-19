@@ -18,20 +18,12 @@ fn test_directory(name: &str) -> PathBuf {
 fn prepare(name: &str) -> (PathBuf, PathBuf, PathBuf) {
     let directory = test_directory(name);
     let source = directory.join("Empty.java");
-    std::fs::write(
-        &source,
-        "public class Empty { public static void main(String[] args) {} }\n",
-    )
-    .unwrap();
+    let source_text = "public class Empty { public static void main(String[] args) {} }\n";
+    std::fs::write(&source, source_text).unwrap();
     let golden = directory.join("golden");
     std::fs::create_dir(&golden).unwrap();
-    let status = Command::new(env!("CARGO_BIN_EXE_njavac"))
-        .arg("-d")
-        .arg(&golden)
-        .arg(&source)
-        .status()
+    std::fs::write(golden.join("Empty.class"), njavac::compile(source_text, "Empty.java").unwrap())
         .unwrap();
-    assert!(status.success());
     (directory, source, golden)
 }
 
@@ -69,15 +61,21 @@ fn script(directory: &Path, name: &str, body: &str) -> PathBuf {
     path
 }
 
+fn matching_compiler(directory: &Path, golden: &Path) -> PathBuf {
+    let golden = golden.join("Empty.class");
+    let quoted = format!("'{}'", golden.display().to_string().replace('\'', "'\"'\"'"));
+    script(
+        directory,
+        "matching",
+        &format!("out=$2; mkdir -p \"$out\"; cp {quoted} \"$out/Empty.class\""),
+    )
+}
+
 #[test]
 fn focused_correctness_produces_no_report() {
     let (directory, source, golden) = prepare("focused");
-    let output = run_offline(
-        &directory,
-        &source,
-        &golden,
-        Path::new(env!("CARGO_BIN_EXE_njavac")),
-    );
+    let compiler = matching_compiler(&directory, &golden);
+    let output = run_offline(&directory, &source, &golden, &compiler);
     assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
     assert!(
         String::from_utf8_lossy(&output.stdout)

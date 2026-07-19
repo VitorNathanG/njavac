@@ -1,6 +1,6 @@
 use std::fmt;
 
-use njavac::CompilePhase;
+use njavac_compiler::CompilePhase;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -249,7 +249,7 @@ impl SequenceValidator {
 #[cfg(test)]
 mod tests {
     use super::{PhaseName, SequenceValidator};
-    use njavac::CompilePhase;
+    use njavac_compiler::CompilePhase;
 
     #[test]
     fn accepts_the_exact_compiler_sequence() {

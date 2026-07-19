@@ -5,20 +5,21 @@ instruction choices and an ordered class-file model. It is deliberately
 driven by pinned black-box output rather than acting as a generic optimization
 layer.
 
-The facade `src/codegen.rs` owns class planning. The implementation is split
-between reusable policy modules and `src/codegen/lowering/`:
+The facade `crates/njavac-compiler/src/codegen.rs` owns class planning. The
+implementation is split between reusable policy modules and
+`crates/njavac-compiler/src/codegen/lowering/`:
 
 | Source | Responsibility |
 | --- | --- |
-| `src/codegen/preflight.rs` | Reject attributed frontend shapes the backend cannot represent safely |
-| `src/codegen/constant.rs` | Primitive folding queries and constant conversions reconstructed from pinned output |
-| `src/codegen/condition.rs` | Pure `CondItem` state used by boolean lowering |
-| `src/codegen/ops.rs` | Opcode-family and conversion selection helpers |
-| `src/codegen/stack.rs` | Primitive Java type to JVM computational type projection |
-| `src/codegen/lowering.rs` | Method context, implicit constructor, descriptors, frame-local projection |
-| `src/codegen/lowering/body.rs` | Statements, values, calls, assignments, and compound forms |
-| `src/codegen/lowering/condition.rs` | Conditions, short-circuit chains, `if`, and boolean materialization |
-| `src/codegen/lowering/emit.rs` | Constant/load/store/conversion physical-form emission |
+| `crates/njavac-compiler/src/codegen/preflight.rs` | Reject attributed frontend shapes the backend cannot represent safely |
+| `crates/njavac-compiler/src/codegen/constant.rs` | Primitive folding queries and constant conversions reconstructed from pinned output |
+| `crates/njavac-compiler/src/codegen/condition.rs` | Pure `CondItem` state used by boolean lowering |
+| `crates/njavac-compiler/src/codegen/ops.rs` | Opcode-family and conversion selection helpers |
+| `crates/njavac-compiler/src/codegen/stack.rs` | Primitive Java type to JVM computational type projection |
+| `crates/njavac-compiler/src/codegen/lowering.rs` | Method context, implicit constructor, descriptors, frame-local projection |
+| `crates/njavac-compiler/src/codegen/lowering/body.rs` | Statements, values, calls, assignments, and compound forms |
+| `crates/njavac-compiler/src/codegen/lowering/condition.rs` | Conditions, short-circuit chains, `if`, and boolean materialization |
+| `crates/njavac-compiler/src/codegen/lowering/emit.rs` | Constant/load/store/conversion physical-form emission |
 
 ## Planning sequence
 
@@ -102,7 +103,8 @@ normalization rules live in the doc comments on
 
 ## Constant folding
 
-There are two related lowering queries in `src/codegen/constant.rs`:
+There are two related lowering queries in
+`crates/njavac-compiler/src/codegen/constant.rs`:
 
 - `fold` evaluates a maximal primitive constant subtree for value generation and
   short-circuit-aware decisions.
@@ -150,8 +152,8 @@ static 0/1 after residual chains, or emitting the true-first materialization
 diamond.
 
 The detailed provenance transitions belong to doc comments in
-`src/codegen/condition.rs` and the consumers in
-`src/codegen/lowering/condition.rs`. They are intentionally not reproduced as a
+`crates/njavac-compiler/src/codegen/condition.rs` and the consumers in
+`crates/njavac-compiler/src/codegen/lowering/condition.rs`. They are intentionally not reproduced as a
 state table here.
 
 ## Semantic facts consumed and recomputed

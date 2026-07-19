@@ -18,8 +18,34 @@ checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 name = "njavac"
 version = "0.1.0"
 dependencies = [
+ "njavac-compiler",
+]
+
+[[package]]
+name = "njavac-benchmark"
+version = "0.1.0"
+dependencies = [
+ "njavac",
+ "njavac-classdump",
+ "njavac-compiler",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "njavac-classdump"
+version = "0.1.0"
+
+[[package]]
+name = "njavac-compiler"
+version = "0.1.0"
+
+[[package]]
+name = "njavac-fuzz"
+version = "0.1.0"
+dependencies = [
+ "njavac",
+ "njavac-classdump",
 ]
 
 [[package]]

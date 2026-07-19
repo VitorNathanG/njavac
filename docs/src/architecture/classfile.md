@@ -4,15 +4,15 @@ The class-file backend owns the ordered model, constant pool, attribute encoding
 and final big-endian serialization. It receives already lowered method code and
 must not make Java semantic decisions.
 
-`src/classfile.rs` is the facade:
+`crates/njavac-compiler/src/classfile.rs` is the implementation facade:
 
 | Source | Responsibility |
 | --- | --- |
-| `src/classfile/model.rs` | `ClassFile`, `Method`, `CodeAttribute`, `Attribute`, and verifier snapshots |
-| `src/classfile/pool.rs` | Encounter-ordered constant interning and serialization |
-| `src/classfile/writer.rs` | Phase-2 interning, class layout, attributes, and frame encoding |
-| `src/classfile/modified_utf8.rs` | JVM modified UTF-8 writer |
-| `src/classfile/buffer.rs` | Big-endian output buffer and length backpatching |
+| `crates/njavac-compiler/src/classfile/model.rs` | `ClassFile`, `Method`, `CodeAttribute`, `Attribute`, and verifier snapshots |
+| `crates/njavac-compiler/src/classfile/pool.rs` | Encounter-ordered constant interning and serialization |
+| `crates/njavac-compiler/src/classfile/writer.rs` | Phase-2 interning, class layout, attributes, and frame encoding |
+| `crates/njavac-compiler/src/classfile/modified_utf8.rs` | JVM modified UTF-8 writer |
+| `crates/njavac-compiler/src/classfile/buffer.rs` | Big-endian output buffer and length backpatching |
 
 ## Current class model
 
@@ -125,11 +125,12 @@ the writer because current lowering cannot produce them.
 
 ## Independent class reader
 
-`src/classdump.rs` is operationally separate from the writer. The correctness
+`crates/njavac-classdump/src/lib.rs` is operationally and dependency-wise
+separate from the writer. The correctness
 harness and `classdiff` binary use it to locate the first structural divergence
 and retain the first raw differing byte as ground truth.
 
-`classdump::reader::dump` parses the class header, all current standard
+`njavac_classdump::dump` parses the class header, all current standard
 constant-pool tag layouts, member tables, and attribute envelopes. Structural
 attribute decoding is partial:
 
@@ -145,8 +146,8 @@ do not round-trip to the logical Java text in structural hints. Raw bytes are
 still compared, so exact divergence detection remains valid, but rendered names
 and attribute dispatch can be incomplete for such entries.
 
-`classdump` is not a general class-file validation library. Its purpose is robust
-localization for the repository's differential workflow.
+`njavac-classdump` is not a general class-file validation library. Its purpose is
+robust localization for the repository's differential workflow.
 
 ## Target direction
 

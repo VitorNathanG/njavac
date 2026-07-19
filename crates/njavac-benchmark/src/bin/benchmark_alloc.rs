@@ -9,7 +9,7 @@ use std::hint::black_box;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-use njavac::{CompileObserver, CompilePhase};
+use njavac_compiler::{CompileObserver, CompilePhase};
 
 use phase::{PhaseName, PhaseValues, SequenceValidator};
 
@@ -273,7 +273,7 @@ fn run() -> Result<(), String> {
 
     for _ in 0..rounds {
         for fixture in &fixtures {
-            let bytes = njavac::compile_observed(
+            let bytes = njavac_compiler::compile_observed(
                 &fixture.source,
                 &fixture.source_file,
                 &mut observer,
@@ -349,7 +349,7 @@ fn allocation_preflight(fixtures: &[Fixture]) -> Result<(), String> {
         let ordinary = njavac::compile(&fixture.source, &fixture.source_file)
             .map_err(|diagnostic| diagnostic.render(&fixture.display_path, &fixture.source))?;
         let mut observer = AllocationObserver::new();
-        let observed = njavac::compile_observed(
+        let observed = njavac_compiler::compile_observed(
             &fixture.source,
             &fixture.source_file,
             &mut observer,

@@ -21,15 +21,16 @@ flowchart LR
 
 ## Lexer ownership
 
-`src/lexer.rs::lex` creates a private `Lexer` over `source.as_bytes()`. The
+`crates/njavac-compiler/src/lexer.rs::lex` creates a private `Lexer` over
+`source.as_bytes()`. The
 facade owns traversal, trivia skipping, line tracking, and identifier dispatch.
 Its children divide the remaining work:
 
 | Source | Responsibility |
 | --- | --- |
-| `src/lexer/token.rs` | Public `Token` and `TokenKind` model |
-| `src/lexer/literal.rs` | Numeric, character, and string scanning and decoding |
-| `src/lexer/punctuator.rs` | Longest-match punctuation and operators |
+| `crates/njavac-compiler/src/lexer/token.rs` | `Token` and `TokenKind` model |
+| `crates/njavac-compiler/src/lexer/literal.rs` | Numeric, character, and string scanning and decoding |
+| `crates/njavac-compiler/src/lexer/punctuator.rs` | Longest-match punctuation and operators |
 
 Every token carries a half-open byte `Span` into the original Rust string and a
 1-based `u16` line where the token starts. Trivia has no token representation.
@@ -68,14 +69,15 @@ as modified UTF-8. That backend capability does not remove the frontend limits.
 
 ## Parser ownership
 
-`src/parser.rs::parse` consumes ownership of the token vector and builds one
+`crates/njavac-compiler/src/parser.rs::parse` consumes ownership of the token
+vector and builds one
 `CompilationUnit`. The facade handles declarations and the cursor. Children own
 the two recursive grammars:
 
 | Source | Responsibility |
 | --- | --- |
-| `src/parser/statement.rs` | Local declarations, assignments, compound forms, calls, and `if` arms |
-| `src/parser/expression.rs` | Prefix/primary expressions and one precedence-climbing infix loop |
+| `crates/njavac-compiler/src/parser/statement.rs` | Local declarations, assignments, compound forms, calls, and `if` arms |
+| `crates/njavac-compiler/src/parser/expression.rs` | Prefix/primary expressions and one precedence-climbing infix loop |
 
 `parser::expression::infix_binding_power` is the single precedence table. All
 current infix operators are left-associative. Primitive casts are recognized by
@@ -92,7 +94,7 @@ it does not establish the supported compilation-unit contract.
 
 ## AST representation
 
-`src/ast.rs` contains ordinary structs and enums rather than a visitor or trait
+`crates/njavac-compiler/src/ast.rs` contains ordinary structs and enums rather than a visitor or trait
 hierarchy. The important ownership split is:
 
 - `CompilationUnit` owns one `Class` and one `ExprArena`.
@@ -121,7 +123,7 @@ Void | Primitive(eight primitive kinds) | Class(internal name) | Array(Type)
 It owns descriptor writing, local width, and verifier reference naming. This is
 not the target arena-based full Java type system, but it avoids separate drifting
 type enums in parser and sema. Numeric JVM stack projection is isolated later in
-`src/codegen/stack.rs`.
+`crates/njavac-compiler/src/codegen/stack.rs`.
 
 ## Position model
 

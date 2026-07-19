@@ -33,8 +33,9 @@ optimization.
 
 ## Design rules
 
-1. Keep one Rust crate until a measured build or dependency problem justifies
-   more.
+1. Use Cargo package boundaries to protect the fixed compiler facade and keep
+   repository tooling out of its dependency surface. Do not split compiler
+   pipeline stages into separate crates merely to mirror conceptual phases.
 2. Keep ordinary Rust structs and enums for syntax; do not add an object hierarchy
    or visitor framework merely to organize files.
 3. Preserve source distinctions until attribution and byte-visible consumers have
@@ -53,6 +54,14 @@ optimization.
 10. Introduce a module only when a concrete feature gives it one real
     responsibility.
 
+This outer boundary supports growth without turning current implementation types
+into a compatibility burden. The facade remains small while source management,
+syntax, attribution, lowering, assembly, and class planning evolve together in
+one compiler implementation crate. Independent inspection and repository tooling
+remain outside the production compiler dependency closure, with separate test and
+release lifecycles. The [Repository Map](../reference/repository-map.md) owns the
+current package realization of these rules.
+
 ## Ownership
 
 | Authority | Owns | Must not own |
@@ -70,6 +79,12 @@ optimization.
 Allowed dependencies follow the pipeline. The independent reader may share low-
 level neutral utilities, but it must not depend on the writer's interpretation in
 a way that could make one bug validate another.
+
+Cargo dependencies enforce the outer repository boundary without replacing these
+pipeline ownership rules. A supported facade may depend inward on compiler
+implementation. Inspection and repository tooling may depend inward on production
+interfaces, but production implementation and independent readers must not depend
+outward on benchmark or fuzzer tooling.
 
 ```mermaid
 flowchart TD
@@ -289,7 +304,8 @@ The target boundaries are established when:
 
 ## Non-goals
 
-- Multiple Rust crates without measured need.
+- Rust crates split by lexer, parser, attribution, lowering, assembly, or writer
+  phase without an API, dependency, or build boundary that requires the split.
 - A generic compiler framework or plugin architecture.
 - A visitor framework introduced only to move code between files.
 - SSA or generic optimization passes.

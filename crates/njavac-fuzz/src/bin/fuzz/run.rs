@@ -120,7 +120,7 @@ pub(super) fn run(cfg: &Config) -> ! {
                 ByteOutcome::Identical => tally.exact += 1,
                 ByteOutcome::Divergent { javac: a, njavac: b } => {
                     tally.byte_divergent += 1;
-                    let rep = njavac::classdump::diff_report(a, &b);
+                    let rep = njavac_classdump::diff_report(a, &b);
                     let sig = finding_sig(rep.as_deref());
                     let first_byte = !byte_sigs.contains_key(&sig);
                     let info = byte_sigs.entry(sig.clone()).or_insert_with(|| SigInfo {

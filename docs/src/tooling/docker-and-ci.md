@@ -6,8 +6,8 @@ shared by the reference-derived images, so host Java output is never a substitut
 
 ## Root image graph
 
-The root `Dockerfile` has shared reference and Rust build stages, one deterministic
-test target, and three runtime capability targets:
+The root `Dockerfile` has shared reference and Rust workspace build stages, one
+deterministic test target, and three runtime capability targets:
 
 ```mermaid
 flowchart LR
@@ -23,16 +23,17 @@ flowchart LR
 
 The fetch stage selects the GraalVM 25.0.2 archive by Docker target architecture
 and verifies its repository-recorded SHA-256 before extraction. The runtime and
-Rust base images are digest-pinned; the Rust build also uses `Cargo.lock` through
-`cargo build --release --locked`. BuildKit caches the Cargo registry and target
-data across local rebuilds.
+Rust base images are digest-pinned; the Rust build copies all workspace members
+and uses `Cargo.lock` through `cargo build --release --locked --workspace`.
+BuildKit caches the Cargo registry and shared workspace target data across local
+rebuilds.
 
 | Target | Image variable | Contents and purpose |
 | --- | --- | --- |
 | `reference` | `REFERENCE_IMAGE` | Complete verified JDK and reference tools; used by `probe` and as the base for reference-dependent targets. |
 | `acceptance` | `IMAGE` | Reference JDK, `njavac`, the unified `benchmark` runner, its internal allocation helper, `classdiff`, and the fixture snapshot. It sets `NJAVAC_IN_CONTAINER` and defaults to the benchmark harness. |
 | `fuzz` | `FUZZ_IMAGE` | Reference JDK, `fuzz`, and the two source-launched Java workers copied from `tools/`. Absolute worker paths bind the image to one repository revision. |
-| `test` | No runtime tag required | Rust source plus deterministic unit and CLI integration tests. It has no reference JDK and makes no timing assertions. The aggregate `make test` also runs reference, fuzzer, and documentation checks through their capability images. |
+| `test` | No runtime tag required | Every workspace member's deterministic unit and CLI integration tests. It has no reference JDK and makes no timing assertions. The aggregate `make test` also runs reference, fuzzer, and documentation checks through their capability images. |
 
 Every image recipe using the root compiler Dockerfile names its target explicitly.
 Adding another stage cannot silently change a public compiler image tag merely by
@@ -46,7 +47,7 @@ verification, so cache state cannot silently select different javac bytes.
 | `verify`, `record` | Acceptance | Golden volume | No timing controls |
 | `correctness` | Acceptance | None | No timing controls |
 | `benchmark` | Acceptance | Host `RESULTS` directory for JSON; the default is ignored | One selected CPU, fixed CPU quota, memory and swap cap, PID limit |
-| Root Rust tests | Rust `test` build target | None | No timing controls; test results are deterministic assertions |
+| Workspace Rust tests | Rust `test` build target | None | No timing controls; test results are deterministic assertions |
 | `probe` | Reference | Repository source mount | Diagnostic only |
 | `src-diff`, `diff` | Acceptance | Repository source/class mount | Diagnostic only |
 | Fuzzer targets | Fuzz | Only repository-root `fuzz-out/` | Not CPU-pinned; fuzzing is not a timing benchmark |

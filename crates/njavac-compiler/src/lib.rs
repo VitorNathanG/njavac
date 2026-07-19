@@ -1,11 +1,10 @@
-//! njavac — a toy Java 25 compiler (library crate).
+//! Internal implementation of the njavac Java 25 compiler.
 //!
 //! Pipeline: source text -> lexer -> parser -> sema -> codegen -> class bytes.
 //! For the documented supported language, the complete pipeline must preserve
 //! the repository-pinned javac's behavior and retain its bytes when practical.
 
 pub mod classfile;
-pub mod classdump;
 pub mod span;
 pub mod diagnostic;
 mod fxhash;
@@ -15,10 +14,8 @@ pub mod parser;
 pub mod sema;
 pub mod codegen;
 
-/// Compiler-owned compilation-stage markers exposed to repository tooling such
-/// as the benchmark runner. Caller-owned work after `compile_observed` returns is
-/// deliberately outside this enum. These names are not a stable external API.
-#[doc(hidden)]
+/// Compiler-owned stages exposed only through this unpublished workspace crate.
+/// Caller-owned work after `compile_observed` returns is deliberately excluded.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CompilePhase {
     Lex,
@@ -33,7 +30,6 @@ pub enum CompilePhase {
 ///
 /// `compile` uses a statically dispatched no-op implementation, so normal
 /// compilation does not execute timers or allocation counters.
-#[doc(hidden)]
 pub trait CompileObserver {
     fn phase_started(&mut self, phase: CompilePhase);
     fn phase_finished(&mut self, phase: CompilePhase);
@@ -51,11 +47,6 @@ impl CompileObserver for NoopObserver {
 
 /// Compile Java source text to `.class` bytes.
 ///
-/// This is the one fixed contract of the front-end build: the internal module
-/// boundaries and types may be redesigned freely, but this signature, its
-/// behaviorally compatible class generation, and practical byte retention must
-/// hold.
-///
 /// `source_file` is the basename used for the `SourceFile` attribute
 /// (e.g. "Foo.java"); the class name itself comes from the parsed source.
 pub fn compile(source: &str, source_file: &str) -> diagnostic::CompileResult<Vec<u8>> {
@@ -64,7 +55,6 @@ pub fn compile(source: &str, source_file: &str) -> diagnostic::CompileResult<Vec
 
 /// Compile through the production pipeline while notifying repository tooling
 /// at exact compiler-owned stage boundaries.
-#[doc(hidden)]
 pub fn compile_observed<O: CompileObserver>(
     source: &str,
     source_file: &str,

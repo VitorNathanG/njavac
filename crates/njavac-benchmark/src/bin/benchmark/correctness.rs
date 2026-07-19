@@ -92,7 +92,7 @@ pub(super) fn correctness(
             cfg.golden_dir,
         );
     }
-    if let Some(report) = njavac::classdump::diff_report(expected, actual) {
+    if let Some(report) = njavac_classdump::diff_report(expected, actual) {
         println!("\nstructural divergence (classdiff):");
         for line in report.lines() {
             println!("  {line}");

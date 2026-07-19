@@ -8,9 +8,10 @@
 //! line of text*, which for a one-entry constant-pool shift is a cascade of
 //! symptoms far from the cause.
 //!
-//! This module is the mirror image of the `classfile` backend's writer: it walks the
-//! class-file format and produces a flat, ordered list of **fields**, each tagged
-//! with its byte offset and a structural path (`methods[0].attr[0].Code.max_stack`).
+//! This crate is the independent reader counterpart to `njavac-compiler`'s
+//! class-file writer. It walks the class-file format and produces a flat, ordered
+//! list of **fields**, each tagged with its byte offset and a structural path
+//! (`methods[0].attr[0].Code.max_stack`).
 //! Diffing two such lists in lock-step finds the *first structural divergence with
 //! a byte offset*, which localizes to the cause and works even when javap agrees.
 //!

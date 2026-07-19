@@ -1,256 +1,225 @@
 # Repository Map
 
-njavac is one Rust crate with several binaries, a Docker-pinned reference
-environment, Java fixtures, and an mdBook maintainer guide. The compiler remains
-self-contained; the benchmark uses serde and serde_json for its persisted report.
-This page maps current paths to current responsibilities. Future boundaries live
-separately in [Architecture Direction](../direction/architecture.md).
+njavac is a Cargo workspace with one stable compiler facade and four unpublished
+implementation or tooling members. This page maps current paths to current
+responsibilities. Future compiler-stage boundaries live in
+[Architecture Direction](../direction/architecture.md).
 
-## Compiler crate
-
-```text
-src/
-|-- lib.rs
-|-- main.rs
-|-- span.rs
-|-- diagnostic.rs
-|-- fxhash.rs
-|-- ast.rs
-|-- lexer.rs
-|-- lexer/
-|   |-- token.rs
-|   |-- literal.rs
-|   `-- punctuator.rs
-|-- parser.rs
-|-- parser/
-|   |-- expression.rs
-|   `-- statement.rs
-|-- sema.rs
-|-- sema/
-|   |-- analyzer.rs
-|   |-- analyzer/attribution.rs
-|   `-- constants.rs
-|-- codegen.rs
-|-- codegen/
-|   |-- preflight.rs
-|   |-- constant.rs
-|   |-- condition.rs
-|   |-- ops.rs
-|   |-- stack.rs
-|   |-- instruction.rs
-|   |-- assembler.rs
-|   |-- lowering.rs
-|   `-- lowering/
-|       |-- body.rs
-|       |-- condition.rs
-|       `-- emit.rs
-|-- classfile.rs
-|-- classfile/
-|   |-- model.rs
-|   |-- pool.rs
-|   |-- writer.rs
-|   |-- modified_utf8.rs
-|   `-- buffer.rs
-|-- classdump.rs
-|-- classdump/
-|   |-- reader.rs
-|   `-- diff.rs
-`-- bin/
-    |-- benchmark/
-    |   |-- main.rs
-    |   |-- correctness.rs
-    |   |-- measurement.rs
-    |   |-- model.rs
-    |   |-- phase.rs
-    |   |-- resource.rs
-    |   `-- report.rs
-    |-- benchmark_alloc.rs
-    |-- classdiff.rs
-    `-- fuzz/
-```
-
-Rust module-root files declare children and expose stage entry points. Some also
-own implementation, cross-child types, or orchestration; others, notably
-`src/classfile.rs`, primarily re-export child-owned types. Facade status alone
-does not imply additional ownership or API stability.
-
-## Pipeline ownership
+## Workspace dependency graph
 
 ```mermaid
 flowchart LR
-    Lib["src/lib.rs"]
-    Front["lexer + parser + ast"]
-    Sema["sema"]
-    Lower["codegen lowering"]
-    Asm["instruction + assembler"]
-    CF["classfile"]
-    Dump["classdump"]
+    Facade["njavac facade + CLI"] --> Compiler["njavac-compiler"]
+    Benchmark["njavac-benchmark"] --> Facade
+    Benchmark --> Compiler
+    Benchmark --> Dump["njavac-classdump"]
+    Fuzz["njavac-fuzz"] --> Facade
+    Fuzz --> Dump
+```
 
-    Lib --> Front --> Sema --> Lower --> Asm --> CF
-    Dump -. independent reader .-> CF
+`njavac` is the fixed library boundary. Every current member sets
+`publish = false`; the [Library API](library-api.md#facade-boundary) owns the
+current consumption and distribution contract. Public Rust items inside
+implementation and tooling members are workspace interfaces and do not become
+part of the `njavac` facade unless it explicitly re-exports them. Compiler and
+class-reader members do not depend on benchmark or fuzzer tooling.
+
+## Workspace tree
+
+```text
+Cargo.toml
+Cargo.lock
+crates/
+|-- njavac/
+|   |-- Cargo.toml
+|   |-- src/
+|   |   |-- lib.rs
+|   |   `-- main.rs
+|   `-- tests/cli.rs
+|-- njavac-compiler/
+|   |-- Cargo.toml
+|   `-- src/
+|       |-- lib.rs
+|       |-- span.rs
+|       |-- diagnostic.rs
+|       |-- fxhash.rs
+|       |-- ast.rs
+|       |-- lexer.rs
+|       |-- lexer/
+|       |-- parser.rs
+|       |-- parser/
+|       |-- sema.rs
+|       |-- sema/
+|       |-- codegen.rs
+|       |-- codegen/
+|       |-- classfile.rs
+|       `-- classfile/
+|-- njavac-classdump/
+|   |-- Cargo.toml
+|   `-- src/
+|       |-- lib.rs
+|       |-- reader.rs
+|       |-- diff.rs
+|       `-- bin/classdiff.rs
+|-- njavac-benchmark/
+|   |-- Cargo.toml
+|   |-- src/bin/
+|   |   |-- benchmark/main.rs
+|   |   |-- benchmark/correctness.rs
+|   |   |-- benchmark/measurement.rs
+|   |   |-- benchmark/model.rs
+|   |   |-- benchmark/phase.rs
+|   |   |-- benchmark/report.rs
+|   |   |-- benchmark/resource.rs
+|   |   `-- benchmark_alloc.rs
+|   `-- tests/benchmark_cli.rs
+`-- njavac-fuzz/
+    |-- Cargo.toml
+    `-- src/bin/fuzz/
+        |-- main.rs
+        |-- model.rs
+        |-- generate.rs
+        |-- generate/
+        |-- render.rs
+        |-- javac.rs
+        |-- observe.rs
+        |-- oracle.rs
+        |-- run.rs
+        |-- finding.rs
+        |-- minimize.rs
+        |-- verify.rs
+        `-- verify/
+```
+
+The root manifest is virtual and owns workspace membership, shared package
+metadata, path dependencies, and shared external dependency versions. Each member
+manifest owns its publication policy, direct dependencies, and binary targets.
+The root lockfile covers the complete workspace.
+
+## Stable facade and CLI
+
+| Path | Responsibility |
+| --- | --- |
+| `crates/njavac/src/lib.rs` | Stable `compile` entry point and selected diagnostic/span re-exports |
+| `crates/njavac/src/main.rs` | `njavac` CLI argument parsing, per-file I/O, and output naming |
+| `crates/njavac/tests/cli.rs` | CLI-to-library output equivalence |
+
+The [Library API](library-api.md) owns the currently unpublished facade's exact
+export contract. Compiler stages, class-file construction, structural reading,
+and instrumentation remain outside that boundary.
+
+## Compiler implementation
+
+`crates/njavac-compiler` owns the production pipeline and its benchmark observer
+seam. Its source topology preserves the one-way compiler flow:
+
+```mermaid
+flowchart LR
+    Lib["compiler lib"] --> Front["lexer + parser + ast"]
+    Front --> Sema["sema"]
+    Sema --> Lower["codegen lowering"]
+    Lower --> Asm["instruction + assembler"]
+    Asm --> Class["classfile"]
 ```
 
 ### Root compiler files
 
 | Path | Named entry points or ownership |
 | --- | --- |
-| `src/lib.rs` | Public modules, fixed `compile` pipeline, and hidden repository-tooling phase observer seam |
-| `src/main.rs` | `njavac` CLI, argument parsing, per-file I/O, output naming |
-| `src/span.rs` | Half-open byte `Span` |
-| `src/diagnostic.rs` | `CompileResult`, diagnostic codes, classification, rendering |
-| `src/fxhash.rs` | Deterministic-use custom hash implementation for lookup indexes |
-| `src/ast.rs` | Class/method/statement model, shared `Type`, `ExprId`, `ExprArena`, `ExprKind` |
+| `crates/njavac-compiler/src/lib.rs` | Pipeline composition, `compile`, and workspace-internal phase observer seam |
+| `crates/njavac-compiler/src/span.rs` | Half-open byte `Span` |
+| `crates/njavac-compiler/src/diagnostic.rs` | `CompileResult`, diagnostic codes, classification, and rendering |
+| `crates/njavac-compiler/src/fxhash.rs` | Deterministic-use custom hash implementation for lookup indexes |
+| `crates/njavac-compiler/src/ast.rs` | Class/method/statement model, shared types, expression IDs, and expression arena |
 
-### Frontend
-
-| Path | Ownership |
-| --- | --- |
-| `src/lexer.rs` | Byte traversal, trivia, lines, identifier/keyword dispatch, `lex` |
-| `src/lexer/token.rs` | `Token` and `TokenKind` |
-| `src/lexer/literal.rs` | Supported numeric and text literal decoding |
-| `src/lexer/punctuator.rs` | Longest-match operators and punctuation |
-| `src/parser.rs` | Parser cursor, compilation unit, class/method/parameter declarations, `parse` |
-| `src/parser/expression.rs` | Precedence climbing, unary/primary expressions, structural calls |
-| `src/parser/statement.rs` | Statements, branch bodies, assignments, inc/dec desugaring |
-
-See [frontend](../architecture/frontend.md).
-
-### Semantic analysis
+### Frontend and semantics
 
 | Path | Ownership |
 | --- | --- |
-| `src/sema.rs` | Public semantic model, class-shape validation, promotion helpers, `analyze` |
-| `src/sema/analyzer.rs` | Method scopes, `LocalId`, slots, definite assignment, frame-local snapshots |
-| `src/sema/analyzer/attribution.rs` | Expression validation/types, assignment checks, call resolution |
-| `src/sema/constants.rs` | Narrow attribution-time constant predicates and zero-divisor evaluation |
+| `crates/njavac-compiler/src/lexer.rs` | Byte traversal, trivia, lines, identifier/keyword dispatch, and `lex` |
+| `crates/njavac-compiler/src/lexer/token.rs` | `Token` and `TokenKind` |
+| `crates/njavac-compiler/src/lexer/literal.rs` | Supported numeric and text literal decoding |
+| `crates/njavac-compiler/src/lexer/punctuator.rs` | Longest-match operators and punctuation |
+| `crates/njavac-compiler/src/parser.rs` | Parser cursor, compilation unit, declarations, and `parse` |
+| `crates/njavac-compiler/src/parser/expression.rs` | Prefix, primary, and precedence-climbing expression parsing |
+| `crates/njavac-compiler/src/parser/statement.rs` | Statements, branches, assignments, and inc/dec desugaring |
+| `crates/njavac-compiler/src/sema.rs` | Semantic model, class-shape validation, promotion helpers, and `analyze` |
+| `crates/njavac-compiler/src/sema/analyzer.rs` | Method scopes, local IDs, slots, definite assignment, and frame-local snapshots |
+| `crates/njavac-compiler/src/sema/analyzer/attribution.rs` | Expression validation, types, assignment checks, and call resolution |
+| `crates/njavac-compiler/src/sema/constants.rs` | Attribution-time constant predicates and zero-divisor evaluation |
 
-See [semantics](../architecture/semantics.md).
+See [Frontend](../architecture/frontend.md) and
+[Semantics](../architecture/semantics.md).
 
-### Lowering and assembly
-
-| Path | Ownership |
-| --- | --- |
-| `src/codegen.rs` | `ClassPlan`, preflight orchestration, class method order, `plan`, `generate` |
-| `src/codegen/preflight.rs` | Backend capability validation before emission |
-| `src/codegen/constant.rs` | Lowering constants, folding, constant conversion, compound deltas |
-| `src/codegen/condition.rs` | `CondItem` and boolean provenance state |
-| `src/codegen/ops.rs` | Opcode and conversion decision helpers |
-| `src/codegen/stack.rs` | `PrimitiveType` to `StackTy` projection |
-| `src/codegen/lowering.rs` | `Gen`, constructor/method setup, descriptor and verifier-local projection |
-| `src/codegen/lowering/body.rs` | Statement, value, assignment, compound, and call lowering |
-| `src/codegen/lowering/condition.rs` | Conditions, chains, `if`, boolean materialization |
-| `src/codegen/lowering/emit.rs` | Physical constant/load/store/conversion emission |
-| `src/codegen/instruction.rs` | Current opcodes, exact `Instruction` forms, stack-word effects |
-| `src/codegen/assembler.rs` | Symbolic instruction storage, anchors, stack-word accounting, pending-line consumption, labels, goto compaction, layout, metadata resolution, encoding |
-
-See [lowering](../architecture/lowering.md) and
-[assembler and metadata](../architecture/assembler-and-metadata.md).
-
-### Class files and inspection
+### Lowering and class files
 
 | Path | Ownership |
 | --- | --- |
-| `src/classfile.rs` | Class-file module declarations and public re-exports |
-| `src/classfile/model.rs` | Ordered class, method, code, attribute, and verifier models |
-| `src/classfile/pool.rs` | Ordered constant pool and pool serialization |
-| `src/classfile/writer.rs` | Phase-2 interning and complete class/attribute writing |
-| `src/classfile/modified_utf8.rs` | Modified UTF-8 payload encoding |
-| `src/classfile/buffer.rs` | Big-endian byte sink and length backpatching |
-| `src/classdump.rs` | Independent reader/differ facade |
-| `src/classdump/reader.rs` | Partial structural class reader with raw fallback regions |
-| `src/classdump/diff.rs` | First-byte and first-substantive-field localization |
+| `crates/njavac-compiler/src/codegen.rs` | `ClassPlan`, preflight orchestration, method order, `plan`, and `generate` |
+| `crates/njavac-compiler/src/codegen/preflight.rs` | Backend capability validation before emission |
+| `crates/njavac-compiler/src/codegen/constant.rs` | Lowering constants, folding, conversions, and compound deltas |
+| `crates/njavac-compiler/src/codegen/condition.rs` | `CondItem` and boolean provenance state |
+| `crates/njavac-compiler/src/codegen/ops.rs` | Opcode-family and conversion decisions |
+| `crates/njavac-compiler/src/codegen/stack.rs` | Primitive Java type to JVM computational type projection |
+| `crates/njavac-compiler/src/codegen/lowering.rs` | Method context, constructor, descriptors, and frame-local projection |
+| `crates/njavac-compiler/src/codegen/lowering/body.rs` | Statement, value, call, assignment, and compound lowering |
+| `crates/njavac-compiler/src/codegen/lowering/condition.rs` | Conditions, chains, `if`, and boolean materialization |
+| `crates/njavac-compiler/src/codegen/lowering/emit.rs` | Physical constant/load/store/conversion emission |
+| `crates/njavac-compiler/src/codegen/instruction.rs` | Current opcodes, exact instruction forms, and stack-word effects |
+| `crates/njavac-compiler/src/codegen/assembler.rs` | Symbolic instructions, anchors, stack accounting, lines, labels, layout, metadata, and encoding |
+| `crates/njavac-compiler/src/classfile.rs` | Class-file module declarations and re-exports |
+| `crates/njavac-compiler/src/classfile/model.rs` | Ordered class, method, code, attribute, and verifier models |
+| `crates/njavac-compiler/src/classfile/pool.rs` | Encounter-ordered constant pool and serialization |
+| `crates/njavac-compiler/src/classfile/writer.rs` | Phase-2 interning and complete class/attribute writing |
+| `crates/njavac-compiler/src/classfile/modified_utf8.rs` | Modified UTF-8 payload encoding |
+| `crates/njavac-compiler/src/classfile/buffer.rs` | Big-endian byte sink and length backpatching |
 
-See [class file](../architecture/classfile.md).
+See [Lowering](../architecture/lowering.md),
+[Assembler and Metadata](../architecture/assembler-and-metadata.md), and
+[Class File](../architecture/classfile.md).
 
-## Binaries
+## Repository tooling
 
-Cargo auto-discovers the crate's binaries from `src/main.rs`, `src/bin/*.rs`, and
-`src/bin/<name>/main.rs`.
-
-| Binary | Source | Purpose |
+| Package | Binary | Purpose |
 | --- | --- | --- |
-| `njavac` | `src/main.rs` | Compile one or more independent `.java` files through the library |
-| `benchmark` | `src/bin/benchmark/main.rs` | Controlled uninstrumented, phase, and allocation measurement passes with terminal and JSON reports; explicit internal modes support separate Make test/correctness commands |
-| `benchmark_alloc` | `src/bin/benchmark_alloc.rs` | Internal allocation-instrumented helper invoked only by the benchmark runner |
-| `classdiff` | `src/bin/classdiff.rs` | Dump or structurally compare class files |
-| `fuzz` | `src/bin/fuzz/main.rs` | Generate in-scope programs and run exact plus behavioral differential oracles |
+| `njavac-classdump` | `classdiff` | Independently dump or compare class-file structure |
+| `njavac-benchmark` | `benchmark` | Correctness harness modes plus controlled performance/resource reports |
+| `njavac-benchmark` | `benchmark_alloc` | Allocation-instrumented helper invoked by benchmark tooling |
+| `njavac-fuzz` | `fuzz` | Generate in-scope programs and run exact plus behavioral differential oracles |
 
-`src/bin/benchmark/main.rs` owns argument modes and strict fixture discovery.
-`correctness.rs` owns live/cached reference comparison, stale-output cleanup, and
-mismatch reports. `model.rs` owns the strict serde report and metric contract;
-`phase.rs` owns named phases and event sequencing; `resource.rs` owns constrained
-GNU Linux child-resource accounting and its protocol. `measurement.rs` owns
-uninstrumented samples, instrumented preflights, phase timing, and allocation-helper
-orchestration. `report.rs` only collects pre-measurement provenance, renders the
-canonical document, and atomically publishes it.
+`njavac-classdump` owns `reader.rs` and `diff.rs` and has no dependency on compiler
+emission. The benchmark package owns strict fixture discovery, correctness modes,
+the serde report contract, phase sequencing, resource accounting, measurement,
+rendering, and publication. Its CLI integration tests use controlled compiler
+executables rather than reaching across package binary targets.
 
-The fuzzer is split by responsibility:
+The fuzzer keeps its typed source model, generation, rendering, reference worker,
+execution observer, oracle, finding, minimization, and verification modules under
+`crates/njavac-fuzz/src/bin/fuzz/`. It compiles candidates through the stable
+facade and inspects divergences through the independent class reader.
 
-| Path area | Responsibility |
-| --- | --- |
-| `src/bin/fuzz/model.rs` | Fuzzer-only typed source IR and naming chokepoint |
-| `generate.rs`, `generate/` | Deterministic random program generation |
-| `render.rs` | Precedence-aware Java source rendering |
-| `javac.rs` | Persistent in-memory reference compiler client and CLI verification helpers |
-| `observe.rs` | Persistent execution observer client and normalized observations |
-| `oracle.rs` | njavac outcome capture and javac-first classification |
-| `run.rs` | Batch orchestration, tallies, signatures, lazy observation |
-| `finding.rs`, `minimize.rs` | Finding persistence, signatures, and minimization |
-| `verify.rs`, `verify/` | Worker, observer, and self-test gates |
-
-## Java-side tools
+## Java-side tools and fixtures
 
 | Path | Purpose |
 | --- | --- |
-| `tools/FuzzJavac.java` | Source-launched persistent JavaCompiler worker using in-memory source and class bytes |
-| `tools/FuzzObserve.java` | Source-launched class loader/execution observer with bounded protocol output |
+| `tools/FuzzJavac.java` | Persistent JavaCompiler worker using in-memory source and class bytes |
+| `tools/FuzzObserve.java` | Class loader/execution observer with bounded protocol output |
+| `fixtures/` | Recursively discovered exact-byte regression sources grouped by topic |
 
-These are fuzzer protocol peers, not compiler inputs. Their bytes and behavior
-must be verified against the pinned CLI/observer gates after changes.
+The Java helpers are fuzzer protocol peers, not compiler inputs. `fuzz-out/`,
+`benchmark-results/`, `docs/book/`, and `target/` are ignored generated output.
 
-## Fixtures and generated output
-
-`fixtures/` contains recursively discovered Java exact-byte regression cases
-grouped by topic. The harness enforces globally unique basenames before touching
-its flat output directories. Fixtures are compiled in one compiler invocation but
-remain independent one-class sources.
-
-`fuzz-out/` is git-ignored raw finding/telemetry output. `target/` is ignored and
-is not used by sanctioned Make targets. Neither is source authority.
-
-## Build and environment files
+## Build and documentation files
 
 | Path | Responsibility |
 | --- | --- |
-| `Cargo.toml`, `Cargo.lock` | One Rust 2024 crate with locked serde and JSON dependencies for the persisted benchmark report |
+| `Cargo.toml`, `Cargo.lock` | Virtual workspace definition and complete dependency lock |
+| `crates/*/Cargo.toml` | Member ownership, direct dependencies, publication policy, and binary targets |
 | `Makefile` | Sanctioned command surface; `make help` is the exact catalog |
-| `Dockerfile` | Shared pinned Java/Rust stages plus explicit test, acceptance, reference, and fuzz targets |
-| `docs/book.toml`, `docs/Dockerfile` | Pinned mdBook/Mermaid build configuration |
+| `Dockerfile` | Pinned workspace build/test stage plus reference, acceptance, and fuzz targets |
+| `docs/book.toml`, `docs/Dockerfile` | Pinned mdBook and Mermaid configuration |
 | `.github/` | Repository automation |
+| `docs/src/` | Maintainer guide and current reference authorities |
 
 All compiler builds, executions, exact-byte checks, behavioral checks, and
 performance measurements run through Docker-backed Make targets.
-
-## Documentation authorities
-
-| Path | Current role |
-| --- | --- |
-| `docs/src/` | Human maintainer guide and current reference pages |
-| `README.md` | Concise repository entry that routes readers into this guide |
-| `CLAUDE.md` | Agent bootstrap and documentation style guide |
-| `docs/src/direction/architecture.md` | Target boundaries and module-creation triggers |
-| `docs/src/direction/active-work.md` | Ordered active infrastructure and open findings |
-| `docs/src/direction/deferred-work.md` | Unordered deferred improvements |
-| `.claude/skills/byte-identity-rung/` | Thin agent adapter to the human feature and bug workflows |
-
-The [documentation policy](../contributing/documentation-policy.md) defines how
-facts migrate into this book and how duplicate prose is removed.
-
-## API visibility warning
-
-The crate currently exports most stage facades publicly. This is useful to the
-benchmark and repository tools, but it does not establish stable external module
-contracts. `njavac::compile` is the fixed library entry point; details are in the
-[library API](library-api.md). The target boundaries in
-[Architecture Direction](../direction/architecture.md) are not permission to
-import paths that do not exist or to create empty modules.

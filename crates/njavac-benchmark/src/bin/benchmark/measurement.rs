@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-use njavac::{CompileObserver, CompilePhase};
+use njavac_compiler::{CompileObserver, CompilePhase};
 
 use super::Config;
 use super::correctness::remove_if_exists;
@@ -133,7 +133,7 @@ pub(super) fn instrumented_preflight(workload: &Workload) -> Result<(), String> 
             ));
         }
         let mut observer = TimingObserver::new();
-        let observed = njavac::compile_observed(
+        let observed = njavac_compiler::compile_observed(
             &fixture.source,
             &fixture.source_file,
             &mut observer,
@@ -390,7 +390,7 @@ fn phase_profile(cfg: &Config, workload: &Workload) -> Result<PhaseProfile, Stri
         let start = Instant::now();
         for _ in 0..cfg.rounds {
             for fixture in &workload.fixtures {
-                let bytes = njavac::compile_observed(
+                let bytes = njavac_compiler::compile_observed(
                     &fixture.source,
                     &fixture.source_file,
                     &mut observer,

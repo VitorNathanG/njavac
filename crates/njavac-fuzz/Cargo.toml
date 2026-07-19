@@ -1,0 +1,14 @@
+[package]
+name = "njavac-fuzz"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+njavac.workspace = true
+njavac-classdump.workspace = true
+
+[[bin]]
+name = "fuzz"
+path = "src/bin/fuzz/main.rs"

@@ -1,6 +1,6 @@
 # Diagnostics
 
-`src/diagnostic.rs` defines the compiler's returned failure model. A diagnostic
+`crates/njavac-compiler/src/diagnostic.rs` defines the compiler's returned failure model. A diagnostic
 is structured data with a source byte span, severity, stable family code, and
 human-readable message.
 
@@ -127,7 +127,7 @@ findings from supported refusals.
 
 ## CLI behavior
 
-For each input file, `src/main.rs::compile_one` renders a returned diagnostic with
+For each input file, `crates/njavac/src/main.rs::compile_one` renders a returned diagnostic with
 the original input path and source. The outer loop prints it with an `njavac:`
 prefix, marks the invocation failed, and continues compiling later input paths.
 Per-source read and write failures follow the same continuation rule. Failure to

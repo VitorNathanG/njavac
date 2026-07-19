@@ -4,7 +4,8 @@
 //! branch + short-circuit subset), compiles each program with BOTH the pinned
 //! `javac` and njavac (in-process), and byte-compares. Byte divergences pass through
 //! a second layer that executes both classes and compares their observable output
-//! and termination. Seed-reproducible (`fuzz <seed>`). Dependency-free (`std` only).
+//! and termination. Seed-reproducible (`fuzz <seed>`); generation and its PRNG use
+//! only `std`.
 //!
 //! ## Two-layer oracle
 //!

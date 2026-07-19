@@ -39,32 +39,31 @@ COPY --from=jdk-fetch /opt/graalvm /opt/graalvm
 ENV JAVA_HOME=/opt/graalvm
 ENV JAVAC=$JAVA_HOME/bin/javac
 
-# ---- Stage 3: build njavac with pinned toolchain + cached compilation -------
+# ---- Stage 3: build the Rust workspace with the pinned toolchain ------------
 FROM rust:1.95-slim-bookworm@sha256:d7482085ff5b415f84dba5647ae71606650bdef00db7aeb69f4b3d170c3e4082 AS rust-build
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
-COPY src ./src
-COPY tests ./tests
+COPY crates ./crates
 # target/ is a cache mount (not in the layer), so copy the binaries out to a
 # real path for downstream capability targets.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/target \
-    cargo build --release --locked \
+    cargo build --release --locked --workspace \
     && mkdir -p /out \
     && cp target/release/njavac target/release/benchmark \
           target/release/benchmark_alloc target/release/classdiff \
            target/release/fuzz /out/
 
-# ---- Deterministic Rust unit and integration tests ---------------------------
+# ---- Deterministic workspace unit and integration tests ---------------------
 FROM rust-build AS test
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/target \
-    cargo test --locked --lib --bins --tests
+    cargo test --locked --workspace --lib --bins --tests
 
 # ---- Fixture acceptance, benchmarking, and paired diagnostics ---------------
 FROM reference AS acceptance
 WORKDIR /work
-# Marks this as the controlled harness so `bench` will produce timings.
+# Marks this as the controlled harness so `benchmark` will produce timings.
 ENV NJAVAC_IN_CONTAINER=1
 COPY fixtures ./fixtures
 COPY --from=rust-build /out/njavac    /usr/local/bin/njavac

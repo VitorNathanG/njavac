@@ -1,7 +1,7 @@
 # Library API
 
-The crate's fixed library entry point compiles one source string to one class-file
-byte vector:
+The `njavac` facade's fixed library entry point compiles one source string to one
+class-file byte vector:
 
 ```rust
 pub fn compile(
@@ -76,7 +76,8 @@ The function performs no filesystem I/O.
 
 ## Pipeline behavior
 
-`src/lib.rs::compile` is a direct composition:
+`crates/njavac/src/lib.rs::compile` delegates to the implementation pipeline in
+`crates/njavac-compiler/src/lib.rs`:
 
 ```text
 lexer::lex
@@ -91,40 +92,35 @@ front end that guarantees graceful `Unsupported` results for arbitrary Java 25
 source. Out-of-grammar input may receive an ordinary lexical or parse error, and
 known reachable assembler defects remain outside the supported-program contract.
 
-## Stage APIs are unstable
+## Facade boundary
 
-`src/lib.rs` currently declares `classfile`, `classdump`, `span`, `diagnostic`,
-`lexer`, `ast`, `parser`, `sema`, and `codegen` as public modules. This visibility
-supports repository binaries such as the benchmark and structural differ. It does
-not make every stage type a stable external API.
+Within this repository, the currently unpublished `njavac` package is the fixed
+source-level facade. It exposes `compile`, `diagnostic`, and `span`. It does not
+re-export lexer, parser, AST, semantic, codegen, class-file, class-reader, or
+observer APIs. Diagnostic and span types are direct re-exports from the compiler
+implementation, preserving type identity without exposing its stage modules.
 
-The source comment on `compile` identifies that function and its output behavior as
-the fixed frontend contract. The crate is version `0.1.0`, has no published
-semver policy, and the architecture explicitly permits internal stage boundaries
-and types to change. In particular:
+Every workspace package currently sets `publish = false`. There is no supported
+crates.io publication, root `cargo install --path .` route, or semver compatibility
+commitment. Publishing or packaging the facade requires a deliberate distribution
+policy for its compiler dependency and re-exported types.
 
-- `lexer::lex`, `parser::parse`, `sema::analyze`, `codegen::plan`, and
-  `codegen::generate` are maintainer-facing pipeline seams.
-- `CompileObserver`, `CompilePhase`, and `compile_observed` are hidden
-  repository-tooling seams used to attribute production-pipeline work without
-  adding timers to ordinary `compile` calls. `CompilePhase` contains only
-  compiler-owned stages; caller-owned destruction of returned bytes belongs to
-  the benchmark model.
-- AST layouts, `Analysis`, `MethodInfo`, `ClassPlan`, and class-file model types
-  may evolve without compatibility wrappers.
-- `Analysis` is tied to one exact `ExprArena`; `codegen::plan` asserts arena and
-  method identity rather than accepting independently reconstructed values.
-- Public `classfile` constructors expose the current closed model, not a general
-  class-file authoring library.
-- Public `classdump` functions are repository tooling and have partial decoding
-  limits documented in [class file](../architecture/classfile.md#independent-class-reader).
+`njavac-compiler` is an unpublished workspace member. Its public stage APIs and
+`CompileObserver`, `CompilePhase`, and `compile_observed` are repository-internal
+interfaces used by benchmark tooling. They may evolve without compatibility
+wrappers. `CompilePhase` contains only compiler-owned stages; caller-owned
+destruction of returned bytes belongs to the benchmark model.
 
-External callers should depend on `njavac::compile` and diagnostic data only
-unless they intentionally accept source-level coupling to this repository.
+The independent class reader belongs to the unpublished `njavac-classdump`
+member rather than the fixed facade. Its partial decoding limits are documented
+in [class file](../architecture/classfile.md#independent-class-reader).
+
+Code using the facade should depend only on `njavac::compile` and its diagnostic
+data.
 
 ## CLI relationship
 
-The `njavac` binary in `src/main.rs` is a thin filesystem wrapper over
+The `njavac` binary in `crates/njavac/src/main.rs` is a thin filesystem wrapper over
 `compile`. It accepts several input paths and compiles each independently,
 continuing after a returned diagnostic. It supplies each path's bare filename as
 `source_file`.

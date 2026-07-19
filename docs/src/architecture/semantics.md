@@ -2,9 +2,10 @@
 
 Semantic analysis validates the modeled subset shape, resolves local and library
 names, assigns local slots, checks definite assignment, records expression result
-types, and produces verifier-local snapshots. Its facade is `src/sema.rs`; the
-main implementation is in `src/sema/analyzer.rs` and
-`src/sema/analyzer/attribution.rs`.
+types, and produces verifier-local snapshots. Its facade is
+`crates/njavac-compiler/src/sema.rs`; the main implementation is in
+`crates/njavac-compiler/src/sema/analyzer.rs` and
+`crates/njavac-compiler/src/sema/analyzer/attribution.rs`.
 
 ```mermaid
 flowchart TD

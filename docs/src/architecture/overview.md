@@ -1,8 +1,8 @@
 # Architecture Overview
 
-njavac is a single Rust crate that compiles one supported Java source to one
-Java 25 class file. Its defining contract is behavioral compatibility, with exact
-reference output retained whenever practical. See the
+njavac is a Cargo workspace whose fixed facade compiles one supported Java source
+to one Java 25 class file. Its defining contract is behavioral compatibility,
+with exact reference output retained whenever practical. See the
 [compatibility contract](../reference/compatibility-contract.md) for the promise
 and [language support](../reference/language-support.md) for its input boundary.
 
@@ -13,7 +13,7 @@ says otherwise.
 
 ## Current pipeline
 
-The stable library entry point is `src/lib.rs::compile`:
+The stable library entry point is `crates/njavac/src/lib.rs::compile`:
 
 ```rust
 pub fn compile(
@@ -22,9 +22,11 @@ pub fn compile(
 ) -> diagnostic::CompileResult<Vec<u8>>
 ```
 
-It runs one fail-fast pipeline through the current module entry points and returns
-one class-file byte vector. Public module visibility does not make each root file
-an implementation owner or a stable external API.
+It delegates to the fail-fast pipeline in
+`crates/njavac-compiler/src/lib.rs::compile` and returns one class-file byte
+vector. The [library API](../reference/library-api.md) owns the facade surface.
+Public items inside unpublished workspace members are repository interfaces, not
+stable external API.
 
 ```mermaid
 flowchart LR
@@ -62,7 +64,8 @@ writing; it is not a general compilation IR.
 | Lowering to assembler | Chosen instruction sequence and forms, label operations, source-line marks, and requested frame states | Store symbolic records, allocate stable anchors, account for stack words, consume pending lines, compact supported gotos, assign PCs once, resolve metadata, and encode instructions |
 | Assembler to class-file writer | Final code bytes, `max_stack`, lines, and full frame snapshots | Select attribute encodings, complete ordered constant interning, and serialize the class |
 
-The expression-arena identity check in `src/codegen.rs::plan` prevents an
+The expression-arena identity check in
+`crates/njavac-compiler/src/codegen.rs::plan` prevents an
 `Analysis` from being paired accidentally with a different parsed unit. Method
 counts are checked there as an internal invariant.
 
@@ -70,13 +73,13 @@ counts are checked there as an internal invariant.
 
 | Area | Current authority | Detail |
 | --- | --- | --- |
-| Tokens and source syntax | `src/lexer.rs`, `src/parser.rs`, `src/ast.rs` | [Frontend](frontend.md) |
-| Modeled subset checks, local identity, slots, and result types | `src/sema.rs` and `src/sema/` | [Semantics](semantics.md) |
-| Expression and control-flow choices reconstructed from pinned output | `src/codegen/lowering/` and `src/codegen/condition.rs` | [Lowering](lowering.md) |
-| Instruction layout and PC-bearing metadata | `src/codegen/assembler.rs` | [Assembler and metadata](assembler-and-metadata.md) |
-| Constant-pool order, attributes, and byte encoding | `src/classfile.rs` and `src/classfile/` | [Class file](classfile.md) |
-| Independent structural inspection | `src/classdump.rs` and `src/classdump/` | [Class file](classfile.md#independent-class-reader) |
-| Returned failures | `src/diagnostic.rs` | [Diagnostics](../reference/diagnostics.md) |
+| Tokens and source syntax | `crates/njavac-compiler/src/lexer.rs`, `crates/njavac-compiler/src/parser.rs`, and `crates/njavac-compiler/src/ast.rs` | [Frontend](frontend.md) |
+| Modeled subset checks, local identity, slots, and result types | `crates/njavac-compiler/src/sema.rs` and `crates/njavac-compiler/src/sema/` | [Semantics](semantics.md) |
+| Expression and control-flow choices reconstructed from pinned output | `crates/njavac-compiler/src/codegen/lowering/` and `crates/njavac-compiler/src/codegen/condition.rs` | [Lowering](lowering.md) |
+| Instruction layout and PC-bearing metadata | `crates/njavac-compiler/src/codegen/assembler.rs` | [Assembler and metadata](assembler-and-metadata.md) |
+| Constant-pool order, attributes, and byte encoding | `crates/njavac-compiler/src/classfile.rs` and `crates/njavac-compiler/src/classfile/` | [Class file](classfile.md) |
+| Independent structural inspection | `crates/njavac-classdump/src/` | [Class file](classfile.md#independent-class-reader) |
+| Returned failures | `crates/njavac-compiler/src/diagnostic.rs` | [Diagnostics](../reference/diagnostics.md) |
 
 The complete file-to-responsibility index is the
 [repository map](../reference/repository-map.md).
@@ -95,8 +98,9 @@ flowchart TD
     Decl --> ThisClass["this_class: Declared"]
 ```
 
-`src/main.rs::compile_one` derives the destination filename from the source
-basename, not from the parsed class declaration. `src/codegen.rs::plan` derives
+`crates/njavac/src/main.rs::compile_one` derives the destination filename from the
+source basename, not from the parsed class declaration.
+`crates/njavac-compiler/src/codegen.rs::plan` derives
 `ClassFile::this_class` from `CompilationUnit.class.name`. The parser and sema do
 not enforce that these names match. A mismatch can therefore write bytes whose
 class identity is `Declared` into `File.class`; such input is outside the
@@ -133,9 +137,6 @@ not copied into this guide.
 
 The current boundaries are useful but incomplete:
 
-- Public stage modules such as `lexer`, `parser`, `sema`, and `codegen` are
-  exposed by the crate for tools and profiling, but their types and signatures
-  are not stable API contracts.
 - Most expression nodes have an `ExprId` but no expression span. Recursive
   semantic errors often use the enclosing statement span.
 - Sema records expression result types, but not complete promoted-operand or
