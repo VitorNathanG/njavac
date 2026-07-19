@@ -72,8 +72,9 @@ accepted language.
 
 After the preceding defects and infrastructure items are green, continue with the
 ordered [language rungs](language-rungs.md). If a rung exposes another structural
-prerequisite, add the smallest tidy-first infrastructure item here and land it
-separately from the feature.
+prerequisite, add the correct tidy-first infrastructure item here and land it
+separately from the feature. Do not preserve a flawed boundary to minimize the
+change.
 
 ## Open fuzzer findings
 

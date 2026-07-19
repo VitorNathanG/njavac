@@ -44,7 +44,8 @@ Inspect at least these byte-visible surfaces where relevant:
 
 If the rung needs a structural change, use the [tidy-first workflow](workflow.md#tidy-first):
 
-1. Make the smallest behavior-preserving preparation.
+1. Make the behavior-preserving preparation needed to establish correct ownership
+   and invariants.
 2. Run fresh correctness against the existing corpus.
 3. Keep the tidy independently committable.
 4. Only then add language behavior.

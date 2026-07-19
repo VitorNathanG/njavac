@@ -15,6 +15,7 @@ Read the pages relevant to the task before editing:
 | Byte divergence or bug | [Fixing a divergence](docs/src/contributing/fixing-a-divergence.md) and [differential debugging](docs/src/tooling/differential-debugging.md) |
 | Tooling or tests | [Command surface](docs/src/tooling/command-surface.md) and the relevant page under `docs/src/tooling/` |
 | Architecture | [Current architecture](docs/src/architecture/overview.md) and [architecture direction](docs/src/direction/architecture.md) |
+| General code review | [Adversarial code review](docs/src/contributing/code-review.md), [current architecture](docs/src/architecture/overview.md), and [architecture direction](docs/src/direction/architecture.md) |
 | Planning | [Active work](docs/src/direction/active-work.md), [language rungs](docs/src/direction/language-rungs.md), and [deferred work](docs/src/direction/deferred-work.md) |
 | Documentation | [Documentation policy](docs/src/contributing/documentation-policy.md), [documentation tooling](docs/src/tooling/documentation.md), and the style guide below |
 
@@ -43,8 +44,10 @@ remain authoritative for machine behavior and exact flags.
 - Treat constant-pool order, instruction order and physical form, members,
   attributes, frames, line events, and generated artifacts as byte-visible
   ordered data.
-- Prefer the smallest correct change. Land a byte-preserving structural tidy
-  separately from behavior that uses it.
+- Make the correct change at the authority that owns the invariant. Never preserve
+  a flawed boundary merely to minimize a diff or trade future maintainability for
+  a feature or fix. Land byte-preserving structural preparation separately from
+  behavior that uses it.
 - Work one bug signature or one language rung at a time. Reproduce, explain, fix,
   add a documented regression test, and run the final regression-inclusive gates
   before moving on.
@@ -171,5 +174,6 @@ Every code change must leave it truthful, navigable, and internally consistent.
 ## Skill
 
 For language rungs and byte divergences, load
-`.claude/skills/byte-identity-rung/SKILL.md`. The skill is an orchestration entry
-point; the linked maintainer-guide pages remain authoritative.
+`.claude/skills/byte-identity-rung/SKILL.md`. For general code reviews and audits,
+load `.claude/skills/adversarial-code-review/SKILL.md`. Skills are orchestration
+entry points; the linked maintainer-guide pages remain authoritative.

@@ -42,6 +42,7 @@
 - [Black-Box Research](contributing/research-method.md)
 - [Implementing a Language Rung](contributing/implementing-a-rung.md)
 - [Fixing a Divergence](contributing/fixing-a-divergence.md)
+- [Adversarial Code Review](contributing/code-review.md)
 - [Documentation Policy](contributing/documentation-policy.md)
 
 # Future-Language Research

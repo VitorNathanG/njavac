@@ -1,9 +1,11 @@
 # Maintainer Workflow
 
 njavac requires equivalent behavior for every supported program and retains the
-reference class bytes whenever practical. Small, independently understandable
-changes are safer than broad fixes because a plausible local rule can hide a
-wrong model elsewhere in the corpus.
+reference class bytes whenever practical. Independently understandable changes
+are safer because a plausible local rule can hide a wrong model elsewhere in the
+corpus. A correct change may still require broad structural preparation; split it
+into verifiable steps instead of preserving the wrong boundary to keep a diff
+small.
 
 ## Establish the boundary
 
@@ -23,17 +25,19 @@ current task boundary, stop and reconcile ownership before continuing.
 
 ## Tidy first
 
-When behavior work needs structural preparation, make the smallest
-behavior-preserving tidy first. Verify it under the existing gates before changing
-language behavior.
+When behavior work needs structural preparation, establish the correct ownership
+and invariants with behavior-preserving changes first. Verify them under the
+existing gates before changing language behavior. Do not trade future
+maintainability for a local feature or fix.
 
 The tidy and behavior change must remain independently reviewable and
 independently committable. When commits are requested, land them as separate
 commits. Do not hide module moves, renaming, broad formatting, or abstraction work
 inside the feature or fix that motivated it.
 
-Avoid speculative architecture. Add a module or abstraction only when a concrete
-responsibility has arrived. Long-term boundaries and their triggers live in
+Diff size is not a design criterion: repair a flawed boundary when the behavior
+cannot fit it coherently, but do not build abstractions for responsibilities that
+have not arrived. Long-term boundaries and their triggers live in
 [Architecture direction](../direction/architecture.md); active structural work
 lives in [Active work](../direction/active-work.md).
 

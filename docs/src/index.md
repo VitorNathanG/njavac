@@ -29,6 +29,7 @@ machine-enforced details, such as exact constants and command-line flags.
 | How do fixtures and cached goldens work? | [Fixtures and goldens](tooling/fixtures-and-goldens.md) |
 | How do I investigate a mismatch? | [Differential debugging](tooling/differential-debugging.md) |
 | How does fuzzing classify results? | [Fuzzing](tooling/fuzzing.md) |
+| How do I review the codebase critically? | [Adversarial code review](contributing/code-review.md) |
 | What is being worked on next? | [Active work](direction/active-work.md) and [language rungs](direction/language-rungs.md) |
 | What has been deliberately deferred? | [Deferred work](direction/deferred-work.md) |
 | Where does a documentation fact belong? | [Documentation policy](contributing/documentation-policy.md) |
@@ -53,6 +54,7 @@ flowchart TD
 - [Implementing a rung](contributing/implementing-a-rung.md)
 - [Fixing a divergence](contributing/fixing-a-divergence.md)
 - [Black-box research method](contributing/research-method.md)
+- [Adversarial code review](contributing/code-review.md)
 - [Documentation policy](contributing/documentation-policy.md)
 
 ## Core pipeline
