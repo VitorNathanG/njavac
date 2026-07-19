@@ -1,0 +1,1 @@
+fixtures/basics/MixedLineTerminators.java -text whitespace=cr-at-eol

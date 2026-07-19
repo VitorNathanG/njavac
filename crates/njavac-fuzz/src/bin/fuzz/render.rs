@@ -1,6 +1,10 @@
-use crate::model::{BinOp, CmpOp, FExpr, FStmt, LogOp, PrintArg, Prog, Val};
+use crate::model::{BinOp, CaseKind, CmpOp, FExpr, FStmt, LogOp, PrintArg, Prog, Val};
 
 pub(super) fn render(prog: &Prog) -> String {
+    if prog.kind == CaseKind::MixedLineTerminators {
+        return render_mixed_line_terminators(prog);
+    }
+
     let mut s = String::new();
     s.push_str(&format!("public class {} {{\n", prog.name.class));
     s.push_str("    public static void main(String[] args) {\n");
@@ -10,6 +14,29 @@ pub(super) fn render(prog: &Prog) -> String {
     s.push_str("    }\n");
     s.push_str("}\n");
     s
+}
+
+fn render_mixed_line_terminators(prog: &Prog) -> String {
+    let [cr, lf, crlf, print] = prog.body.as_slice() else {
+        panic!("mixed-line-terminator scenario lost its four statements");
+    };
+    let mut s = String::from("// Scheduled: LF, bare CR, and CRLF each count once.\n");
+    s.push_str(&format!("public class {} {{\r", prog.name.class));
+    s.push_str("    public static void main(String[] args) {\r\n");
+    render_stmt_with_ending(cr, "\r", &mut s);
+    s.push_str("        // A bare CR must end this comment.\r");
+    render_stmt_with_ending(lf, "\n", &mut s);
+    s.push_str("        // CRLF must end this comment once.\r\n");
+    render_stmt_with_ending(crlf, "\r\n", &mut s);
+    render_stmt_with_ending(print, "\n", &mut s);
+    s.push_str("    }\r\n}\n");
+    s
+}
+
+fn render_stmt_with_ending(stmt: &FStmt, ending: &str, out: &mut String) {
+    render_stmt(stmt, 2, out);
+    assert_eq!(out.pop(), Some('\n'));
+    out.push_str(ending);
 }
 
 fn render_stmt(st: &FStmt, indent: usize, out: &mut String) {
@@ -219,5 +246,32 @@ fn char_str(c: u16) -> String {
         0x5c => "'\\\\'".to_string(),
         0x20..=0x7e => format!("'{}'", (c as u8) as char),
         _ => format!("'\\u{c:04x}'"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::render;
+    use crate::generate;
+
+    #[test]
+    fn mixed_line_terminator_rendering_is_exact() {
+        let prog = generate::scheduled(3).unwrap();
+        assert_eq!(
+            render(&prog),
+            concat!(
+                "// Scheduled: LF, bare CR, and CRLF each count once.\n",
+                "public class Fuzz0000003 {\r",
+                "    public static void main(String[] args) {\r\n",
+                "        int v0 = 1;\r",
+                "        // A bare CR must end this comment.\r",
+                "        int v1 = 2;\n",
+                "        // CRLF must end this comment once.\r\n",
+                "        int v2 = 3;\r\n",
+                "        System.out.println(v0 + v1 + v2);\n",
+                "    }\r\n",
+                "}\n",
+            )
+        );
     }
 }

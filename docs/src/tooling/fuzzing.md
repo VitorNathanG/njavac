@@ -183,25 +183,28 @@ reads confined to dead `&&`/`||` operands. These scenarios are appended after
 ordinary random statements and leave every new local assigned after its final
 observed read.
 
-The first three generated indices are a stable scheduled prefix:
+The first four generated indices are a stable scheduled prefix:
 
 | Index | Scenario | Exact fixture |
 | --- | --- | --- |
 | `0` | Largest compacted narrow conditional offset, `+32767` | `fixtures/branches/LongBranchBoundary.java` |
 | `1` | Conditional overflow at `+32768` and global fat-code behavior | `fixtures/branches/LongBranchFat.java` |
 | `2` | Unconditional overflow at `+32768` and global fat-code behavior | `fixtures/branches/LongGotoFat.java` |
+| `3` | LF, bare CR, and CRLF source lines plus `//` termination | `fixtures/basics/MixedLineTerminators.java` |
 
-These cases use the typed model and normal renderer. They intentionally exceed
-the random generator's usual method size and local count. Their source shape and
-byte-count arithmetic live in
-`crates/njavac-fuzz/src/bin/fuzz/generate/long_branch.rs`; `CaseKind` in
-`model.rs` carries the guaranteed-coverage classification through the run policy
-and worker verifier. The fixtures remain the exact regression authority, while the
-scheduled cases routinely exercise the corresponding compiler decisions.
-Unit tests pin the byte-count arithmetic and prove that scheduled substitution
-does not change the later random stream. The fixed three-case fuzz smoke compiles
-the rendered cases through pinned javac and njavac, while `make correctness`
-enforces the corresponding exact fixture bytes.
+All four cases use the typed model. The first three use the normal renderer and
+intentionally exceed the random generator's usual method size and local count;
+their source shape and byte-count arithmetic live in
+`crates/njavac-fuzz/src/bin/fuzz/generate/long_branch.rs`. The fourth uses the
+explicit source-layout renderer selected by
+`crates/njavac-fuzz/src/bin/fuzz/generate/line_terminators.rs`. `CaseKind` in
+`model.rs` carries guaranteed-coverage classification through the run policy and
+worker verifier. The fixtures remain the exact regression authority, while the
+scheduled cases routinely exercise the corresponding compiler decisions. Unit
+tests pin branch arithmetic, exact mixed-terminator rendering, and preservation of
+the later random stream. The fixed fuzz smoke compiles all scheduled cases through
+pinned javac and njavac, while `make correctness` enforces the corresponding exact
+fixture bytes.
 
 This is a generator coverage boundary, not the authoritative language-support
 ledger. A feature is not proven merely because the fuzzer can generate it, and a

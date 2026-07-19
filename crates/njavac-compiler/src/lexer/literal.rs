@@ -15,7 +15,7 @@ impl Lexer<'_> {
                         "unterminated string literal",
                     ));
                 }
-                Some(b'\n') => {
+                Some(b'\r' | b'\n') => {
                     return Err(Diagnostic::lexical(
                         Span::new(start, self.pos),
                         "newline in string literal",

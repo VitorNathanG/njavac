@@ -16,7 +16,6 @@ accidental or overly broad acceptances are excluded:
   currently rejects these valid runtime expressions.
 - A main-parameter `String` or `System.out.println` target whose leading simple
   name is shadowed and therefore does not denote the hard-coded library class.
-- Source containing carriage returns, including bare-CR line endings and CRLF.
 
 The current front end may also accept malformed literal details that the reference
 rejects. The valid-reference precondition is authoritative for such cases; an
@@ -272,18 +271,16 @@ remain printable.
 
 ## Comments and source metadata
 
-Space, tab, line feed, `//` comments, and `/* ... */` comments are supported.
-Line feed (`LF`, `\n`) is the only supported line terminator; supported source
-contains no carriage-return bytes. The lexer skips a carriage return as trivia but
-does not increment its line counter, and a `//` comment terminates only at LF, so a
-bare CR does not end that comment. These accidental behaviors do not support CR or
-CRLF source. Block comments do not nest.
+Space, tab, Java line terminators, `//` comments, and `/* ... */` comments are
+supported. Line feed (`LF`, `\n`), carriage return (`CR`, `\r`), and the two-byte
+`CRLF` sequence each advance the source line once and terminate a `//` comment.
+Block comments do not nest.
 
 Source line numbers use a 1-based `u16` counter. A supported source therefore has
-at most 65,534 LF bytes, so traversal never advances beyond line 65,535; crossing
-that boundary can overflow or panic rather than return a diagnostic. Positions are
-tracked with a pending-line model and emitted as `LineNumberTable`; the source
-basename is emitted as `SourceFile`.
+at most 65,534 line terminators, so traversal never advances beyond line 65,535;
+crossing that boundary can overflow or panic rather than return a diagnostic.
+Positions are tracked with a pending-line model and emitted as `LineNumberTable`;
+the source basename is emitted as `SourceFile`.
 
 ## Class-file size limits
 

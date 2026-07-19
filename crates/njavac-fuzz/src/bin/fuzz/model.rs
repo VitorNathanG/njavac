@@ -178,13 +178,14 @@ pub(super) enum FStmt {
     },
 }
 
-/// Whether a program is random input or a guaranteed structural coverage case.
+/// Whether a program is random input or a guaranteed compiler-peculiarity case.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum CaseKind {
     Random,
     LongConditionalBoundary,
     LongConditionalFat,
     LongGotoFat,
+    MixedLineTerminators,
 }
 
 impl CaseKind {
@@ -198,6 +199,7 @@ impl CaseKind {
             CaseKind::LongConditionalBoundary => "long-conditional-32767",
             CaseKind::LongConditionalFat => "long-conditional-32768",
             CaseKind::LongGotoFat => "long-goto-32768",
+            CaseKind::MixedLineTerminators => "mixed-line-terminators",
         }
     }
 }

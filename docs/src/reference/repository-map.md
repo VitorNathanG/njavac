@@ -197,9 +197,11 @@ The fuzzer keeps its typed source model, generation, rendering, reference worker
 execution observer, oracle, finding, minimization, and verification modules under
 `crates/njavac-fuzz/src/bin/fuzz/`. It compiles candidates through the stable
 facade and inspects divergences through the independent class reader. Stable
-structural coverage that exceeds normal random limits belongs in typed scheduled
-generators such as `generate/long_branch.rs`; `model.rs` owns the case
-classification consumed by the run policy and worker verifier.
+compiler-peculiarity coverage belongs in typed scheduled generators such as
+`generate/long_branch.rs` and `generate/line_terminators.rs`. Source-layout cases
+outside the normal LF renderer use an explicit scheduled rendering path.
+`model.rs` owns the case classification consumed by the run policy and worker
+verifier.
 
 ## Java-side tools and fixtures
 

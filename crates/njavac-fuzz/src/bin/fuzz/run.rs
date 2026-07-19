@@ -90,7 +90,7 @@ pub(super) fn run(cfg: &Config) -> ! {
             if p.kind.is_scheduled() {
                 tally.scheduled += 1;
             }
-            tally.lines += s.lines().count() as u64;
+            tally.lines += java_line_count(s) as u64;
             let want = classes.get(&p.name.class);
             let t_njavac = Instant::now();
             let got = njavac_compile(s, &p.name.source_arg);
@@ -218,7 +218,7 @@ pub(super) fn run(cfg: &Config) -> ! {
 
         n += this;
         println!(
-            "  progress {n}/{}  scheduled-long={} exact={} behavior-match={} byte-divergent={} gen-invalid={} njavac-unsupported={} njavac-syntax-error={} njavac-internal-panic={} behavioral-findings={} lines={}",
+            "  progress {n}/{}  scheduled={} exact={} behavior-match={} byte-divergent={} gen-invalid={} njavac-unsupported={} njavac-syntax-error={} njavac-internal-panic={} behavioral-findings={} lines={}",
             cfg.count,
             tally.scheduled,
             tally.exact,
@@ -248,7 +248,7 @@ fn summary(t: &Tally, count: u64) {
         + t.njavac_syntax_error
         + t.njavac_internal_panic;
     println!(
-        "\nfuzz done: {processed}/{count} cases  scheduled-long={} exact={} behavior-match={} byte-divergent={} gen-invalid={} njavac-unsupported={} njavac-syntax-error={} njavac-internal-panic={} behavioral-findings={}  ({} lines compiled)",
+        "\nfuzz done: {processed}/{count} cases  scheduled={} exact={} behavior-match={} byte-divergent={} gen-invalid={} njavac-unsupported={} njavac-syntax-error={} njavac-internal-panic={} behavioral-findings={}  ({} lines compiled)",
         t.scheduled,
         t.exact,
         t.behavior_match,
@@ -280,7 +280,7 @@ fn summary(t: &Tally, count: u64) {
     }
     if t.scheduled_failures > 0 {
         println!(
-            "  -> {} scheduled long-branch coverage failure(s); see the fuzz-out/ dir",
+            "  -> {} scheduled coverage failure(s); see the fuzz-out/ dir",
             t.scheduled_failures
         );
     }
@@ -314,4 +314,39 @@ fn finish_and_exit(
     print_sig_breakdown("byte-divergence", byte_sigs);
     print_sig_breakdown("behavior-finding", behavior_sigs);
     std::process::exit(1);
+}
+
+fn java_line_count(source: &str) -> usize {
+    let bytes = source.as_bytes();
+    let mut count = 0;
+    let mut index = 0;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'\r' => {
+                count += 1;
+                index += 1;
+                if bytes.get(index) == Some(&b'\n') {
+                    index += 1;
+                }
+            }
+            b'\n' => {
+                count += 1;
+                index += 1;
+            }
+            _ => index += 1,
+        }
+    }
+    count + usize::from(!source.is_empty() && !matches!(bytes.last(), Some(b'\r') | Some(b'\n')))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::java_line_count;
+
+    #[test]
+    fn line_count_treats_crlf_as_one_java_line_terminator() {
+        assert_eq!(java_line_count(""), 0);
+        assert_eq!(java_line_count("lf\nbare-cr\rcrlf\r\nlast"), 4);
+        assert_eq!(java_line_count("lf\nbare-cr\rcrlf\r\n"), 3);
+    }
 }

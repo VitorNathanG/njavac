@@ -53,9 +53,8 @@ The lexer is not a complete Java lexical translation layer:
 - Direct non-ASCII source is not modeled correctly outside the supported
   boundary because traversal and literal fallback operate one UTF-8 byte at a
   time.
-- Only LF advances the `u16` source-line counter and terminates `//`. A carriage
-  return is skipped as whitespace but does neither, so supported source is LF-only
-  and cannot cross line 65,535. The exact public boundary is in
+- LF, bare CR, and CRLF advance the `u16` source-line counter once and terminate
+  `//`; supported source cannot cross line 65,535. The exact public boundary is in
   [language support](../reference/language-support.md#comments-and-source-metadata).
 - A string escape is converted through a Unicode scalar value. An unpaired UTF-16
   surrogate cannot be preserved faithfully in Rust `String`.

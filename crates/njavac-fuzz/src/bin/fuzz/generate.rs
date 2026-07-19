@@ -1,6 +1,13 @@
 mod expression;
+mod line_terminators;
 mod long_branch;
 mod statement;
+
+use crate::model::Prog;
+
+pub(super) fn scheduled(index: u64) -> Option<Prog> {
+    long_branch::scheduled(index).or_else(|| line_terminators::scheduled(index))
+}
 
 // SplitMix64 is deterministic, seeded, dependency-free, and rung-invariant.
 pub(super) struct Rng {
@@ -68,4 +75,42 @@ const CAPS: ScopeCaps = ScopeCaps {
 
 pub(super) struct Gen {
     pub(super) rng: Rng,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::CaseKind;
+    use crate::render::render;
+
+    #[test]
+    fn schedules_the_complete_compiler_peculiarity_prefix() {
+        assert_eq!(
+            scheduled(0).unwrap().kind,
+            CaseKind::LongConditionalBoundary
+        );
+        assert_eq!(scheduled(1).unwrap().kind, CaseKind::LongConditionalFat);
+        assert_eq!(scheduled(2).unwrap().kind, CaseKind::LongGotoFat);
+        assert_eq!(scheduled(3).unwrap().kind, CaseKind::MixedLineTerminators);
+        assert!(scheduled(4).is_none());
+    }
+
+    #[test]
+    fn scheduled_prefix_preserves_the_later_random_stream() {
+        let seed = 0x6A09_E667_F3BC_C909;
+        let mut mixed = Gen {
+            rng: Rng::new(seed),
+        };
+        let mut random = Gen {
+            rng: Rng::new(seed),
+        };
+
+        for index in 0..10 {
+            let actual = mixed.gen_prog(index);
+            let expected = random.gen_random_prog(index);
+            if scheduled(index).is_none() {
+                assert_eq!(render(&actual), render(&expected));
+            }
+        }
+    }
 }

@@ -350,6 +350,6 @@ impl Gen {
 
     pub(crate) fn gen_prog(&mut self, n: u64) -> Prog {
         let random = self.gen_random_prog(n);
-        super::long_branch::scheduled(n).unwrap_or(random)
+        super::scheduled(n).unwrap_or(random)
     }
 }

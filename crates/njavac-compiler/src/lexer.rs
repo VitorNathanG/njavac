@@ -49,11 +49,14 @@ impl<'a> Lexer<'a> {
         self.bytes.get(self.pos + 1).copied()
     }
 
-    /// Advance one byte, tracking line numbers.
+    /// Advance one byte, tracking Java line terminators. Bare CR and LF each
+    /// advance one line, while the LF in CRLF does not advance a second time.
+    /// `fixtures/basics/MixedLineTerminators.java` pins the three forms.
     fn bump(&mut self) -> u8 {
+        let preceded_by_cr = self.pos > 0 && self.bytes[self.pos - 1] == b'\r';
         let b = self.bytes[self.pos];
         self.pos += 1;
-        if b == b'\n' {
+        if b == b'\r' || (b == b'\n' && !preceded_by_cr) {
             self.line += 1;
         }
         b
@@ -112,7 +115,7 @@ impl<'a> Lexer<'a> {
                     self.bump();
                     self.bump();
                     while let Some(b) = self.peek() {
-                        if b == b'\n' {
+                        if matches!(b, b'\r' | b'\n') {
                             break;
                         }
                         self.bump();

@@ -167,8 +167,6 @@ fn goto_fat(index: u64) -> Prog {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::generate::{Gen, Rng};
-    use crate::render::render;
 
     fn local_slot(locals: &[Ty], local: usize) -> usize {
         1 + locals[..local]
@@ -197,17 +195,6 @@ mod tests {
                 value: FExpr::Neg(value),
             } if *local == x && matches!(value.as_ref(), FExpr::Local(value) if *value == x)
         ));
-    }
-
-    #[test]
-    fn schedules_the_complete_long_branch_prefix() {
-        assert_eq!(
-            scheduled(0).unwrap().kind,
-            CaseKind::LongConditionalBoundary
-        );
-        assert_eq!(scheduled(1).unwrap().kind, CaseKind::LongConditionalFat);
-        assert_eq!(scheduled(2).unwrap().kind, CaseKind::LongGotoFat);
-        assert!(scheduled(3).is_none());
     }
 
     #[test]
@@ -257,24 +244,5 @@ mod tests {
         assert_self_adds(&else_b[..SELF_ADDS], x);
         assert_negate(&else_b[SELF_ADDS], x);
         assert_negate(&else_b[SELF_ADDS + 1], x);
-    }
-
-    #[test]
-    fn scheduled_prefix_preserves_the_later_random_stream() {
-        let seed = 0x6A09_E667_F3BC_C909;
-        let mut mixed = Gen {
-            rng: Rng::new(seed),
-        };
-        let mut random = Gen {
-            rng: Rng::new(seed),
-        };
-
-        for index in 0..10 {
-            let actual = mixed.gen_prog(index);
-            let expected = random.gen_random_prog(index);
-            if scheduled(index).is_none() {
-                assert_eq!(render(&actual), render(&expected));
-            }
-        }
     }
 }
