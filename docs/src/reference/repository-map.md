@@ -1,9 +1,10 @@
 # Repository Map
 
-njavac is one dependency-free Rust crate with several binaries, a Docker-pinned
-reference environment, Java fixtures, and an mdBook maintainer guide. This page
-maps current paths to current responsibilities. Future boundaries live separately
-in [Architecture Direction](../direction/architecture.md).
+njavac is one Rust crate with several binaries, a Docker-pinned reference
+environment, Java fixtures, and an mdBook maintainer guide. The compiler remains
+self-contained; the benchmark uses serde and serde_json for its persisted report.
+This page maps current paths to current responsibilities. Future boundaries live
+separately in [Architecture Direction](../direction/architecture.md).
 
 ## Compiler crate
 
@@ -56,6 +57,13 @@ src/
 |   `-- diff.rs
 `-- bin/
     |-- benchmark/
+    |   |-- main.rs
+    |   |-- correctness.rs
+    |   |-- measurement.rs
+    |   |-- model.rs
+    |   |-- phase.rs
+    |   |-- resource.rs
+    |   `-- report.rs
     |-- benchmark_alloc.rs
     |-- classdiff.rs
     `-- fuzz/
@@ -162,15 +170,19 @@ Cargo auto-discovers the crate's binaries from `src/main.rs`, `src/bin/*.rs`, an
 | Binary | Source | Purpose |
 | --- | --- | --- |
 | `njavac` | `src/main.rs` | Compile one or more independent `.java` files through the library |
-| `benchmark` | `src/bin/benchmark/main.rs` | Fixture correctness plus isolated uninstrumented, phase, and allocation measurement passes with terminal and JSON reports |
+| `benchmark` | `src/bin/benchmark/main.rs` | Controlled uninstrumented, phase, and allocation measurement passes with terminal and JSON reports; explicit internal modes support separate Make test/correctness commands |
 | `benchmark_alloc` | `src/bin/benchmark_alloc.rs` | Internal allocation-instrumented helper invoked only by the benchmark runner |
 | `classdiff` | `src/bin/classdiff.rs` | Dump or structurally compare class files |
 | `fuzz` | `src/bin/fuzz/main.rs` | Generate in-scope programs and run exact plus behavioral differential oracles |
 
-`src/bin/benchmark/correctness.rs` owns fixture discovery outcomes, live/cached
-reference comparison, and mismatch reports. `measurement.rs` owns process
-resources, uninstrumented samples, phase timing, allocation-helper orchestration,
-and statistics. `report.rs` owns the terminal and JSON representations.
+`src/bin/benchmark/main.rs` owns argument modes and strict fixture discovery.
+`correctness.rs` owns live/cached reference comparison, stale-output cleanup, and
+mismatch reports. `model.rs` owns the strict serde report and metric contract;
+`phase.rs` owns named phases and event sequencing; `resource.rs` owns constrained
+GNU Linux child-resource accounting and its protocol. `measurement.rs` owns
+uninstrumented samples, instrumented preflights, phase timing, and allocation-helper
+orchestration. `report.rs` only collects pre-measurement provenance, renders the
+canonical document, and atomically publishes it.
 
 The fuzzer is split by responsibility:
 
@@ -198,10 +210,10 @@ must be verified against the pinned CLI/observer gates after changes.
 
 ## Fixtures and generated output
 
-`fixtures/` contains recursively discovered Java exact-byte regression cases grouped by
-topic. Basenames must be globally unique because current harness output
-directories are flat. Fixtures are compiled in one compiler invocation but remain
-independent one-class sources.
+`fixtures/` contains recursively discovered Java exact-byte regression cases
+grouped by topic. The harness enforces globally unique basenames before touching
+its flat output directories. Fixtures are compiled in one compiler invocation but
+remain independent one-class sources.
 
 `fuzz-out/` is git-ignored raw finding/telemetry output. `target/` is ignored and
 is not used by sanctioned Make targets. Neither is source authority.
@@ -210,9 +222,9 @@ is not used by sanctioned Make targets. Neither is source authority.
 
 | Path | Responsibility |
 | --- | --- |
-| `Cargo.toml`, `Cargo.lock` | One dependency-free Rust 2024 crate and locked package metadata |
+| `Cargo.toml`, `Cargo.lock` | One Rust 2024 crate with locked serde and JSON dependencies for the persisted benchmark report |
 | `Makefile` | Sanctioned command surface; `make help` is the exact catalog |
-| `Dockerfile` | Shared pinned Java/Rust stages and explicit acceptance, reference, and fuzz targets |
+| `Dockerfile` | Shared pinned Java/Rust stages plus explicit test, acceptance, reference, and fuzz targets |
 | `docs/book.toml`, `docs/Dockerfile` | Pinned mdBook/Mermaid build configuration |
 | `.github/` | Repository automation |
 

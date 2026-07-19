@@ -122,14 +122,15 @@ Use focused comparisons while developing, then run the complete gates:
 
 ```sh
 make src-diff FILE=Probe.java
-make correctness
+make test
 make fuzz
 ```
 
 Run `make fuzz-verify` after a JDK or javac-worker change and whenever the rung
 reaches class-generation territory not previously exercised by that worker gate.
-Run `make fuzz-observe-verify` after observer changes. Use `make benchmark` when the
-cycle includes an authoritative performance claim.
+The aggregate test already includes deterministic worker and observer checks; run
+their focused targets while debugging those surfaces. Use `make benchmark` only
+when the cycle includes an authoritative performance claim.
 
 The fuzzer must grow with the supported surface. Update generation, rendering,
 minimization, and scope capabilities coherently; the exact current extension

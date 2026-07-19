@@ -1,25 +1,23 @@
-# Exact-byte fixture gate. The repo commits straight to `main` with no reviewer,
-# so this is the only unconditional backstop against an unintended byte-breaking
-# commit silently becoming the baseline. Fixture correctness only: timing
-# is host/CI noise, and the fuzzer's fresh-random-seed design makes a fixed CI
-# seed false comfort — neither belongs here.
+# Complete deterministic repository gate. Timing remains outside CI because host
+# noise is not performance evidence; random-seed discovery remains a separate
+# campaign, while fixed-seed integration coverage belongs in `make test`.
 #
 # Reliability over speed for now: a cold `docker build` of the pinned GraalVM
 # image each run (no GHA layer cache yet). Only the content-pinned javac reproduces the
-# golden bytes, so `make correctness` builds and runs entirely inside that image.
+# golden bytes, so the correctness portion builds and runs inside that image.
 # Add layer caching later only if the cold build's runtime hurts.
-name: exact-byte-fixtures
+name: deterministic-tests
 
 on:
   push:
   pull_request:
 
 jobs:
-  correctness:
+  test:
     runs-on: ubuntu-latest
     env:
       DOCKER_BUILDKIT: "1" # the Dockerfile uses `RUN --mount=type=cache`
     steps:
       - uses: actions/checkout@v4
-      - name: correctness gate (njavac vs pinned javac, in Docker)
-        run: make correctness
+      - name: deterministic repository test suite (in Docker)
+        run: make test

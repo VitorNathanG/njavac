@@ -1,168 +1,40 @@
 use std::ffi::OsString;
 use std::hint::black_box;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
 use std::time::{Duration, Instant};
 
 use njavac::{CompileObserver, CompilePhase};
 
 use super::Config;
-
-pub(super) const PHASE_NAMES: [&str; 7] = [
-    "lex",
-    "parse",
-    "sema",
-    "codegen plan",
-    "classfile emit",
-    "cleanup",
-    "result drop",
-];
+use super::correctness::remove_if_exists;
+use super::model::{
+    AllocationMetric, AllocationProfile, Measurements, PerformanceMeasurements, PhaseProfile,
+    PhaseSample, ProcessScenario, ResourceSeries, ScalarSeries, WorkloadIdentity,
+};
+use super::phase::{PhaseName, PhaseValues, SequenceValidator};
+use super::resource::{self, InvocationContext};
 
 #[derive(Clone)]
 pub(super) struct Fixture {
     pub path: PathBuf,
     pub source: String,
     pub source_file: String,
-    pub expected_output: Vec<u8>,
+    pub class_name: String,
+    pub baseline_output: Vec<u8>,
 }
 
 pub(super) struct Workload {
     pub fixtures: Vec<Fixture>,
-    pub fingerprint: String,
-    pub source_bytes: usize,
-    pub physical_lines: usize,
-    pub nonblank_lines: usize,
-    pub output_class_bytes: usize,
+    pub identity: WorkloadIdentity,
+    startup_index: usize,
 }
 
-#[derive(Clone)]
-pub(super) struct Summary {
-    pub min: f64,
-    pub median: f64,
-    pub mean: f64,
-    pub stddev: f64,
-    pub mad: f64,
-}
-
-#[derive(Clone)]
-pub(super) struct ResourceSample {
-    pub wall_ns: u64,
-    pub user_us: u64,
-    pub system_us: u64,
-    pub max_rss_kb: u64,
-    pub minor_faults: u64,
-    pub major_faults: u64,
-    pub voluntary_switches: u64,
-    pub involuntary_switches: u64,
-}
-
-pub(super) struct ResourceSeries {
-    pub samples: Vec<ResourceSample>,
-}
-
-pub(super) struct ProcessScenario {
-    pub name: &'static str,
-    pub files: usize,
-    pub source_bytes: usize,
-    pub physical_lines: usize,
-    pub output_bytes: usize,
-    pub javac: ResourceSeries,
-    pub njavac: ResourceSeries,
-}
-
-pub(super) struct ScalarSeries {
-    pub samples_ns: Vec<u64>,
-}
-
-pub(super) struct PerformancePass {
-    pub startup: ProcessScenario,
-    pub batch: ProcessScenario,
-    pub hot: ScalarSeries,
-}
-
-pub(super) struct PhaseSample {
-    pub wall_ns: u64,
-    pub phases_ns: [u64; 7],
-}
-
-pub(super) struct PhaseProfile {
-    pub samples: Vec<PhaseSample>,
-}
-
-#[derive(Clone, Copy, Default)]
-pub(super) struct AllocationMetric {
-    pub calls: u64,
-    pub bytes: u64,
-    pub deallocated_bytes: u64,
-}
-
-pub(super) struct AllocationProfile {
-    pub phases: [AllocationMetric; 7],
-    pub peak_live_bytes: u64,
-    pub final_live_bytes: u64,
-}
-
-pub(super) struct BenchmarkReport {
-    pub performance: PerformancePass,
-    pub phases: PhaseProfile,
-    pub allocations: AllocationProfile,
-}
-
-impl ScalarSeries {
-    pub fn summary_ms(&self) -> Summary {
-        summary(self.samples_ns.iter().map(|&ns| ns as f64 / 1_000_000.0).collect())
-    }
-}
-
-impl ResourceSeries {
-    pub fn wall_summary_ms(&self) -> Summary {
-        summary(
-            self.samples
-                .iter()
-                .map(|sample| sample.wall_ns as f64 / 1_000_000.0)
-                .collect(),
-        )
-    }
-
-    pub fn median_cpu_ms(&self) -> f64 {
-        median(
-            self.samples
-                .iter()
-                .map(|sample| (sample.user_us + sample.system_us) as f64 / 1000.0)
-                .collect(),
-        )
-    }
-
-    pub fn median_max_rss_kb(&self) -> f64 {
-        median(self.samples.iter().map(|sample| sample.max_rss_kb as f64).collect())
-    }
-}
-
-impl PhaseProfile {
-    pub fn wall_summary_ms(&self) -> Summary {
-        summary(
-            self.samples
-                .iter()
-                .map(|sample| sample.wall_ns as f64 / 1_000_000.0)
-                .collect(),
-        )
-    }
-
-    pub fn median_phase_ns(&self, phase: usize) -> f64 {
-        median(
-            self.samples
-                .iter()
-                .map(|sample| sample.phases_ns[phase] as f64)
-                .collect(),
-        )
-    }
-}
-
-pub(super) fn load_workload(paths: &[PathBuf], output_dir: &Path) -> Result<Workload, String> {
+pub(super) fn load_workload(paths: &[PathBuf]) -> Result<Workload, String> {
     let mut fixtures = Vec::with_capacity(paths.len());
-    let mut source_bytes = 0;
-    let mut physical_lines = 0;
-    let mut nonblank_lines = 0;
+    let mut source_bytes = 0_u64;
+    let mut physical_lines = 0_u64;
+    let mut nonblank_lines = 0_u64;
     let mut hash = 0xcbf29ce484222325_u64;
 
     for path in paths {
@@ -170,33 +42,64 @@ pub(super) fn load_workload(paths: &[PathBuf], output_dir: &Path) -> Result<Work
             .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
         let source_file = path
             .file_name()
-            .ok_or_else(|| format!("{} has no filename", path.display()))?
-            .to_string_lossy()
-            .into_owned();
-
-        source_bytes += source.len();
-        physical_lines += line_count(&source);
-        nonblank_lines += source.lines().filter(|line| !line.trim().is_empty()).count();
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| format!("{} has no UTF-8 filename", path.display()))?
+            .to_string();
+        let class_name = path
+            .file_stem()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| format!("{} has no UTF-8 class basename", path.display()))?
+            .to_string();
+        source_bytes = source_bytes
+            .checked_add(source.len() as u64)
+            .ok_or("source byte count overflow")?;
+        physical_lines = physical_lines
+            .checked_add(line_count(&source) as u64)
+            .ok_or("physical line count overflow")?;
+        nonblank_lines = nonblank_lines
+            .checked_add(source.lines().filter(|line| !line.trim().is_empty()).count() as u64)
+            .ok_or("nonblank line count overflow")?;
         hash_bytes(&mut hash, path.to_string_lossy().as_bytes());
         hash_bytes(&mut hash, &[0]);
         hash_bytes(&mut hash, source.as_bytes());
         hash_bytes(&mut hash, &[0xff]);
-        let class_name = path.file_stem().unwrap().to_string_lossy();
-        let class_path = output_dir.join(format!("{class_name}.class"));
-        let expected_output = std::fs::read(&class_path)
-            .map_err(|error| format!("cannot inspect {}: {error}", class_path.display()))?;
-        fixtures.push(Fixture { path: path.clone(), source, source_file, expected_output });
+        let baseline_output = njavac::compile(&source, &source_file).map_err(|diagnostic| {
+            diagnostic.render(&path.display().to_string(), &source)
+        })?;
+        fixtures.push(Fixture {
+            path: path.clone(),
+            source,
+            source_file,
+            class_name,
+            baseline_output,
+        });
     }
 
-    let output_class_bytes = fixtures.iter().map(|fixture| fixture.expected_output.len()).sum();
-
+    let output_class_bytes = fixtures.iter().try_fold(0_u64, |total, fixture| {
+        total
+            .checked_add(fixture.baseline_output.len() as u64)
+            .ok_or("class output byte count overflow")
+    })?;
+    let startup_index = fixtures
+        .iter()
+        .position(|fixture| fixture.path.ends_with("basics/Empty.java"))
+        .unwrap_or(0);
+    let startup = &fixtures[startup_index];
     Ok(Workload {
+        identity: WorkloadIdentity {
+            fingerprint: format!("fnv1a64:{hash:016x}"),
+            files: fixtures.len() as u64,
+            source_bytes,
+            physical_lines,
+            nonblank_lines,
+            output_class_bytes,
+            minimal_input_fixture: startup.path.display().to_string(),
+            minimal_input_source_bytes: startup.source.len() as u64,
+            minimal_input_physical_lines: line_count(&startup.source) as u64,
+            minimal_input_output_bytes: startup.baseline_output.len() as u64,
+        },
         fixtures,
-        fingerprint: format!("fnv1a64:{hash:016x}"),
-        source_bytes,
-        physical_lines,
-        nonblank_lines,
-        output_class_bytes,
+        startup_index,
     })
 }
 
@@ -205,101 +108,160 @@ pub(super) fn run(
     workload: &Workload,
     javac_dir: &Path,
     njavac_dir: &Path,
-) -> Result<BenchmarkReport, String> {
-    println!("performance pass (uninstrumented)");
-    let performance = performance_pass(cfg, workload, javac_dir, njavac_dir)?;
+) -> Result<Measurements, String> {
+    println!("performance measurement (uninstrumented)");
+    let performance = performance_measurements(cfg, workload, javac_dir, njavac_dir)?;
 
-    println!("\nphase pass (instrumented production pipeline)");
-    let phases = phase_profile(cfg, workload)?;
+    println!("\nphase attribution (instrumented production pipeline)");
+    let phase_profile = phase_profile(cfg, workload)?;
 
-    println!("\nallocation pass (separate instrumented helper)");
+    println!("\nallocation attribution (separate instrumented helper)");
     let allocations = allocation_profile(cfg, workload)?;
 
-    Ok(BenchmarkReport { performance, phases, allocations })
+    Ok(Measurements { performance, phase_profile, allocations })
 }
 
-fn performance_pass(
+pub(super) fn instrumented_preflight(workload: &Workload) -> Result<(), String> {
+    for fixture in &workload.fixtures {
+        let ordinary = njavac::compile(&fixture.source, &fixture.source_file).map_err(|diagnostic| {
+            diagnostic.render(&fixture.path.display().to_string(), &fixture.source)
+        })?;
+        if ordinary != fixture.baseline_output {
+            return Err(format!(
+                "ordinary compile preflight differs from the loaded baseline for {}",
+                fixture.path.display(),
+            ));
+        }
+        let mut observer = TimingObserver::new();
+        let observed = njavac::compile_observed(
+            &fixture.source,
+            &fixture.source_file,
+            &mut observer,
+        )
+        .map_err(|diagnostic| {
+            diagnostic.render(&fixture.path.display().to_string(), &fixture.source)
+        })?;
+        observer.complete_compile()?;
+        if observed != ordinary {
+            return Err(format!(
+                "timing-observed compile differs from ordinary compile for {}",
+                fixture.path.display(),
+            ));
+        }
+        observer.drop_result(observed);
+    }
+    println!("  ordinary and timing-observed output match {} fixtures", workload.fixtures.len());
+    Ok(())
+}
+
+fn performance_measurements(
     cfg: &Config,
     workload: &Workload,
     javac_dir: &Path,
     njavac_dir: &Path,
-) -> Result<PerformancePass, String> {
-    let startup_index = workload
-        .fixtures
-        .iter()
-        .position(|fixture| fixture.path.ends_with("basics/Empty.java"))
-        .unwrap_or(0);
-    let startup_fixture = &workload.fixtures[startup_index];
-    let startup = process_scenario(
+) -> Result<PerformanceMeasurements, String> {
+    let minimal_input_fresh_process_compile = process_scenario(
         cfg,
-        "fresh-process startup",
-        std::slice::from_ref(startup_fixture),
+        "minimal-input fresh-process compile",
+        std::slice::from_ref(&workload.fixtures[workload.startup_index]),
         javac_dir,
         njavac_dir,
     )?;
-    print_process_scenario(&startup);
-
-    let batch = process_scenario(
+    let whole_corpus_cli_compile = process_scenario(
         cfg,
-        "end-to-end batch",
+        "whole-corpus CLI compile",
         &workload.fixtures,
         javac_dir,
         njavac_dir,
     )?;
-    print_process_scenario(&batch);
-
-    let hot = hot_series(cfg, workload)?;
-    let hot_summary = hot.summary_ms();
-    println!(
-        "  hot compiler core  min {:8.3}  median {:8.3}  mean {:8.3}  stddev {:7.3}  MAD {:7.3} ms/sample  n={}",
-        hot_summary.min,
-        hot_summary.median,
-        hot_summary.mean,
-        hot_summary.stddev,
-        hot_summary.mad,
-        hot.samples_ns.len(),
-    );
-    Ok(PerformancePass { startup, batch, hot })
+    let hot_in_process_corpus_compile = hot_series(cfg, workload)?;
+    Ok(PerformanceMeasurements {
+        minimal_input_fresh_process_compile,
+        whole_corpus_cli_compile,
+        hot_in_process_corpus_compile,
+    })
 }
 
 fn process_scenario(
     cfg: &Config,
-    name: &'static str,
+    scenario: &str,
     fixtures: &[Fixture],
     javac_dir: &Path,
     njavac_dir: &Path,
 ) -> Result<ProcessScenario, String> {
-    let javac = compiler_command(&cfg.javac, javac_dir, fixtures);
-    let njavac = compiler_command(&cfg.njavac, njavac_dir, fixtures);
+    println!("  {scenario} ({} files)", fixtures.len());
+    let javac_command = compiler_command(&cfg.javac, javac_dir, fixtures);
+    let njavac_command = compiler_command(&cfg.njavac, njavac_dir, fixtures);
 
     for warmup in 0..cfg.warmup {
+        let iteration = format!("warm-up {}/{}", warmup + 1, cfg.warmup);
         if warmup % 2 == 0 {
-            measure_compiler(&javac, javac_dir, fixtures)?;
-            measure_compiler(&njavac, njavac_dir, fixtures)?;
+            measure_compiler(
+                &javac_command,
+                javac_dir,
+                fixtures,
+                &InvocationContext { compiler: "javac".into(), scenario: scenario.into(), iteration: iteration.clone() },
+            )?;
+            measure_compiler(
+                &njavac_command,
+                njavac_dir,
+                fixtures,
+                &InvocationContext { compiler: "njavac".into(), scenario: scenario.into(), iteration },
+            )?;
         } else {
-            measure_compiler(&njavac, njavac_dir, fixtures)?;
-            measure_compiler(&javac, javac_dir, fixtures)?;
+            measure_compiler(
+                &njavac_command,
+                njavac_dir,
+                fixtures,
+                &InvocationContext { compiler: "njavac".into(), scenario: scenario.into(), iteration: iteration.clone() },
+            )?;
+            measure_compiler(
+                &javac_command,
+                javac_dir,
+                fixtures,
+                &InvocationContext { compiler: "javac".into(), scenario: scenario.into(), iteration },
+            )?;
         }
     }
 
     let mut javac_samples = Vec::with_capacity(cfg.samples);
     let mut njavac_samples = Vec::with_capacity(cfg.samples);
     for sample in 0..cfg.samples {
+        let iteration = format!("sample {}/{}", sample + 1, cfg.samples);
         if sample % 2 == 0 {
-            javac_samples.push(measure_compiler(&javac, javac_dir, fixtures)?);
-            njavac_samples.push(measure_compiler(&njavac, njavac_dir, fixtures)?);
+            javac_samples.push(measure_compiler(
+                &javac_command,
+                javac_dir,
+                fixtures,
+                &InvocationContext { compiler: "javac".into(), scenario: scenario.into(), iteration: iteration.clone() },
+            )?);
+            njavac_samples.push(measure_compiler(
+                &njavac_command,
+                njavac_dir,
+                fixtures,
+                &InvocationContext { compiler: "njavac".into(), scenario: scenario.into(), iteration },
+            )?);
         } else {
-            njavac_samples.push(measure_compiler(&njavac, njavac_dir, fixtures)?);
-            javac_samples.push(measure_compiler(&javac, javac_dir, fixtures)?);
+            njavac_samples.push(measure_compiler(
+                &njavac_command,
+                njavac_dir,
+                fixtures,
+                &InvocationContext { compiler: "njavac".into(), scenario: scenario.into(), iteration: iteration.clone() },
+            )?);
+            javac_samples.push(measure_compiler(
+                &javac_command,
+                javac_dir,
+                fixtures,
+                &InvocationContext { compiler: "javac".into(), scenario: scenario.into(), iteration },
+            )?);
         }
     }
 
     Ok(ProcessScenario {
-        name,
-        files: fixtures.len(),
-        source_bytes: fixtures.iter().map(|fixture| fixture.source.len()).sum(),
-        physical_lines: fixtures.iter().map(|fixture| line_count(&fixture.source)).sum(),
-        output_bytes: fixtures.iter().map(|fixture| fixture.expected_output.len()).sum(),
+        files: fixtures.len() as u64,
+        source_bytes: fixtures.iter().map(|fixture| fixture.source.len() as u64).sum(),
+        physical_lines: fixtures.iter().map(|fixture| line_count(&fixture.source) as u64).sum(),
+        output_bytes: fixtures.iter().map(|fixture| fixture.baseline_output.len() as u64).sum(),
         javac: ResourceSeries { samples: javac_samples },
         njavac: ResourceSeries { samples: njavac_samples },
     })
@@ -315,73 +277,26 @@ fn measure_compiler(
     command: &[OsString],
     out_dir: &Path,
     fixtures: &[Fixture],
-) -> Result<ResourceSample, String> {
+    context: &InvocationContext,
+) -> Result<super::model::ResourceSample, String> {
     for fixture in fixtures {
-        let class_name = fixture.path.file_stem().unwrap().to_string_lossy();
-        let path = out_dir.join(format!("{class_name}.class"));
-        match std::fs::remove_file(&path) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(format!("cannot clear {}: {error}", path.display())),
-        }
+        remove_if_exists(&out_dir.join(format!("{}.class", fixture.class_name)))?;
     }
-
-    let sample = measure_resource(command)?;
+    let sample = resource::measure(command, context)?;
     for fixture in fixtures {
-        let class_name = fixture.path.file_stem().unwrap().to_string_lossy();
-        let path = out_dir.join(format!("{class_name}.class"));
-        let actual = std::fs::read(&path)
-            .map_err(|error| format!("timed compiler omitted {}: {error}", path.display()))?;
-        if actual != fixture.expected_output {
-            return Err(format!(
-                "timed compiler wrote unexpected bytes to {}",
+        let path = out_dir.join(format!("{}.class", fixture.class_name));
+        std::fs::read(&path).map_err(|error| {
+            format!(
+                "{} {} {} omitted {}: {error}; command: {}",
+                context.compiler,
+                context.scenario,
+                context.iteration,
                 path.display(),
-            ));
-        }
+                resource::format_command(command),
+            )
+        })?;
     }
     Ok(sample)
-}
-
-fn measure_resource(command: &[OsString]) -> Result<ResourceSample, String> {
-    let executable = std::env::current_exe()
-        .map_err(|error| format!("cannot locate benchmark executable: {error}"))?;
-    let output = Command::new(executable)
-        .arg("--resource-child")
-        .args(command)
-        .output()
-        .map_err(|error| format!("cannot start resource helper: {error}"))?;
-    if !output.status.success() {
-        return Err(format!(
-            "resource helper failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        ));
-    }
-    parse_resource_sample(&String::from_utf8_lossy(&output.stdout))
-}
-
-fn parse_resource_sample(line: &str) -> Result<ResourceSample, String> {
-    let fields: Vec<&str> = line.trim().split('\t').collect();
-    if fields.len() != 9 {
-        return Err(format!("invalid resource-helper output: {line:?}"));
-    }
-    if fields[0] != "ok" {
-        return Err(format!("timed compiler invocation failed with status {}", fields[0]));
-    }
-    let number = |index: usize| {
-        fields[index]
-            .parse::<u64>()
-            .map_err(|error| format!("invalid resource field {}: {error}", fields[index]))
-    };
-    Ok(ResourceSample {
-        wall_ns: number(1)?,
-        user_us: number(2)?,
-        system_us: number(3)?,
-        max_rss_kb: number(4)?,
-        minor_faults: number(5)?,
-        major_faults: number(6)?,
-        voluntary_switches: number(7)?,
-        involuntary_switches: number(8)?,
-    })
 }
 
 fn hot_series(cfg: &Config, workload: &Workload) -> Result<ScalarSeries, String> {
@@ -389,12 +304,13 @@ fn hot_series(cfg: &Config, workload: &Workload) -> Result<ScalarSeries, String>
         compile_round(workload)?;
     }
     let mut samples_ns = Vec::with_capacity(cfg.samples);
-    for _ in 0..cfg.samples {
+    for sample in 0..cfg.samples {
         let start = Instant::now();
         for _ in 0..cfg.rounds {
             compile_round(workload)?;
         }
         samples_ns.push(duration_ns(start.elapsed()));
+        println!("  hot sample {}/{} complete", sample + 1, cfg.samples);
     }
     Ok(ScalarSeries { samples_ns })
 }
@@ -409,24 +325,61 @@ fn compile_round(workload: &Workload) -> Result<(), String> {
 }
 
 struct TimingObserver {
-    starts: [Option<Instant>; 7],
-    elapsed: [Duration; 7],
+    starts: PhaseValues<Option<Instant>>,
+    elapsed: PhaseValues<Duration>,
+    sequence: SequenceValidator,
 }
 
 impl TimingObserver {
     fn new() -> Self {
-        Self { starts: [None; 7], elapsed: [Duration::ZERO; 7] }
+        Self {
+            starts: PhaseValues::default(),
+            elapsed: PhaseValues::default(),
+            sequence: SequenceValidator::default(),
+        }
+    }
+
+    fn complete_compile(&mut self) -> Result<(), String> {
+        self.sequence.complete_success().map_err(|error| error.to_string())
+    }
+
+    fn drop_result(&mut self, bytes: Vec<u8>) {
+        black_box(&bytes);
+        let start = Instant::now();
+        drop(bytes);
+        self.elapsed.result_bytes_drop += start.elapsed();
+    }
+
+    fn durations_ns(&self) -> PhaseValues<u64> {
+        PhaseValues {
+            lex: duration_ns(self.elapsed.lex),
+            parse: duration_ns(self.elapsed.parse),
+            semantic_analysis: duration_ns(self.elapsed.semantic_analysis),
+            codegen_planning: duration_ns(self.elapsed.codegen_planning),
+            classfile_serialization_and_plan_drop: duration_ns(
+                self.elapsed.classfile_serialization_and_plan_drop,
+            ),
+            analysis_and_syntax_drop: duration_ns(self.elapsed.analysis_and_syntax_drop),
+            result_bytes_drop: duration_ns(self.elapsed.result_bytes_drop),
+        }
     }
 }
 
 impl CompileObserver for TimingObserver {
     fn phase_started(&mut self, phase: CompilePhase) {
-        self.starts[phase_index(phase)] = Some(Instant::now());
+        self.sequence.started(phase);
+        let start = self.starts.get_mut(PhaseName::from(phase));
+        if start.is_none() {
+            *start = Some(Instant::now());
+        }
     }
 
     fn phase_finished(&mut self, phase: CompilePhase) {
-        let index = phase_index(phase);
-        self.elapsed[index] += self.starts[index].take().expect("phase start").elapsed();
+        self.sequence.finished(phase);
+        let phase = PhaseName::from(phase);
+        if let Some(start) = self.starts.get_mut(phase).take() {
+            *self.elapsed.get_mut(phase) += start.elapsed();
+        }
     }
 }
 
@@ -445,268 +398,140 @@ fn phase_profile(cfg: &Config, workload: &Workload) -> Result<PhaseProfile, Stri
                 .map_err(|diagnostic| {
                     diagnostic.render(&fixture.path.display().to_string(), &fixture.source)
                 })?;
-                observer.phase_started(CompilePhase::ResultDrop);
-                black_box(bytes);
-                observer.phase_finished(CompilePhase::ResultDrop);
+                observer.complete_compile()?;
+                observer.drop_result(bytes);
             }
         }
-        let phases_ns = observer.elapsed.map(duration_ns);
+        let phases_ns = observer.durations_ns();
         let wall_ns = duration_ns(start.elapsed());
-        println!(
-            "  sample {}/{}  measured {:.3} ms",
-            sample + 1,
-            cfg.samples,
-            wall_ns as f64 / 1_000_000.0,
-        );
-        samples.push(PhaseSample { wall_ns, phases_ns });
+        let attributed = PhaseName::ALL
+            .into_iter()
+            .try_fold(0_u64, |total, phase| total.checked_add(*phases_ns.get(phase)))
+            .ok_or("phase duration sum overflow")?;
+        let unattributed_wall_ns = wall_ns.checked_sub(attributed).ok_or_else(|| {
+            format!(
+                "attributed phase time {attributed}ns exceeded profile wall time {wall_ns}ns"
+            )
+        })?;
+        println!("  phase sample {}/{} complete", sample + 1, cfg.samples);
+        samples.push(PhaseSample { wall_ns, phases_ns, unattributed_wall_ns });
     }
     Ok(PhaseProfile { samples })
 }
 
-fn allocation_profile(cfg: &Config, workload: &Workload) -> Result<AllocationProfile, String> {
+fn allocation_profile(
+    cfg: &Config,
+    workload: &Workload,
+) -> Result<AllocationProfile, String> {
     let mut command = Command::new(&cfg.alloc_helper);
     command.arg(cfg.allocation_rounds.to_string());
     command.args(workload.fixtures.iter().map(|fixture| &fixture.path));
-    let output = command
-        .output()
-        .map_err(|error| format!("cannot run allocation helper {}: {error}", cfg.alloc_helper))?;
+    let output = command.output().map_err(|error| {
+        format!(
+            "cannot run allocation helper {}: {error}; command: {:?}",
+            cfg.alloc_helper, command,
+        )
+    })?;
     if !output.status.success() {
         return Err(format!(
-            "allocation helper failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
+            "allocation helper failed with status {}; command: {:?}; stderr: {}",
+            output.status,
+            command,
+            String::from_utf8_lossy(&output.stderr).trim(),
         ));
     }
-    let mut phases = [AllocationMetric::default(); 7];
-    let mut seen_phases = [false; 7];
-    let mut peak_live_bytes = None;
+    parse_allocation_profile(&String::from_utf8_lossy(&output.stdout), workload.fixtures.len())
+}
+
+fn parse_allocation_profile(output: &str, expected_fixtures: usize) -> Result<AllocationProfile, String> {
+    let mut phases: PhaseValues<Option<AllocationMetric>> = PhaseValues::default();
+    let mut baseline_live_bytes = None;
+    let mut peak_live_growth_bytes = None;
     let mut final_live_bytes = None;
-    for line in String::from_utf8_lossy(&output.stdout).lines() {
+    let mut total = None;
+    for line in output.lines() {
         let fields: Vec<&str> = line.split('\t').collect();
         match fields.as_slice() {
-            ["phase", index, calls, bytes, deallocated_bytes] => {
-                let index: usize = index.parse().map_err(|_| format!("invalid phase index: {line}"))?;
-                if index >= phases.len() {
-                    return Err(format!("invalid allocation phase: {line}"));
+            ["phase", name, calls, requested, released] => {
+                let phase = PhaseName::from_protocol(name)
+                    .ok_or_else(|| format!("unknown allocation phase: {name}"))?;
+                let slot = phases.get_mut(phase);
+                if slot.is_some() {
+                    return Err(format!("duplicate allocation phase: {name}"));
                 }
-                if seen_phases[index] {
-                    return Err(format!("duplicate allocation phase: {line}"));
-                }
-                seen_phases[index] = true;
-                phases[index] = AllocationMetric {
-                    calls: calls.parse().map_err(|_| format!("invalid allocation calls: {line}"))?,
-                    bytes: bytes.parse().map_err(|_| format!("invalid allocation bytes: {line}"))?,
-                    deallocated_bytes: deallocated_bytes
-                        .parse()
-                        .map_err(|_| format!("invalid deallocation bytes: {line}"))?,
-                };
+                *slot = Some(AllocationMetric {
+                    allocation_calls: parse_u64(calls, line)?,
+                    requested_bytes: parse_u64(requested, line)?,
+                    released_bytes: parse_u64(released, line)?,
+                });
             }
-            ["peak", bytes] => {
-                if peak_live_bytes.is_some() {
-                    return Err("allocation helper emitted duplicate peak".to_string());
-                }
-                peak_live_bytes = Some(
-                    bytes.parse().map_err(|_| format!("invalid peak allocation: {line}"))?,
-                );
-            }
-            ["live", bytes] => {
-                if final_live_bytes.is_some() {
-                    return Err("allocation helper emitted duplicate final live value".to_string());
-                }
-                final_live_bytes = Some(
-                    bytes.parse().map_err(|_| format!("invalid live allocation: {line}"))?,
-                );
-            }
+            ["baseline_live", bytes] => set_once(
+                &mut baseline_live_bytes,
+                parse_u64(bytes, line)?,
+                "baseline_live",
+            )?,
+            ["peak_live_growth", bytes] => set_once(
+                &mut peak_live_growth_bytes,
+                parse_u64(bytes, line)?,
+                "peak_live_growth",
+            )?,
+            ["final_live", bytes] => set_once(
+                &mut final_live_bytes,
+                parse_u64(bytes, line)?,
+                "final_live",
+            )?,
+            ["total", requested, released] => set_once(
+                &mut total,
+                (parse_u64(requested, line)?, parse_u64(released, line)?),
+                "total",
+            )?,
             _ => return Err(format!("invalid allocation-helper output: {line}")),
         }
     }
-    if let Some(index) = seen_phases.iter().position(|seen| !seen) {
-        return Err(format!("allocation helper omitted phase {index}"));
-    }
-    let final_live_bytes = final_live_bytes.ok_or("allocation helper omitted final live bytes")?;
-    if final_live_bytes != 0 {
+    let _ = expected_fixtures;
+    let phases = phases.try_map(|metric| metric.ok_or("allocation helper omitted a named phase"))?;
+    let baseline_live_bytes = baseline_live_bytes.ok_or("allocation helper omitted baseline_live")?;
+    let final_live_bytes = final_live_bytes.ok_or("allocation helper omitted final_live")?;
+    if final_live_bytes != baseline_live_bytes {
         return Err(format!(
-            "allocation helper retained {final_live_bytes} tracked bytes after the workload"
+            "allocation helper final live bytes {final_live_bytes} differ from baseline {baseline_live_bytes}"
         ));
+    }
+    let (total_requested_bytes, total_released_bytes) = total.ok_or("allocation helper omitted total")?;
+    if total_requested_bytes != total_released_bytes {
+        return Err(format!(
+            "allocation requested total {total_requested_bytes} differs from released total {total_released_bytes}"
+        ));
+    }
+    let phase_requested = PhaseName::ALL.into_iter().try_fold(0_u64, |sum, phase| {
+        sum.checked_add(phases.get(phase).requested_bytes)
+    });
+    let phase_released = PhaseName::ALL.into_iter().try_fold(0_u64, |sum, phase| {
+        sum.checked_add(phases.get(phase).released_bytes)
+    });
+    if phase_requested != Some(total_requested_bytes) || phase_released != Some(total_released_bytes) {
+        return Err("allocation named-phase totals differ from complete workload totals".to_string());
     }
     Ok(AllocationProfile {
         phases,
-        peak_live_bytes: peak_live_bytes.ok_or("allocation helper omitted peak live bytes")?,
+        baseline_live_bytes,
+        peak_live_growth_bytes: peak_live_growth_bytes
+            .ok_or("allocation helper omitted peak_live_growth")?,
         final_live_bytes,
+        total_requested_bytes,
+        total_released_bytes,
     })
 }
 
-fn print_process_scenario(scenario: &ProcessScenario) {
-    println!("  {} ({} files)", scenario.name, scenario.files);
-    for (name, series) in [("javac", &scenario.javac), ("njavac", &scenario.njavac)] {
-        let wall = series.wall_summary_ms();
-        println!(
-            "    {name:7} min {:8.3}  median {:8.3}  mean {:8.3}  stddev {:7.3}  MAD {:7.3} ms",
-            wall.min,
-            wall.median,
-            wall.mean,
-            wall.stddev,
-            wall.mad,
-        );
-        println!(
-            "            CPU total {:7.3} ms  RSS {:8.0} KiB  n={}",
-            series.median_cpu_ms(),
-            series.median_max_rss_kb(),
-            series.samples.len(),
-        );
-    }
+fn parse_u64(value: &str, line: &str) -> Result<u64, String> {
+    value.parse().map_err(|_| format!("invalid numeric allocation field: {line}"))
 }
 
-pub(super) fn resource_child(args: Vec<OsString>) -> ! {
-    if args.is_empty() {
-        eprintln!("resource child requires a command");
-        std::process::exit(2);
-    }
-    let before = child_usage().unwrap_or_else(|error| {
-        eprintln!("{error}");
-        std::process::exit(1);
-    });
-    let start = Instant::now();
-    let status = Command::new(&args[0])
-        .args(&args[1..])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
-    let wall_ns = duration_ns(start.elapsed());
-    let after = child_usage().unwrap_or_else(|error| {
-        eprintln!("{error}");
-        std::process::exit(1);
-    });
-    let success = status.is_ok_and(|status| status.success());
-    println!(
-        "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
-        if success { "ok" } else { "failed" },
-        wall_ns,
-        after.user_us.saturating_sub(before.user_us),
-        after.system_us.saturating_sub(before.system_us),
-        after.max_rss_kb,
-        after.minor_faults.saturating_sub(before.minor_faults),
-        after.major_faults.saturating_sub(before.major_faults),
-        after.voluntary_switches.saturating_sub(before.voluntary_switches),
-        after.involuntary_switches.saturating_sub(before.involuntary_switches),
-    );
-    std::process::exit(0);
-}
-
-#[derive(Default)]
-struct ChildUsage {
-    user_us: u64,
-    system_us: u64,
-    max_rss_kb: u64,
-    minor_faults: u64,
-    major_faults: u64,
-    voluntary_switches: u64,
-    involuntary_switches: u64,
-}
-
-#[cfg(target_os = "linux")]
-fn child_usage() -> Result<ChildUsage, String> {
-    use std::os::raw::{c_int, c_long};
-
-    #[repr(C)]
-    #[derive(Default)]
-    struct TimeVal {
-        seconds: c_long,
-        microseconds: c_long,
-    }
-
-    #[repr(C)]
-    #[derive(Default)]
-    struct ResourceUsage {
-        user: TimeVal,
-        system: TimeVal,
-        max_rss: c_long,
-        shared_memory: c_long,
-        unshared_data: c_long,
-        unshared_stack: c_long,
-        minor_faults: c_long,
-        major_faults: c_long,
-        swaps: c_long,
-        block_inputs: c_long,
-        block_outputs: c_long,
-        messages_sent: c_long,
-        messages_received: c_long,
-        signals: c_long,
-        voluntary_switches: c_long,
-        involuntary_switches: c_long,
-    }
-
-    unsafe extern "C" {
-        fn getrusage(who: c_int, usage: *mut ResourceUsage) -> c_int;
-    }
-
-    const RUSAGE_CHILDREN: c_int = -1;
-    let mut usage = ResourceUsage::default();
-    // Linux amd64 and arm64 use the glibc rusage layout modeled above.
-    let result = unsafe { getrusage(RUSAGE_CHILDREN, &mut usage) };
-    if result != 0 {
-        return Err(format!("getrusage failed: {}", std::io::Error::last_os_error()));
-    }
-    let micros = |value: &TimeVal| {
-        (value.seconds.max(0) as u64) * 1_000_000 + value.microseconds.max(0) as u64
-    };
-    Ok(ChildUsage {
-        user_us: micros(&usage.user),
-        system_us: micros(&usage.system),
-        max_rss_kb: usage.max_rss.max(0) as u64,
-        minor_faults: usage.minor_faults.max(0) as u64,
-        major_faults: usage.major_faults.max(0) as u64,
-        voluntary_switches: usage.voluntary_switches.max(0) as u64,
-        involuntary_switches: usage.involuntary_switches.max(0) as u64,
-    })
-}
-
-#[cfg(not(target_os = "linux"))]
-fn child_usage() -> Result<ChildUsage, String> {
-    Err("resource accounting requires Linux".to_string())
-}
-
-pub(super) fn summary(values: Vec<f64>) -> Summary {
-    assert!(!values.is_empty(), "statistics require at least one sample");
-    let mut sorted = values;
-    sorted.sort_by(f64::total_cmp);
-    let mean = sorted.iter().sum::<f64>() / sorted.len() as f64;
-    let variance = sorted.iter().map(|value| (value - mean).powi(2)).sum::<f64>()
-        / sorted.len() as f64;
-    let center = median_sorted(&sorted);
-    let mut deviations: Vec<f64> = sorted.iter().map(|value| (value - center).abs()).collect();
-    deviations.sort_by(f64::total_cmp);
-    Summary {
-        min: sorted[0],
-        median: center,
-        mean,
-        stddev: variance.sqrt(),
-        mad: median_sorted(&deviations),
-    }
-}
-
-fn median(mut values: Vec<f64>) -> f64 {
-    assert!(!values.is_empty(), "median requires at least one sample");
-    values.sort_by(f64::total_cmp);
-    median_sorted(&values)
-}
-
-fn median_sorted(values: &[f64]) -> f64 {
-    if values.len() % 2 == 1 {
-        values[values.len() / 2]
+fn set_once<T>(slot: &mut Option<T>, value: T, name: &str) -> Result<(), String> {
+    if slot.replace(value).is_some() {
+        Err(format!("allocation helper emitted duplicate {name}"))
     } else {
-        (values[values.len() / 2 - 1] + values[values.len() / 2]) / 2.0
-    }
-}
-
-pub(super) fn phase_index(phase: CompilePhase) -> usize {
-    match phase {
-        CompilePhase::Lex => 0,
-        CompilePhase::Parse => 1,
-        CompilePhase::Sema => 2,
-        CompilePhase::CodegenPlan => 3,
-        CompilePhase::ClassfileEmit => 4,
-        CompilePhase::Cleanup => 5,
-        CompilePhase::ResultDrop => 6,
+        Ok(())
     }
 }
 
@@ -714,7 +539,8 @@ fn line_count(source: &str) -> usize {
     if source.is_empty() {
         0
     } else {
-        source.bytes().filter(|&byte| byte == b'\n').count() + usize::from(!source.ends_with('\n'))
+        source.bytes().filter(|&byte| byte == b'\n').count()
+            + usize::from(!source.ends_with('\n'))
     }
 }
 
@@ -731,13 +557,50 @@ fn duration_ns(duration: Duration) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::summary;
+    use super::{Fixture, Workload, instrumented_preflight, parse_allocation_profile};
+    use crate::model::WorkloadIdentity;
+
+    const PHASES: &str = "phase\tlex\t1\t2\t2\nphase\tparse\t1\t2\t2\nphase\tsemantic_analysis\t1\t2\t2\nphase\tcodegen_planning\t1\t2\t2\nphase\tclassfile_serialization_and_plan_drop\t1\t2\t2\nphase\tanalysis_and_syntax_drop\t1\t2\t2\nphase\tresult_bytes_drop\t1\t2\t2\n";
 
     #[test]
-    fn statistics_include_median_and_mad() {
-        let stats = summary(vec![1.0, 2.0, 100.0]);
-        assert_eq!(stats.min, 1.0);
-        assert_eq!(stats.median, 2.0);
-        assert_eq!(stats.mad, 1.0);
+    fn allocation_protocol_requires_named_complete_balanced_output() {
+        let valid = format!(
+            "{PHASES}baseline_live\t10\npeak_live_growth\t20\nfinal_live\t10\ntotal\t14\t14\n"
+        );
+        assert!(parse_allocation_profile(&valid, 2).is_ok());
+        assert!(parse_allocation_profile(&valid.replace("final_live\t10", "final_live\t11"), 2).is_err());
+        assert!(parse_allocation_profile(&valid.replace("phase\tlex", "phase\tunknown"), 2).is_err());
+        assert!(parse_allocation_profile(&valid.replace("phase\tparse\t1\t2\t2\n", ""), 2).is_err());
+        assert!(parse_allocation_profile(&(valid.clone() + "baseline_live\t10\n"), 2).is_err());
+        assert!(parse_allocation_profile(&valid.replace("total\t14\t14", "total\t14\t13"), 2).is_err());
+    }
+
+    #[test]
+    fn timing_observer_preflight_matches_ordinary_output() {
+        let source = "public class X { public static void main(String[] args) {} }\n";
+        let baseline_output = njavac::compile(source, "X.java").unwrap();
+        let workload = Workload {
+            fixtures: vec![Fixture {
+                path: "X.java".into(),
+                source: source.to_string(),
+                source_file: "X.java".to_string(),
+                class_name: "X".to_string(),
+                baseline_output,
+            }],
+            identity: WorkloadIdentity {
+                fingerprint: "test".into(),
+                files: 1,
+                source_bytes: source.len() as u64,
+                physical_lines: 1,
+                nonblank_lines: 1,
+                output_class_bytes: 0,
+                minimal_input_fixture: "X.java".into(),
+                minimal_input_source_bytes: source.len() as u64,
+                minimal_input_physical_lines: 1,
+                minimal_input_output_bytes: 0,
+            },
+            startup_index: 0,
+        };
+        assert!(instrumented_preflight(&workload).is_ok());
     }
 }

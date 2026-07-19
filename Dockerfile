@@ -3,8 +3,8 @@
 # Deterministic build and execution environments for njavac.
 #
 # Shared stages isolate the pinned reference JDK from the Rust build. Final
-# targets then add only the capabilities needed by reference probes, fixture
-# acceptance, benchmarking, or fuzzing.
+# targets then add only the capabilities needed by deterministic Rust tests,
+# reference probes, fixture acceptance, benchmarking, or fuzzing.
 #
 # Caching:
 #   * cargo registry + target/ -> cache mounts, so dependency and incremental
@@ -44,6 +44,7 @@ FROM rust:1.95-slim-bookworm@sha256:d7482085ff5b415f84dba5647ae71606650bdef00db7
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
+COPY tests ./tests
 # target/ is a cache mount (not in the layer), so copy the binaries out to a
 # real path for downstream capability targets.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
@@ -52,9 +53,15 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     && mkdir -p /out \
     && cp target/release/njavac target/release/benchmark \
           target/release/benchmark_alloc target/release/classdiff \
-          target/release/fuzz /out/
+           target/release/fuzz /out/
 
-# ---- Stage 4: fixture acceptance, benchmarking, and paired diagnostics ------
+# ---- Deterministic Rust unit and integration tests ---------------------------
+FROM rust-build AS test
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/src/target \
+    cargo test --locked --lib --bins --tests
+
+# ---- Fixture acceptance, benchmarking, and paired diagnostics ---------------
 FROM reference AS acceptance
 WORKDIR /work
 # Marks this as the controlled harness so `bench` will produce timings.
@@ -68,7 +75,7 @@ COPY --from=rust-build /out/benchmark_alloc /usr/local/bin/benchmark_alloc
 COPY --from=rust-build /out/classdiff /usr/local/bin/classdiff
 ENTRYPOINT ["benchmark", "--njavac", "/usr/local/bin/njavac", "--alloc-helper", "/usr/local/bin/benchmark_alloc"]
 
-# ---- Stage 5: self-contained differential fuzzing ---------------------------
+# ---- Self-contained differential fuzzing ------------------------------------
 FROM reference AS fuzz
 WORKDIR /work
 COPY --from=rust-build /out/fuzz /usr/local/bin/fuzz

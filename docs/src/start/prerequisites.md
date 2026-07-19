@@ -49,8 +49,9 @@ uninstrumented, phase, and allocation passes.
 
 ## Acceptance boundary
 
-All correctness tests run through the repository's Docker-backed Make targets.
-There is no sanctioned host acceptance run and no `cargo test` substitute.
+All deterministic tests run through the repository's Docker-backed Make targets.
+There is no sanctioned host acceptance run or direct host `cargo test`
+substitute; use `make test` for the complete pass/fail suite.
 
 | Activity | Execution | Evidence |
 | --- | --- | --- |
@@ -58,7 +59,8 @@ There is no sanctioned host acceptance run and no `cargo test` substitute.
 | Compare against host `javac` | Unsanctioned | None |
 | Run `make verify` | Docker | Cached, suitable for the inner loop |
 | Run `make correctness` | Docker | Fresh exact-byte fixture evidence |
-| Run `make benchmark` | Docker | Fresh exact-byte fixture evidence plus controlled same-host performance and profiling sections |
+| Run `make test` | Docker | Complete deterministic pass/fail repository evidence; no timing claim |
+| Run `make benchmark` | Docker | Controlled same-host performance and resource evidence only |
 | Run fuzzer and worker gates | Docker | Evidence for their documented contracts |
 
 The detailed gate selection lives in [Command surface](../tooling/command-surface.md)

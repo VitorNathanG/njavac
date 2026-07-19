@@ -77,6 +77,11 @@ exact target surface belongs to `make help`; gate purposes belong to
 
 At minimum:
 
+`make test` is the aggregate deterministic pass/fail gate. The narrower rows below
+identify useful focused checks, but a completed repository change runs the
+aggregate unless the maintainer explicitly narrows the scope. `make benchmark` is
+separate performance evidence and must not contain or replace correctness tests.
+
 | Change | Required evidence |
 | --- | --- |
 | Documentation-only | `make docs-check`; compiler gate if Docker/build context changes |
@@ -85,6 +90,7 @@ At minimum:
 | Bug fix | Exact fixture or sanctioned behavioral regression, `make correctness`, and proof that the behavioral fuzz signature is gone when applicable |
 | JDK or javac-worker change | `make fuzz-verify` in addition to correctness |
 | Observer change | `make fuzz-observe-verify` |
+| Benchmark implementation or report contract | `make test` and a reduced `make benchmark` measurement smoke run |
 | Performance or profiling claim | The applicable uninstrumented or instrumented section of `make benchmark` |
 
 Use `make verify` for a fast cached loop, but refresh with `make record` after

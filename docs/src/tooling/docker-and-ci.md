@@ -6,11 +6,13 @@ shared by the reference-derived images, so host Java output is never a substitut
 
 ## Root image graph
 
-The root `Dockerfile` has two shared build stages and three capability targets:
+The root `Dockerfile` has shared reference and Rust build stages, one deterministic
+test target, and three runtime capability targets:
 
 ```mermaid
 flowchart LR
     Fetch[jdk-fetch] --> Reference[reference]
+    Rust[rust-build] --> Tests[test]
     Rust[rust-build] --> Acceptance[acceptance]
     Rust --> Fuzz[fuzz]
     Reference --> Acceptance
@@ -30,6 +32,7 @@ data across local rebuilds.
 | `reference` | `REFERENCE_IMAGE` | Complete verified JDK and reference tools; used by `probe` and as the base for reference-dependent targets. |
 | `acceptance` | `IMAGE` | Reference JDK, `njavac`, the unified `benchmark` runner, its internal allocation helper, `classdiff`, and the fixture snapshot. It sets `NJAVAC_IN_CONTAINER` and defaults to the benchmark harness. |
 | `fuzz` | `FUZZ_IMAGE` | Reference JDK, `fuzz`, and the two source-launched Java workers copied from `tools/`. Absolute worker paths bind the image to one repository revision. |
+| `test` | No runtime tag required | Rust source plus deterministic unit and CLI integration tests. It has no reference JDK and makes no timing assertions. The aggregate `make test` also runs reference, fuzzer, and documentation checks through their capability images. |
 
 Every image recipe using the root compiler Dockerfile names its target explicitly.
 Adding another stage cannot silently change a public compiler image tag merely by
@@ -43,6 +46,7 @@ verification, so cache state cannot silently select different javac bytes.
 | `verify`, `record` | Acceptance | Golden volume | No timing controls |
 | `correctness` | Acceptance | None | No timing controls |
 | `benchmark` | Acceptance | Host `RESULTS` directory for JSON; the default is ignored | One selected CPU, fixed CPU quota, memory and swap cap, PID limit |
+| Root Rust tests | Rust `test` build target | None | No timing controls; test results are deterministic assertions |
 | `probe` | Reference | Repository source mount | Diagnostic only |
 | `src-diff`, `diff` | Acceptance | Repository source/class mount | Diagnostic only |
 | Fuzzer targets | Fuzz | Only repository-root `fuzz-out/` | Not CPU-pinned; fuzzing is not a timing benchmark |
@@ -84,28 +88,29 @@ read-only repository mount. See [Documentation Tooling](documentation.md).
 | Direct host `javac` comparison | No | No; disallowed as reference evidence |
 | `make verify` | Yes | Cached inner-loop evidence; cache may be stale |
 | `make correctness` | Yes | Fresh exact-byte fixture evidence |
-| `make benchmark` | Yes | Fresh exact-byte fixture evidence plus controlled same-host performance and profiling sections |
+| `make test` | Yes | Complete deterministic pass/fail repository evidence across Rust, fixtures, instrumentation, fuzzer infrastructure, fixed-seed smoke, and documentation |
+| `make benchmark` | Yes | Controlled same-host performance and resource evidence only; no compatibility claim |
 | Fuzzer worker and observer gates | Yes | Evidence for their specific oracle contracts |
 | `make docs-check` | Yes | Documentation rendering and internal-link evidence |
 
-There is no `cargo test` or direct host compiler substitute. Compiler debugging
-uses the Docker-backed diagnostic targets from the command surface.
+Direct host `cargo test` is not sanctioned. `make test` is the Docker-backed
+aggregate test route; focused debugging uses the narrower targets from the command
+surface.
 
 ## Current CI state
 
-`.github/workflows/ci.yml` runs `make correctness` on GitHub Actions for every
-push and pull request. The job checks out the repository on `ubuntu-latest`,
-enables BuildKit, builds the explicit `acceptance` target, and performs the fresh
-byte comparison. It is an exact-byte fixture backstop. The runner and checkout
-action use mutable GitHub labels, but the reference JDK and compiler build images
-remain content-pinned by the repository Dockerfile.
+`.github/workflows/ci.yml` runs `make test` on GitHub Actions for every push and
+pull request. The job checks out the repository on `ubuntu-latest`, enables
+BuildKit, and executes every deterministic pass/fail surface through the aggregate
+Make target. The runner and checkout action use mutable GitHub labels, but the
+reference JDK and compiler build images remain content-pinned by the repository
+Dockerfile.
 
-The workflow does not run `make verify`, `make benchmark`, any fuzzer
-mode, worker or observer verification, or `make docs-check`. It has no
-declared Docker layer cache. A green GitHub status therefore establishes only the
-fresh exact-byte fixture contract of `make correctness` against the acceptance
-image built for that job. It does not establish documentation, fuzz, worker,
-observer, accepted alternate representations, or performance claims.
+The workflow does not run the mutable golden cache, random-seed fuzz campaign, or
+`make benchmark`. It has no declared Docker layer cache. A green GitHub status
+establishes the deterministic contracts aggregated by `make test`; it does not
+establish performance, random-fuzz coverage, or accepted alternate
+representations beyond those deterministic checks.
 
 Changes to the workflow should continue to invoke existing Make targets rather
 than recreate their Docker commands. Add the relevant explicit jobs when their

@@ -7,7 +7,9 @@
 #   make verify      [FILE=fixtures/x/F.java]  # fast gate: njavac vs cached goldens (may be stale)
 #   make correctness [FILE=..]                 # fresh authoritative exact fixture check, no timing
 #   make record      [FILE=..]                 # re-record goldens (after fixtures/JDK change), then verify
-#   make benchmark   [FILE=..]                 # exact fixture check + complete performance report
+#   make test                                  # every deterministic pass/fail repository check
+#   make benchmark                             # controlled performance/resource report only
+#   make benchmark-help                        # benchmark modes, controls, and binary help
 #   make probe       FILE=Probe.java           # disassemble a probe with the configured javac (javap -v -p)
 #   make src-diff    FILE=Probe.java           # diff BOTH compilers on one source (byte + classdiff + javap)
 #   make diff        A=a.class B=b.class       # structural class-file diff, in-container
@@ -33,7 +35,7 @@ WARMUP    ?= 2
 ROUNDS    ?= 100
 ALLOCATION_ROUNDS ?= 1
 RESULTS   ?= benchmark-results
-BENCH_REVISION := $(shell git rev-parse --short HEAD 2>/dev/null)$(shell test -z "$$(git status --porcelain)" || printf '%s' -dirty)
+BENCH_REVISION := $(shell git rev-parse HEAD 2>/dev/null)$(shell test -z "$$(git status --porcelain)" || printf '%s' -dirty)
 BENCH_TIMESTAMP := $(shell date -u +%Y%m%dT%H%M%SZ)
 BENCH_RUN_ID := $(shell printf '%s' $$$$)
 RESULT_FILE ?= benchmark-$(BENCH_REVISION)-$(BENCH_TIMESTAMP)-$(BENCH_RUN_ID).json
@@ -56,7 +58,7 @@ DOCS_PORT  ?= 3000
 DOCS_UID   := $(shell id -u)
 DOCS_GID   := $(shell id -g)
 
-.PHONY: help image reference-image fuzz-image probe src-diff verify correctness record benchmark diff fuzz fuzz-verify fuzz-selftest fuzz-observe-verify docs-image docs docs-build docs-check
+.PHONY: help test image reference-image fuzz-image benchmark-help probe src-diff verify correctness record benchmark diff fuzz fuzz-verify fuzz-selftest fuzz-observe-verify docs-image docs docs-build docs-check
 
 help:  ## show this help
 	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | sed -E 's/:.*## /\t/' | sort
@@ -69,6 +71,33 @@ reference-image:
 
 fuzz-image:
 	docker build --target fuzz -t $(FUZZ_IMAGE) .
+
+test: image fuzz-image docs-check  ## run every deterministic pass/fail repository check
+	docker build --target test .
+	docker run --rm $(IMAGE) --no-performance
+	docker run --rm $(IMAGE) --verify-instrumentation
+	docker run --rm $(FUZZ_IMAGE) --seed 0 --selftest --out-dir /tmp/fuzz-selftest
+	docker run --rm $(FUZZ_IMAGE) --verify-observer
+	docker run --rm $(FUZZ_IMAGE) --seed 1 --count 257 --batch 64 --verify-worker --out-dir /tmp/fuzz-worker
+	docker run --rm $(FUZZ_IMAGE) --seed 1 --count 257 --batch 64 --out-dir /tmp/fuzz-smoke
+
+benchmark-help: image  ## show benchmark modes, Make controls, and in-image binary help
+	@printf '%s\n' \
+	  'make benchmark' \
+	  '  controlled performance/resource JSON report only' \
+	  '  use make test or make correctness for pass/fail correctness' \
+	  '' \
+	  'Make controls (effective values):' \
+	  '  BENCH_CPU=$(BENCH_CPU)  BENCH_MEM=$(BENCH_MEM)' \
+	  '  SAMPLES=$(SAMPLES)  WARMUP=$(WARMUP)  ROUNDS=$(ROUNDS)' \
+	  '  ALLOCATION_ROUNDS=$(ALLOCATION_ROUNDS)' \
+	  '  RESULTS=$(RESULTS)  RESULT_FILE=$(RESULT_FILE)' \
+	  '  BENCH_POWER_MODE=$(BENCH_POWER_MODE)' \
+	  '' \
+	  'Fixed Docker controls: one CPU quota, memory=same swap limit, pids=256' \
+	  '' \
+	  'In-image binary help:'
+	docker run --rm --entrypoint benchmark $(IMAGE) --help
 
 probe: reference-image  ## disassemble a .java with the configured javac: make probe FILE=Probe.java
 	@test -n "$(FILE)" || { echo "usage: make probe FILE=path/to/Probe.java"; exit 2; }
@@ -102,7 +131,8 @@ record: image  ## re-record goldens from the configured javac, then verify
 	docker run --rm -v $(VOLUME):$(GOLDENS) $(IMAGE) --record --golden-dir $(GOLDENS)
 	docker run --rm -v $(VOLUME):$(GOLDENS) $(IMAGE) --offline --golden-dir $(GOLDENS) $(FILE)
 
-benchmark: image  ## exact-byte fixture check + complete controlled performance report
+benchmark: image  ## run the controlled performance/resource report (no correctness gate)
+	@test -z "$(FILE)" || { echo "benchmark does not accept FILE; use make correctness FILE=$(FILE)"; exit 2; }
 	mkdir -p "$(RESULTS)"
 	image_id="$$(docker image inspect --format '{{.Id}}' $(IMAGE))"; \
 	docker run --rm \
@@ -116,8 +146,8 @@ benchmark: image  ## exact-byte fixture check + complete controlled performance 
 	  --env NJAVAC_BENCH_POWER_MODE="$(BENCH_POWER_MODE)" \
 	  --env NJAVAC_BENCH_IMAGE_ID="$$image_id" \
 	  "$$image_id" --samples $(SAMPLES) --warmup $(WARMUP) --rounds $(ROUNDS) \
-	    --allocation-rounds $(ALLOCATION_ROUNDS) --json /results/$(RESULT_FILE) $(FILE)
-	@echo "host report: $(RESULTS)/$(RESULT_FILE)"
+	    --allocation-rounds $(ALLOCATION_ROUNDS) --json /results/$(RESULT_FILE) && \
+	echo "host report: $(RESULTS)/$(RESULT_FILE)"
 
 diff: image  ## structural class-file diff in-container: make diff A=x.class B=y.class
 	@test -n "$(A)" && test -n "$(B)" || { echo "usage: make diff A=a.class B=b.class"; exit 2; }

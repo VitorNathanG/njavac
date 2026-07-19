@@ -107,7 +107,9 @@ and types to change. In particular:
   `codegen::generate` are maintainer-facing pipeline seams.
 - `CompileObserver`, `CompilePhase`, and `compile_observed` are hidden
   repository-tooling seams used to attribute production-pipeline work without
-  adding timers to ordinary `compile` calls.
+  adding timers to ordinary `compile` calls. `CompilePhase` contains only
+  compiler-owned stages; caller-owned destruction of returned bytes belongs to
+  the benchmark model.
 - AST layouts, `Analysis`, `MethodInfo`, `ClassPlan`, and class-file model types
   may evolve without compatibility wrappers.
 - `Analysis` is tied to one exact `ExprArena`; `codegen::plan` asserts arena and

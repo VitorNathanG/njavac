@@ -89,8 +89,8 @@ repository-relative, shell-safe path constraint as other diagnostic paths.
 
 ## Fixture mismatch diagnostics
 
-The benchmark correctness pass reports every failing basename, then expands the
-first failure. It prints:
+The correctness harness used by `make correctness` reports every failing basename,
+then expands the first failure. It prints:
 
 - A byte-offset-precise structural divergence.
 - The first differing line of `javap -v -p` output with nearby context.

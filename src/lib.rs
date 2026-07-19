@@ -15,10 +15,9 @@ pub mod parser;
 pub mod sema;
 pub mod codegen;
 
-/// Compilation-lifecycle markers exposed to repository tooling such as the
-/// benchmark runner. `ResultDrop` is emitted by the caller after
-/// `compile_observed` returns; the other markers are emitted inside the pipeline.
-/// These names are not a stable external profiling API.
+/// Compiler-owned compilation-stage markers exposed to repository tooling such
+/// as the benchmark runner. Caller-owned work after `compile_observed` returns is
+/// deliberately outside this enum. These names are not a stable external API.
 #[doc(hidden)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CompilePhase {
@@ -28,7 +27,6 @@ pub enum CompilePhase {
     CodegenPlan,
     ClassfileEmit,
     Cleanup,
-    ResultDrop,
 }
 
 /// Repository-tooling hook around production compiler stages.
@@ -101,4 +99,80 @@ pub fn compile_observed<O: CompileObserver>(
     drop(unit);
     observer.phase_finished(CompilePhase::Cleanup);
     Ok(bytes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CompileObserver, CompilePhase, compile_observed};
+
+    #[derive(Default)]
+    struct Recorder(Vec<(bool, CompilePhase)>);
+
+    impl CompileObserver for Recorder {
+        fn phase_started(&mut self, phase: CompilePhase) {
+            self.0.push((true, phase));
+        }
+
+        fn phase_finished(&mut self, phase: CompilePhase) {
+            self.0.push((false, phase));
+        }
+    }
+
+    fn observed(source: &str) -> Vec<CompilePhase> {
+        let mut recorder = Recorder::default();
+        assert!(compile_observed(source, "X.java", &mut recorder).is_err());
+        assert_eq!(recorder.0.len() % 2, 0, "observer emitted an unmatched event");
+        for events in recorder.0.chunks_exact(2) {
+            assert_eq!(events[0], (true, events[0].1));
+            assert_eq!(events[1], (false, events[0].1));
+        }
+        recorder.0.into_iter().step_by(2).map(|event| event.1).collect()
+    }
+
+    #[test]
+    fn observer_reports_well_formed_error_prefixes() {
+        assert_eq!(observed("@"), vec![CompilePhase::Lex]);
+        assert_eq!(observed("public"), vec![CompilePhase::Lex, CompilePhase::Parse]);
+        assert_eq!(
+            observed("public class X { public static void main(String[] args) { int x; System.out.println(x); } }"),
+            vec![CompilePhase::Lex, CompilePhase::Parse, CompilePhase::Sema],
+        );
+        assert_eq!(
+            observed("public class X { public static void main(String[] args) { boolean a = true; boolean b = false; boolean c = a & (b == true); } }"),
+            vec![
+                CompilePhase::Lex,
+                CompilePhase::Parse,
+                CompilePhase::Sema,
+                CompilePhase::CodegenPlan,
+            ],
+        );
+    }
+
+    #[test]
+    fn observer_reports_the_complete_successful_sequence() {
+        let source = "public class X { public static void main(String[] args) {} }";
+        let mut recorder = Recorder::default();
+        assert!(compile_observed(source, "X.java", &mut recorder).is_ok());
+        assert_eq!(recorder.0.len(), 12);
+        let phases: Vec<_> = recorder
+            .0
+            .chunks_exact(2)
+            .map(|events| {
+                assert_eq!(events[0], (true, events[0].1));
+                assert_eq!(events[1], (false, events[0].1));
+                events[0].1
+            })
+            .collect();
+        assert_eq!(
+            phases,
+            vec![
+                CompilePhase::Lex,
+                CompilePhase::Parse,
+                CompilePhase::Sema,
+                CompilePhase::CodegenPlan,
+                CompilePhase::ClassfileEmit,
+                CompilePhase::Cleanup,
+            ],
+        );
+    }
 }

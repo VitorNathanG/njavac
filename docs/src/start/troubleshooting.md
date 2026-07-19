@@ -33,10 +33,19 @@ Docker CPU and memory controls do not eliminate host scheduling, virtualization,
 power, thermal, or background-load variance. The benchmark is controlled, not
 deterministic.
 
-The benchmark fails when a warm-up, measured compiler, profiled compilation, or
-allocation helper fails. If a timing remains implausibly short, inspect the raw
-samples in the applicable JSON under `benchmark-results/` and reproduce the
-compiler command with visible output.
+The benchmark fails when a warm-up, measured compiler, profiled compilation,
+allocation invariant, or publication fails. Measured compiler failures already
+include compiler identity, scenario,
+warm-up or sample number, the exact command, original status, diagnostic replay
+status, and replay stderr. Use that diagnostic rather than reconstructing a hidden
+command. If a successful timing remains implausibly short, inspect the raw samples
+in the applicable exploratory JSON under `benchmark-results/`.
+
+Run `make test` for deterministic report parsing, phase sequencing,
+allocation/resource protocols, CLI behavior, exact-byte correctness, fuzzer
+infrastructure, and documentation validation. Run
+`make benchmark-help` to inspect the effective modes and controls without relying
+on a host-built binary.
 
 ## `make verify` fails unexpectedly
 
@@ -74,10 +83,10 @@ That following verification is already part of `make record`; an immediate
 
 ## A focused fixture command cannot see an ad hoc source
 
-`verify`, `correctness`, and `benchmark` use sources copied into the acceptance image
-and do not bind-mount the repository. Their `FILE` mode is intended for fixtures
-present in that image. Use `make src-diff FILE=...` for an ad hoc source under the
-repository; that target mounts the working tree.
+`verify` and `correctness` use sources copied into the acceptance image and do not
+bind-mount the repository. Their `FILE` mode is intended for fixtures present in
+that image. `benchmark` rejects `FILE`. Use `make src-diff FILE=...` for an ad hoc
+source under the repository; that target mounts the working tree.
 
 Each command rebuilds or re-evaluates its capability-image dependency first, so a
 newly added fixture should become visible to acceptance commands. If
@@ -211,9 +220,8 @@ then isolate the relevant worker or direct binary mode.
 
 `make image` proves only that the pinned acceptance build completed. The
 performance sections of `make benchmark` measure speed and resources; they are not
-compatibility evidence. The benchmark's initial fresh byte comparison is its only
-compatibility section, and broader changes still require their applicable fuzz or
-infrastructure gates.
+compatibility evidence. The benchmark has no compatibility section; run `make
+test` for deterministic correctness and infrastructure evidence.
 
 If benchmark numbers move sharply on macOS, verify that both runs used the same
 power mode and comparable thermal/background conditions. Low Power Mode and
@@ -236,8 +244,8 @@ the pinned build rather than suppressing it.
 
 ## CI is green but another gate was not run
 
-The hosted workflow runs only `make correctness` on pushes and pull requests. It
-does not run documentation, fuzz, worker, observer, or benchmark targets.
-Run those explicitly when the change requires them. See
+The hosted workflow runs `make test` on pushes and pull requests. It does not run
+random-seed fuzz campaigns or live performance measurement. Run those explicitly
+when the change requires them. See
 [Docker and CI](../tooling/docker-and-ci.md) for the current automation boundary
 and [Command Surface](../tooling/command-surface.md) for gate selection.

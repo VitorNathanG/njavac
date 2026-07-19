@@ -36,15 +36,16 @@ verification. Running `make verify` immediately afterward repeats that check.
 Do not diagnose compiler behavior from a cached mismatch until cache freshness is
 known. See [Fixtures and goldens](../tooling/fixtures-and-goldens.md).
 
-## Run the fresh fixture gate
+## Run the deterministic suite
 
 ```sh
-make correctness
+make test
 ```
 
-This invokes the configured reference compiler afresh in Docker and byte-compares
-the complete fixture suite. It is the pre-commit exact-byte gate. A successful
-Docker image build or cached verify does not replace it.
+This runs every deterministic pass/fail check through Docker: Rust tests, fresh
+exact-byte fixtures, instrumentation equivalence, fuzzer infrastructure and
+fixed-seed smoke checks, and documentation validation. Use `make correctness` only
+for a narrower fresh fixture loop while developing.
 
 Use the controlled benchmark only when authoritative timing is also needed:
 
@@ -52,9 +53,9 @@ Use the controlled benchmark only when authoritative timing is also needed:
 make benchmark
 ```
 
-The benchmark runs correctness, uninstrumented process and compiler-core samples,
-and isolated phase and allocation passes under CPU and memory controls. It writes
-a terminal report and ignored JSON artifact. Those controls
+The benchmark runs uninstrumented process and compiler-core samples plus isolated
+phase and allocation passes under CPU and memory controls. It writes a terminal
+report and ignored JSON artifact but asserts no compiler correctness. Those controls
 improve same-host comparability but do not make timing deterministic or portable
 between hosts.
 

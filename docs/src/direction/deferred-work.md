@@ -31,8 +31,8 @@ Language coverage belongs in [Language Rungs](language-rungs.md), not here.
   makes direct Make-wrapped builds difficult to maintain.
 - **Expand CI image assurance.** Export and restore BuildKit caches, pin workflow
   actions by commit, build both supported architectures after Docker or JDK
-  changes, and add selected documentation and fuzzer-infrastructure gates. Keep
-  performance evidence on native architecture rather than emulation.
+  changes, and keep performance evidence on native architecture rather than
+  emulation.
 - **Add narrower runtime images only on concrete demand.** A classdiff-only image
   can reduce cold diagnostic setup, and a minimal njavac image can support
   distribution. Do not add either until a measured workflow or product requirement

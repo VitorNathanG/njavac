@@ -12,29 +12,19 @@ Use this page to choose a command. Use `make help` and the relevant binary's
 
 ```mermaid
 flowchart TD
-    Edit[Edit code or fixture] --> Fast[make verify]
-    Fast --> Fresh[make correctness]
-    Fresh --> Kind{What changed?}
-    Kind -->|Performance or profiling| Benchmark[make benchmark]
-    Kind -->|Language behavior| Fuzz[make fuzz]
-    Kind -->|JDK or javac worker| Worker[make fuzz-verify]
-    Kind -->|Observer| Observer[make fuzz-observe-verify]
-    Kind -->|Documentation| Docs[make docs-check]
-    Kind -->|None of these| Complete[Required gate complete]
+    Edit[Edit repository] --> Test[make test]
+    Test --> Kind{Performance evidence needed?}
+    Kind -->|Yes| Benchmark[make benchmark]
+    Kind -->|No| Complete[Required gate complete]
     Benchmark --> Complete
-    Fuzz --> Complete
-    Worker --> Complete
-    Observer --> Complete
-    Docs --> Complete
 ```
 
-`make verify` is fast but cache-backed and can be stale. `make correctness` is
-the fresh, authoritative pre-commit exact-byte fixture gate. `make benchmark`
-adds uninstrumented process and compiler-core measurements, isolated phase and
-allocation passes under controls that support same-host comparisons. It does not
-make wall-clock results deterministic or portable across
-hosts. An image build or performance-report section is never compatibility
-evidence; the benchmark's separate initial correctness section is.
+`make test` is the complete deterministic pass/fail repository gate. Focused
+targets remain useful while developing, but they do not replace the aggregate.
+`make benchmark` is deliberately outside that gate: it collects only performance
+and resource evidence and never establishes correctness. Timing must not decide a
+test result, and deterministic correctness assertions must not be added to the
+benchmark path. Wall-clock results remain non-deterministic and non-portable.
 
 ## Target catalog
 
@@ -45,15 +35,17 @@ evidence; the benchmark's separate initial correctness section is.
 | `help` | Print the current Make target catalog. | Informational. It is the authority for target invocation syntax. |
 | `image` | Build the explicit `acceptance` target containing the reference JDK, compiler, fixture harness, and differ. | Acceptance-image prerequisite only. A successful image build does not compare compiler output. |
 | `docs-image` | Build the separate pinned mdBook and Mermaid image. | Documentation-tool prerequisite only. |
+| `benchmark-help` | Build the acceptance image, print effective Make controls and fixed Docker controls, then print the in-image benchmark binary help. | Informational sanctioned discovery route. |
 
-### Correctness and timing
+### Testing and timing
 
 | Target | Purpose | Gate semantics |
 | --- | --- | --- |
 | `verify` | Compile with njavac in Docker and compare against the persisted golden volume. It auto-records only when that volume has no class files. | Fast cached inner-loop gate. A nonempty cache is not freshness-checked and can be stale. |
-| `correctness` | Compile with both njavac and the configured in-image `javac`, then byte-compare fresh outputs. | Authoritative online exact-byte fixture gate with no timing pass. This is the normal pre-commit gate. |
+| `correctness` | Compile with both njavac and the configured in-image `javac`, then byte-compare fresh outputs. | Authoritative focused exact-byte fixture gate with no timing pass. The complete pre-commit gate is `make test`. |
 | `record` | Rebuild the golden cache from the configured in-image `javac`, then run an offline verification. | Cache-maintenance operation followed by a cached check. With `FILE`, recording still covers the whole suite; only the second verification is filtered. |
-| `benchmark` | Run fresh correctness, one uninstrumented performance pass, phase attribution, allocation attribution, and one unified report under Docker CPU and memory controls. | The initial exact-byte fixture pass is compatibility evidence. Performance sections are controlled same-host evidence only. With `FILE`, the harness checks only that fixture and skips performance. Every timed or profiled failure fails the command. |
+| `test` | Run all deterministic pass/fail checks: Rust tests, fresh exact-byte fixtures, instrumentation equivalence, fuzzer self-test, observer lifecycle, fixed-seed worker verification and fuzz smoke, and documentation checks. | Complete repository test gate. It makes no performance assertion and does not invoke `make benchmark`. |
+| `benchmark` | Run uninstrumented process and compiler-core measurements, phase attribution, allocation attribution, and one unified report under Docker controls. | Performance/resource evidence only. It rejects `FILE`, performs no reference byte comparison, and fails only when measurement or publication cannot complete. |
 
 See [Fixtures and Goldens](fixtures-and-goldens.md) for cache lifecycle and
 [Benchmarking and Profiling](profiling.md) for pass isolation, metrics, artifacts,
@@ -109,7 +101,7 @@ does not pass.
 
 | Variable | Used by | Meaning |
 | --- | --- | --- |
-| `FILE` | `probe`, `src-diff`, `verify`, `correctness`, `record`, `benchmark` | Select one source or fixture where supported. `probe` and `src-diff` require it. `record FILE=...` records the whole suite before filtering verification. `benchmark FILE=...` performs only focused correctness. |
+| `FILE` | `probe`, `src-diff`, `verify`, `correctness`, `record` | Select one source or fixture where supported. `probe` and `src-diff` require it. `record FILE=...` records the whole suite before filtering verification. `benchmark` rejects `FILE`; use `correctness FILE=...`. |
 | `A`, `B` | `diff` | Paths to the two class files, visible through the repository bind mount. |
 | `BENCH_CPU`, `BENCH_MEM` | `benchmark` | Select the Docker-visible CPU index and container memory limit for every benchmark pass. |
 | `SAMPLES`, `WARMUP`, `ROUNDS`, `ALLOCATION_ROUNDS` | `benchmark` | Control measured samples, untimed warm-ups, hot/phase corpus repetitions per sample, and allocation corpus repetitions. Positive-value validation belongs to the benchmark binary; `WARMUP` may be zero. |
@@ -168,7 +160,8 @@ host mount.
 | `make docs-build`, `make docs-check`, or `make docs` | Rendered host `docs/book/`; the directory is ignored. |
 | `make src-diff` | Terminal output only; temporary classes disappear with the container. |
 | `make correctness` | Terminal result only; class outputs remain inside the disposable container. |
-| `make benchmark` | Terminal report plus one revision- and time-named JSON file under the host `RESULTS` directory; the default directory is ignored. Temporary class outputs remain inside the disposable container. |
+| `make benchmark` | Terminal performance/resource report plus one full-revision- and time-named JSON file under host `RESULTS`. Temporary class outputs remain inside the disposable container. |
+| `make test` | Terminal pass/fail output, Docker build caches, and generated ignored `docs/book/`; fuzzer test artifacts stay in disposable containers. |
 
 A custom fuzzer `--out-dir` must remain below `fuzz-out/` to use Make's host mount.
 Output elsewhere in the container disappears with `--rm`.

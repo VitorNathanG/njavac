@@ -115,7 +115,7 @@ the whole suite; `FILE` applies only to the subsequent offline verification.
 | Fast focused fixture loop | `make verify FILE=fixtures/.../Case.java` | Cached and possibly stale |
 | Fresh focused diagnosis | `make correctness FILE=fixtures/.../Case.java` | Live configured `javac` |
 | Fresh pre-commit exact-byte gate | `make correctness` | Live configured `javac` |
-| Fresh exact-byte gate plus controlled performance report | `make benchmark` | Live configured `javac` |
+| Complete deterministic repository gate | `make test` | Live configured `javac` plus all other deterministic checks |
 | Refresh cache after fixture or JDK change | `make record` | Rewrites expected goldens from configured `javac` |
 
 Passing one focused fixture is not evidence that the complete corpus still
