@@ -1,4 +1,4 @@
-use super::{is_primitive_type, Parser};
+use super::{Parser, is_primitive_type};
 use crate::ast::{BinOp, CallArgs, CmpOp, ExprId, ExprKind, LogOp, Name};
 use crate::diagnostic::{CompileResult, Diagnostic};
 use crate::lexer::TokenKind;
@@ -82,7 +82,10 @@ impl Parser {
                 self.expect(&TokenKind::RParen)?;
                 self.expr(ExprKind::Paren(inner))
             }
-            TokenKind::Ident(name) => self.name_or_call(Name { text: name, span: token.span })?,
+            TokenKind::Ident(name) => self.name_or_call(Name {
+                text: name,
+                span: token.span,
+            })?,
             other => {
                 return Err(Diagnostic::parse(
                     token.span,

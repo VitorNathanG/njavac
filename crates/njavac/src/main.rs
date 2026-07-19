@@ -18,12 +18,18 @@ fn main() -> ExitCode {
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
-            "-d" => out_dir = Some(PathBuf::from(args.next().unwrap_or_else(|| usage("-d needs a directory")))),
+            "-d" => {
+                out_dir = Some(PathBuf::from(
+                    args.next().unwrap_or_else(|| usage("-d needs a directory")),
+                ))
+            }
             "-h" | "--help" => {
                 println!("usage: njavac [-d <dir>] <file.java> [<file.java> ...]");
                 return ExitCode::SUCCESS;
             }
-            flag if flag.starts_with('-') && flag.len() > 1 => usage(&format!("unknown option: {flag}")),
+            flag if flag.starts_with('-') && flag.len() > 1 => {
+                usage(&format!("unknown option: {flag}"))
+            }
             _ => inputs.push(a),
         }
     }
@@ -45,7 +51,11 @@ fn main() -> ExitCode {
             failed = true;
         }
     }
-    if failed { ExitCode::FAILURE } else { ExitCode::SUCCESS }
+    if failed {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    }
 }
 
 /// Compile one source file, writing `<ClassName>.class`. Returns a human-readable
@@ -63,7 +73,10 @@ fn compile_one(input: &str, out_dir: Option<&Path>) -> Result<(), String> {
     // The CLI names output from the source basename. The supported-language
     // contract requires it to match the public class, but compile() does not
     // currently enforce that relationship.
-    let class_name = source_file.strip_suffix(".java").unwrap_or(&source_file).to_owned();
+    let class_name = source_file
+        .strip_suffix(".java")
+        .unwrap_or(&source_file)
+        .to_owned();
 
     let bytes = njavac::compile(&source, &source_file)
         .map_err(|diagnostic| diagnostic.render(input, &source))?;

@@ -1,4 +1,4 @@
-use super::{is_primitive_type, Parser};
+use super::{Parser, is_primitive_type};
 use crate::ast::{BinOp, BranchBody, ExprKind, Stmt, StmtKind};
 use crate::diagnostic::{CompileResult, Diagnostic};
 use crate::lexer::TokenKind;
@@ -57,7 +57,11 @@ impl Parser {
         } else {
             None
         };
-        Ok(StmtKind::If { cond, then_branch, else_branch })
+        Ok(StmtKind::If {
+            cond,
+            then_branch,
+            else_branch,
+        })
     }
 
     // A brace-delimited block, or a single statement (Java allows both after
@@ -85,7 +89,11 @@ impl Parser {
                     "a local declaration requires a braced if/else body",
                 ));
             }
-            Ok(BranchBody { span: stmt.span, braced: false, stmts: vec![stmt] })
+            Ok(BranchBody {
+                span: stmt.span,
+                braced: false,
+                stmts: vec![stmt],
+            })
         }
     }
 

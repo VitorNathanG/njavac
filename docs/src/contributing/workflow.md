@@ -72,6 +72,20 @@ Internal invariant failures remain panics. Do not weaken an assertion or convert
 an invalid or behaviorally wrong path into apparent support merely to make a probe
 compile.
 
+## Format through the pinned toolchain
+
+Run `make fmt` after editing Rust. It is the only sanctioned mutating formatting
+command: it applies the repository's committed rustfmt policy through the pinned
+Docker toolchain and runs as the host UID/GID. Do not run a host `cargo fmt` or
+`rustfmt`; a different release or style edition can rewrite unrelated files.
+
+Before committing Rust changes, run `make fmt-check` and the applicable acceptance
+gates. Every Docker-backed njavac workspace build depends on the same non-mutating
+formatting check, and `make test` names it explicitly, so CI rejects an unformatted
+workspace even when the focused command was skipped. Formatting is mechanical;
+review the resulting diff and do not combine unrelated normalization with behavior
+work.
+
 ## Grow the fuzzer with the compiler
 
 Every compiler peculiarity established by a rung, divergence fix, or black-box

@@ -6,7 +6,10 @@ fn cli_writes_the_public_compile_result() {
     let directory = std::env::temp_dir().join(format!(
         "njavac-cli-{}-{}",
         std::process::id(),
-        SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos(),
     ));
     let output = directory.join("out");
     std::fs::create_dir_all(&output).unwrap();

@@ -151,12 +151,31 @@ pub(super) enum PrintArg {
 
 #[derive(Clone, Debug)]
 pub(super) enum FStmt {
-    Decl { ty: Ty, local: usize, init: Option<FExpr> },
-    Assign { local: usize, value: FExpr },
-    Compound { local: usize, op: BinOp, value: FExpr },
-    IncDec { local: usize, prefix: bool, inc: bool },
+    Decl {
+        ty: Ty,
+        local: usize,
+        init: Option<FExpr>,
+    },
+    Assign {
+        local: usize,
+        value: FExpr,
+    },
+    Compound {
+        local: usize,
+        op: BinOp,
+        value: FExpr,
+    },
+    IncDec {
+        local: usize,
+        prefix: bool,
+        inc: bool,
+    },
     Println(PrintArg),
-    If { cond: FExpr, then_b: Vec<FStmt>, else_b: Option<Vec<FStmt>> },
+    If {
+        cond: FExpr,
+        then_b: Vec<FStmt>,
+        else_b: Option<Vec<FStmt>>,
+    },
 }
 
 /// Whether a program is random input or a guaranteed structural coverage case.
@@ -209,5 +228,9 @@ pub(super) struct Ident {
 pub(super) fn ident(n: u64) -> Ident {
     let class = format!("Fuzz{n:07}");
     let java_file = format!("{class}.java");
-    Ident { source_arg: java_file.clone(), java_file, class }
+    Ident {
+        source_arg: java_file.clone(),
+        java_file,
+        class,
+    }
 }

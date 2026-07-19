@@ -4,15 +4,15 @@
 //! For the documented supported language, the complete pipeline must preserve
 //! the repository-pinned javac's behavior and retain its bytes when practical.
 
+pub mod ast;
 pub mod classfile;
-pub mod span;
+pub mod codegen;
 pub mod diagnostic;
 mod fxhash;
 pub mod lexer;
-pub mod ast;
 pub mod parser;
 pub mod sema;
-pub mod codegen;
+pub mod span;
 
 /// Compiler-owned stages exposed only through this unpublished workspace crate.
 /// Caller-owned work after `compile_observed` returns is deliberately excluded.
@@ -112,24 +112,40 @@ mod tests {
     fn observed(source: &str) -> Vec<CompilePhase> {
         let mut recorder = Recorder::default();
         assert!(compile_observed(source, "X.java", &mut recorder).is_err());
-        assert_eq!(recorder.0.len() % 2, 0, "observer emitted an unmatched event");
+        assert_eq!(
+            recorder.0.len() % 2,
+            0,
+            "observer emitted an unmatched event"
+        );
         for events in recorder.0.chunks_exact(2) {
             assert_eq!(events[0], (true, events[0].1));
             assert_eq!(events[1], (false, events[0].1));
         }
-        recorder.0.into_iter().step_by(2).map(|event| event.1).collect()
+        recorder
+            .0
+            .into_iter()
+            .step_by(2)
+            .map(|event| event.1)
+            .collect()
     }
 
     #[test]
     fn observer_reports_well_formed_error_prefixes() {
         assert_eq!(observed("@"), vec![CompilePhase::Lex]);
-        assert_eq!(observed("public"), vec![CompilePhase::Lex, CompilePhase::Parse]);
         assert_eq!(
-            observed("public class X { public static void main(String[] args) { int x; System.out.println(x); } }"),
+            observed("public"),
+            vec![CompilePhase::Lex, CompilePhase::Parse]
+        );
+        assert_eq!(
+            observed(
+                "public class X { public static void main(String[] args) { int x; System.out.println(x); } }"
+            ),
             vec![CompilePhase::Lex, CompilePhase::Parse, CompilePhase::Sema],
         );
         assert_eq!(
-            observed("public class X { public static void main(String[] args) { boolean a = true; boolean b = false; boolean c = a & (b == true); } }"),
+            observed(
+                "public class X { public static void main(String[] args) { boolean a = true; boolean b = false; boolean c = a & (b == true); } }"
+            ),
             vec![
                 CompilePhase::Lex,
                 CompilePhase::Parse,

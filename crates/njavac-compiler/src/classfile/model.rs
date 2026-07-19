@@ -7,11 +7,11 @@
 /// though it occupies two JVM slots.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum VerificationType {
-    Top,          // tag 0
-    Integer,      // tag 1
-    Float,        // tag 2
-    Double,       // tag 3
-    Long,         // tag 4
+    Top,            // tag 0
+    Integer,        // tag 1
+    Float,          // tag 2
+    Double,         // tag 3
+    Long,           // tag 4
     Object(String), // tag 7 + u2 Class index
 }
 

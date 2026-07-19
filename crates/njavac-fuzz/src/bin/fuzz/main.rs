@@ -90,16 +90,34 @@ impl Config {
         while let Some(a) = args.next() {
             match a.as_str() {
                 "--seed" => {
-                    cfg.seed = args.next().and_then(|v| v.parse().ok()).expect("--seed needs a u64");
+                    cfg.seed = args
+                        .next()
+                        .and_then(|v| v.parse().ok())
+                        .expect("--seed needs a u64");
                     cfg.seed_set = true;
                 }
-                "--count" => cfg.count = args.next().and_then(|v| v.parse().ok()).unwrap_or(cfg.count),
-                "--batch" => cfg.batch = args.next().and_then(|v| v.parse().ok()).unwrap_or(cfg.batch),
-                "--out-dir" => cfg.out_dir = PathBuf::from(args.next().expect("--out-dir needs a path")),
+                "--count" => {
+                    cfg.count = args
+                        .next()
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or(cfg.count)
+                }
+                "--batch" => {
+                    cfg.batch = args
+                        .next()
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or(cfg.batch)
+                }
+                "--out-dir" => {
+                    cfg.out_dir = PathBuf::from(args.next().expect("--out-dir needs a path"))
+                }
                 "--javac" => cfg.javac = args.next().expect("--javac needs a path"),
                 "--jobs" => {
                     let j: u32 = args.next().and_then(|v| v.parse().ok()).unwrap_or(1);
-                    assert_eq!(j, 1, "--jobs > 1 is not implemented in v1 (single-threaded batched)");
+                    assert_eq!(
+                        j, 1,
+                        "--jobs > 1 is not implemented in v1 (single-threaded batched)"
+                    );
                 }
                 "--keep-going" => cfg.keep_going = true,
                 "--dump-sources" => cfg.dump_sources = true,
@@ -175,7 +193,9 @@ fn main() {
 
 /// Print each generated source with no compiler interaction.
 fn dump_sources(cfg: &Config) {
-    let mut g = Gen { rng: Rng::new(cfg.seed) };
+    let mut g = Gen {
+        rng: Rng::new(cfg.seed),
+    };
     for k in 0..cfg.count {
         let prog = g.gen_prog(k);
         println!("// ===== {} =====", prog.name.class);

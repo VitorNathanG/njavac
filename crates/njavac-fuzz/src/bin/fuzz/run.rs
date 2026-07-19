@@ -1,16 +1,17 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
+use crate::Config;
 use crate::finding::{
-    behavior_sig, finding_sig, print_sig_breakdown, report_compiler_finding, report_finding, SigInfo,
+    SigInfo, behavior_sig, finding_sig, print_sig_breakdown, report_compiler_finding,
+    report_finding,
 };
 use crate::generate::{Gen, Rng};
-use crate::javac::{assert_batch_classes, derive_java, worker_src_path, JavacWorker};
+use crate::javac::{JavacWorker, assert_batch_classes, derive_java, worker_src_path};
 use crate::model::Prog;
-use crate::observe::{observer_src_path, ObserveWorker};
-use crate::oracle::{classify, njavac_compile, ByteOutcome};
+use crate::observe::{ObserveWorker, observer_src_path};
+use crate::oracle::{ByteOutcome, classify, njavac_compile};
 use crate::render::render;
-use crate::Config;
 
 #[derive(Default)]
 struct Tally {
@@ -49,7 +50,9 @@ pub(super) fn run(cfg: &Config) -> ! {
     let observer_src = observer_src_path();
     let mut worker = JavacWorker::spawn(&java, &worker_src);
     let mut observer: Option<ObserveWorker> = None;
-    let mut g = Gen { rng: Rng::new(cfg.seed) };
+    let mut g = Gen {
+        rng: Rng::new(cfg.seed),
+    };
     let mut tally = Tally::default();
     let mut byte_sigs: HashMap<String, SigInfo> = HashMap::new();
     let mut behavior_sigs: HashMap<String, SigInfo> = HashMap::new();
@@ -57,7 +60,12 @@ pub(super) fn run(cfg: &Config) -> ! {
 
     println!(
         "fuzz: seed={} count={} batch={} javac-worker={} observer={} (lazy)\n  reproduce this exact run with: make fuzz SEED={}",
-        cfg.seed, cfg.count, cfg.batch, worker_src.display(), observer_src.display(), cfg.seed
+        cfg.seed,
+        cfg.count,
+        cfg.batch,
+        worker_src.display(),
+        observer_src.display(),
+        cfg.seed
     );
 
     // Generate every batch completely before either compiler sees it. The single
@@ -97,10 +105,7 @@ pub(super) fn run(cfg: &Config) -> ! {
                             p,
                             s,
                             "scheduled-generator-invalid",
-                            &format!(
-                                "guaranteed {} case was rejected by javac",
-                                p.kind.label()
-                            ),
+                            &format!("guaranteed {} case was rejected by javac", p.kind.label()),
                         );
                         if !cfg.keep_going {
                             finish_and_exit(&tally, cfg.count, &byte_sigs, &behavior_sigs);
@@ -154,7 +159,10 @@ pub(super) fn run(cfg: &Config) -> ! {
                     }
                 }
                 ByteOutcome::Identical => tally.exact += 1,
-                ByteOutcome::Divergent { javac: a, njavac: b } => {
+                ByteOutcome::Divergent {
+                    javac: a,
+                    njavac: b,
+                } => {
                     tally.byte_divergent += 1;
                     let rep = njavac_classdump::diff_report(a, &b);
                     let sig = finding_sig(rep.as_deref());
@@ -164,9 +172,8 @@ pub(super) fn run(cfg: &Config) -> ! {
                         example: p.name.class.clone(),
                     });
                     info.count += 1;
-                    let observer = observer.get_or_insert_with(|| {
-                        ObserveWorker::spawn(&java, &observer_src)
-                    });
+                    let observer =
+                        observer.get_or_insert_with(|| ObserveWorker::spawn(&java, &observer_src));
                     let t_observer = Instant::now();
                     let observations = observer.observe_pair(&p.name.class, a, &b);
                     tally.observer_time += t_observer.elapsed();
@@ -186,10 +193,12 @@ pub(super) fn run(cfg: &Config) -> ! {
                     tally.findings += 1;
                     let behavior_sig = behavior_sig(&observations);
                     let first_behavior = !behavior_sigs.contains_key(&behavior_sig);
-                    let info = behavior_sigs.entry(behavior_sig.clone()).or_insert_with(|| SigInfo {
-                        count: 0,
-                        example: p.name.class.clone(),
-                    });
+                    let info = behavior_sigs
+                        .entry(behavior_sig.clone())
+                        .or_insert_with(|| SigInfo {
+                            count: 0,
+                            example: p.name.class.clone(),
+                        });
                     info.count += 1;
                     if first_behavior {
                         println!(
@@ -210,9 +219,17 @@ pub(super) fn run(cfg: &Config) -> ! {
         n += this;
         println!(
             "  progress {n}/{}  scheduled-long={} exact={} behavior-match={} byte-divergent={} gen-invalid={} njavac-unsupported={} njavac-syntax-error={} njavac-internal-panic={} behavioral-findings={} lines={}",
-            cfg.count, tally.scheduled, tally.exact, tally.behavior_match, tally.byte_divergent,
-            tally.generator_invalid, tally.njavac_unsupported, tally.njavac_syntax_error,
-            tally.njavac_internal_panic, tally.findings, tally.lines
+            cfg.count,
+            tally.scheduled,
+            tally.exact,
+            tally.behavior_match,
+            tally.byte_divergent,
+            tally.generator_invalid,
+            tally.njavac_unsupported,
+            tally.njavac_syntax_error,
+            tally.njavac_internal_panic,
+            tally.findings,
+            tally.lines
         );
     }
 
@@ -232,9 +249,16 @@ fn summary(t: &Tally, count: u64) {
         + t.njavac_internal_panic;
     println!(
         "\nfuzz done: {processed}/{count} cases  scheduled-long={} exact={} behavior-match={} byte-divergent={} gen-invalid={} njavac-unsupported={} njavac-syntax-error={} njavac-internal-panic={} behavioral-findings={}  ({} lines compiled)",
-        t.scheduled, t.exact, t.behavior_match, t.byte_divergent, t.generator_invalid,
-        t.njavac_unsupported, t.njavac_syntax_error, t.njavac_internal_panic,
-        t.findings, t.lines
+        t.scheduled,
+        t.exact,
+        t.behavior_match,
+        t.byte_divergent,
+        t.generator_invalid,
+        t.njavac_unsupported,
+        t.njavac_syntax_error,
+        t.njavac_internal_panic,
+        t.findings,
+        t.lines
     );
     let (jt, nt, n) = (
         t.javac_time.as_secs_f64(),
@@ -249,7 +273,10 @@ fn summary(t: &Tally, count: u64) {
         nt * 1e6 / n,
     );
     if t.findings > 0 {
-        println!("  -> {} behavioral finding(s); see the fuzz-out/ dir", t.findings);
+        println!(
+            "  -> {} behavioral finding(s); see the fuzz-out/ dir",
+            t.findings
+        );
     }
     if t.scheduled_failures > 0 {
         println!(

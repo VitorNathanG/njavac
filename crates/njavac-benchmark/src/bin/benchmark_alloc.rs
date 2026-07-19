@@ -80,7 +80,9 @@ fn record_deallocation(bytes: u64) {
         return;
     }
     if LIVE
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |live| live.checked_sub(bytes))
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |live| {
+            live.checked_sub(bytes)
+        })
         .is_err()
     {
         ACCOUNTING_ERROR.store(true, Ordering::Relaxed);
@@ -136,7 +138,9 @@ impl AllocationObserver {
         if let Some(error) = self.error.take() {
             return Err(error.to_string());
         }
-        self.sequence.complete_success().map_err(|error| error.to_string())
+        self.sequence
+            .complete_success()
+            .map_err(|error| error.to_string())
     }
 
     fn drop_result(&mut self, bytes: Vec<u8>) {
@@ -217,7 +221,9 @@ fn accounting_selftest() -> Result<(), String> {
         || after_growth.requested_bytes <= before_growth.requested_bytes
         || after_growth.released_bytes <= before_growth.released_bytes
     {
-        return Err("successful realloc growth was not counted as release plus request".to_string());
+        return Err(
+            "successful realloc growth was not counted as release plus request".to_string(),
+        );
     }
 
     let retained = snapshot();
@@ -253,7 +259,10 @@ fn run() -> Result<(), String> {
         }
         let fixtures = load_fixtures(&paths)?;
         allocation_preflight(&fixtures)?;
-        println!("allocation instrumentation verified for {} fixtures", fixtures.len());
+        println!(
+            "allocation instrumentation verified for {} fixtures",
+            fixtures.len()
+        );
         return Ok(());
     }
     let rounds: usize = first
@@ -349,12 +358,9 @@ fn allocation_preflight(fixtures: &[Fixture]) -> Result<(), String> {
         let ordinary = njavac::compile(&fixture.source, &fixture.source_file)
             .map_err(|diagnostic| diagnostic.render(&fixture.display_path, &fixture.source))?;
         let mut observer = AllocationObserver::new();
-        let observed = njavac_compiler::compile_observed(
-            &fixture.source,
-            &fixture.source_file,
-            &mut observer,
-        )
-        .map_err(|diagnostic| diagnostic.render(&fixture.display_path, &fixture.source))?;
+        let observed =
+            njavac_compiler::compile_observed(&fixture.source, &fixture.source_file, &mut observer)
+                .map_err(|diagnostic| diagnostic.render(&fixture.display_path, &fixture.source))?;
         observer.complete_compile()?;
         if observed != ordinary {
             return Err(format!(

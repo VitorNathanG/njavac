@@ -1,5 +1,5 @@
-use crate::ast::{BinOp, CmpOp, ExprArena, ExprId, ExprKind, LogOp, PrimitiveType};
 use super::stack::StackTy;
+use crate::ast::{BinOp, CmpOp, ExprArena, ExprId, ExprKind, LogOp, PrimitiveType};
 
 /// A compile-time constant value in one of the four JVM computational types.
 /// `boolean`/`char` fold into `Int` (their code-point / 0-1 value).

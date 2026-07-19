@@ -17,7 +17,12 @@ fn render_stmt(st: &FStmt, indent: usize, out: &mut String) {
     match st {
         FStmt::Decl { ty, local, init } => {
             if let Some(init) = init {
-                out.push_str(&format!("{pad}{} v{} = {};\n", ty.kw(), local, render_expr(init)));
+                out.push_str(&format!(
+                    "{pad}{} v{} = {};\n",
+                    ty.kw(),
+                    local,
+                    render_expr(init)
+                ));
             } else {
                 out.push_str(&format!("{pad}{} v{};\n", ty.kw(), local));
             }
@@ -26,7 +31,12 @@ fn render_stmt(st: &FStmt, indent: usize, out: &mut String) {
             out.push_str(&format!("{pad}v{} = {};\n", local, render_expr(value)));
         }
         FStmt::Compound { local, op, value } => {
-            out.push_str(&format!("{pad}v{} {}= {};\n", local, op.sym(), render_expr(value)));
+            out.push_str(&format!(
+                "{pad}v{} {}= {};\n",
+                local,
+                op.sym(),
+                render_expr(value)
+            ));
         }
         FStmt::IncDec { local, prefix, inc } => {
             let opsym = if *inc { "++" } else { "--" };
@@ -43,7 +53,11 @@ fn render_stmt(st: &FStmt, indent: usize, out: &mut String) {
             };
             out.push_str(&format!("{pad}System.out.println({a});\n"));
         }
-        FStmt::If { cond, then_b, else_b } => {
+        FStmt::If {
+            cond,
+            then_b,
+            else_b,
+        } => {
             out.push_str(&format!("{pad}if ({}) {{\n", render_expr(cond)));
             for s in then_b {
                 render_stmt(s, indent + 1, out);
@@ -104,8 +118,7 @@ fn render_expr_at(e: &FExpr, parent_prec: u8, right_child: bool) -> String {
         }
     };
 
-    if !matches!(e, FExpr::Paren(_))
-        && (prec < parent_prec || (right_child && prec == parent_prec))
+    if !matches!(e, FExpr::Paren(_)) && (prec < parent_prec || (right_child && prec == parent_prec))
     {
         format!("({body})")
     } else {
@@ -134,7 +147,11 @@ fn render_val(v: &Val) -> String {
     match v {
         Val::I(x) => int_str(*x),
         Val::L(x) => {
-            if *x < 0 { format!("-{}L", x.unsigned_abs()) } else { format!("{x}L") }
+            if *x < 0 {
+                format!("-{}L", x.unsigned_abs())
+            } else {
+                format!("{x}L")
+            }
         }
         Val::F(bits) => float_str(*bits),
         Val::D(bits) => double_str(*bits),
@@ -144,7 +161,11 @@ fn render_val(v: &Val) -> String {
 }
 
 fn int_str(x: i32) -> String {
-    if x < 0 { format!("-{}", x.unsigned_abs()) } else { x.to_string() }
+    if x < 0 {
+        format!("-{}", x.unsigned_abs())
+    } else {
+        x.to_string()
+    }
 }
 
 fn float_str(bits: u32) -> String {
@@ -152,7 +173,11 @@ fn float_str(bits: u32) -> String {
     if f.is_nan() {
         "(0.0f / 0.0f)".to_string()
     } else if f.is_infinite() {
-        if f > 0.0 { "(1.0f / 0.0f)".to_string() } else { "(-1.0f / 0.0f)".to_string() }
+        if f > 0.0 {
+            "(1.0f / 0.0f)".to_string()
+        } else {
+            "(-1.0f / 0.0f)".to_string()
+        }
     } else {
         let mut s = format!("{f}");
         if !s.contains(['.', 'e', 'E']) {
@@ -168,7 +193,11 @@ fn double_str(bits: u64) -> String {
     if f.is_nan() {
         "(0.0 / 0.0)".to_string()
     } else if f.is_infinite() {
-        if f > 0.0 { "(1.0 / 0.0)".to_string() } else { "(-1.0 / 0.0)".to_string() }
+        if f > 0.0 {
+            "(1.0 / 0.0)".to_string()
+        } else {
+            "(-1.0 / 0.0)".to_string()
+        }
     } else {
         let mut s = format!("{f}");
         if !s.contains(['.', 'e', 'E']) {

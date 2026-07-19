@@ -3,9 +3,7 @@ mod condition;
 mod emit;
 
 use crate::ast::{ExprArena, Method};
-use crate::classfile::{
-    CodeAttribute, ConstantPool, Method as CfMethod, VerificationType,
-};
+use crate::classfile::{CodeAttribute, ConstantPool, Method as CfMethod, VerificationType};
 use crate::sema::{FrameLocal, MethodInfo};
 use crate::span::Span;
 

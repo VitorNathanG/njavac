@@ -1,11 +1,11 @@
 use std::path::PathBuf;
 
+use crate::Config;
 use crate::generate::{Gen, Rng};
 use crate::javac::{reset_dir, run_javac_one};
 use crate::model::{FExpr, FStmt, PrintArg, Prog};
 use crate::oracle::{njavac_compile, selftest_outcome_capture};
 use crate::render::render;
-use crate::Config;
 
 pub(super) struct MinHarness {
     javac: String,
@@ -18,7 +18,12 @@ impl MinHarness {
     pub(super) fn new(javac: &str, seed: u64) -> Self {
         let dir = std::env::temp_dir().join(format!("njavac-fuzz-min-{seed}"));
         reset_dir(&dir);
-        MinHarness { javac: javac.to_string(), dir, spawns: 0, cap: 800 }
+        MinHarness {
+            javac: javac.to_string(),
+            dir,
+            spawns: 0,
+            cap: 800,
+        }
     }
 
     /// Compile a program with both compilers under its own fixed name.
@@ -34,7 +39,6 @@ impl MinHarness {
         let got = njavac_compile(&src, &prog.name.source_arg).accepted_bytes();
         (want, got)
     }
-
 }
 
 fn stmt_paren_reductions(stmt: &FStmt) -> Vec<FStmt> {
@@ -43,18 +47,29 @@ fn stmt_paren_reductions(stmt: &FStmt) -> Vec<FStmt> {
         FStmt::Decl { ty, local, init } => {
             if let Some(init) = init {
                 for e in expr_paren_reductions(init) {
-                    out.push(FStmt::Decl { ty: *ty, local: *local, init: Some(e) });
+                    out.push(FStmt::Decl {
+                        ty: *ty,
+                        local: *local,
+                        init: Some(e),
+                    });
                 }
             }
         }
         FStmt::Assign { local, value } => {
             for e in expr_paren_reductions(value) {
-                out.push(FStmt::Assign { local: *local, value: e });
+                out.push(FStmt::Assign {
+                    local: *local,
+                    value: e,
+                });
             }
         }
         FStmt::Compound { local, op, value } => {
             for e in expr_paren_reductions(value) {
-                out.push(FStmt::Compound { local: *local, op: *op, value: e });
+                out.push(FStmt::Compound {
+                    local: *local,
+                    op: *op,
+                    value: e,
+                });
             }
         }
         FStmt::Println(PrintArg::Expr(expr)) => {
@@ -62,9 +77,17 @@ fn stmt_paren_reductions(stmt: &FStmt) -> Vec<FStmt> {
                 out.push(FStmt::Println(PrintArg::Expr(e)));
             }
         }
-        FStmt::If { cond, then_b, else_b } => {
+        FStmt::If {
+            cond,
+            then_b,
+            else_b,
+        } => {
             for e in expr_paren_reductions(cond) {
-                out.push(FStmt::If { cond: e, then_b: then_b.clone(), else_b: else_b.clone() });
+                out.push(FStmt::If {
+                    cond: e,
+                    then_b: then_b.clone(),
+                    else_b: else_b.clone(),
+                });
             }
             for (i, child) in then_b.iter().enumerate() {
                 for reduced in stmt_paren_reductions(child) {
@@ -163,8 +186,12 @@ pub(super) fn selftest(cfg: &Config) -> i32 {
         return 1;
     }
     println!("  candidate outcome capture/classification passes");
-    let mut g = Gen { rng: Rng::new(cfg.seed) };
-    let mut h = SelftestHarness { inner: MinHarness::new(&cfg.javac, cfg.seed) };
+    let mut g = Gen {
+        rng: Rng::new(cfg.seed),
+    };
+    let mut h = SelftestHarness {
+        inner: MinHarness::new(&cfg.javac, cfg.seed),
+    };
     for k in 0..200 {
         let prog = g.gen_random_prog(k);
         let (want, got) = h.inner.compile_both(&prog);
@@ -187,7 +214,10 @@ pub(super) fn selftest(cfg: &Config) -> i32 {
                     );
                 }
             }
-            println!("SELFTEST OK: minimized case + diff written to {}", cfg.out_dir.display());
+            println!(
+                "SELFTEST OK: minimized case + diff written to {}",
+                cfg.out_dir.display()
+            );
             return 0;
         }
     }

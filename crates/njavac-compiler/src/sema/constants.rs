@@ -262,11 +262,7 @@ fn compare_values<T: PartialOrd>(op: CmpOp, left: T, right: T) -> bool {
     }
 }
 
-fn eval_numeric_binary(
-    op: BinOp,
-    left: NumericConst,
-    right: NumericConst,
-) -> Option<NumericConst> {
+fn eval_numeric_binary(op: BinOp, left: NumericConst, right: NumericConst) -> Option<NumericConst> {
     if op.is_shift() {
         // Codegen deliberately leaves this javac quirk unfolded, so it cannot
         // expose an integer folding panic in an enclosing division either.

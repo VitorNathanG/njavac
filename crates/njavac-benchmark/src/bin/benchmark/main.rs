@@ -50,9 +50,8 @@ enum AppError {
 impl Config {
     fn defaults() -> Self {
         let home = std::env::var("HOME").unwrap_or_default();
-        let javac = std::env::var("JAVAC").unwrap_or_else(|_| {
-            format!("{home}/.sdkman/candidates/java/25.0.2-graalce/bin/javac")
-        });
+        let javac = std::env::var("JAVAC")
+            .unwrap_or_else(|_| format!("{home}/.sdkman/candidates/java/25.0.2-graalce/bin/javac"));
         let javap = std::env::var("JAVAP").unwrap_or_else(|_| {
             javac
                 .strip_suffix("javac")
@@ -186,10 +185,7 @@ impl Config {
     }
 }
 
-fn next_value(
-    args: &mut impl Iterator<Item = String>,
-    flag: &str,
-) -> Result<String, AppError> {
+fn next_value(args: &mut impl Iterator<Item = String>, flag: &str) -> Result<String, AppError> {
     args.next()
         .filter(|value| !value.starts_with("--"))
         .ok_or_else(|| AppError::Usage(format!("{flag} requires a value")))
@@ -221,8 +217,12 @@ fn discover_fixtures(directory: &str) -> Result<Vec<PathBuf>, String> {
 }
 
 fn collect_java(directory: &Path, output: &mut Vec<PathBuf>) -> Result<(), String> {
-    let entries = std::fs::read_dir(directory)
-        .map_err(|error| format!("cannot read fixture directory {}: {error}", directory.display()))?;
+    let entries = std::fs::read_dir(directory).map_err(|error| {
+        format!(
+            "cannot read fixture directory {}: {error}",
+            directory.display()
+        )
+    })?;
     for entry in entries {
         let entry = entry
             .map_err(|error| format!("cannot read an entry in {}: {error}", directory.display()))?;
@@ -232,7 +232,11 @@ fn collect_java(directory: &Path, output: &mut Vec<PathBuf>) -> Result<(), Strin
         let path = entry.path();
         if file_type.is_dir() {
             collect_java(&path, output)?;
-        } else if file_type.is_file() && path.extension().is_some_and(|extension| extension == "java") {
+        } else if file_type.is_file()
+            && path
+                .extension()
+                .is_some_and(|extension| extension == "java")
+        {
             output.push(path);
         }
     }
@@ -259,7 +263,10 @@ fn reject_duplicate_class_names(fixtures: &[PathBuf]) -> Result<(), String> {
 
 fn main() {
     let raw_args: Vec<OsString> = std::env::args_os().collect();
-    if raw_args.get(1).is_some_and(|argument| argument == "--resource-child") {
+    if raw_args
+        .get(1)
+        .is_some_and(|argument| argument == "--resource-child")
+    {
         resource::child(raw_args.into_iter().skip(2).collect());
     }
     let args: Result<Vec<String>, AppError> = raw_args
@@ -267,9 +274,9 @@ fn main() {
         .skip(1)
         .cloned()
         .map(|argument| {
-            argument.into_string().map_err(|_| {
-                AppError::Usage("arguments must be valid UTF-8".to_string())
-            })
+            argument
+                .into_string()
+                .map_err(|_| AppError::Usage("arguments must be valid UTF-8".to_string()))
         })
         .collect();
     let result = args.and_then(run);
@@ -335,16 +342,21 @@ fn run(args: impl IntoIterator<Item = String>) -> Result<(), AppError> {
                 String::from_utf8_lossy(&output.stderr).trim(),
             )));
         }
-        println!("instrumentation verification passed for {} fixtures", fixtures.len());
+        println!(
+            "instrumentation verification passed for {} fixtures",
+            fixtures.len()
+        );
         return Ok(());
     }
 
     let javac_dir = PathBuf::from(&config.out_dir).join("javac");
     let njavac_dir = PathBuf::from(&config.out_dir).join("njavac");
-    std::fs::create_dir_all(&javac_dir)
-        .map_err(|error| AppError::Runtime(format!("cannot create {}: {error}", javac_dir.display())))?;
-    std::fs::create_dir_all(&njavac_dir)
-        .map_err(|error| AppError::Runtime(format!("cannot create {}: {error}", njavac_dir.display())))?;
+    std::fs::create_dir_all(&javac_dir).map_err(|error| {
+        AppError::Runtime(format!("cannot create {}: {error}", javac_dir.display()))
+    })?;
+    std::fs::create_dir_all(&njavac_dir).map_err(|error| {
+        AppError::Runtime(format!("cannot create {}: {error}", njavac_dir.display()))
+    })?;
     if !config.performance_enabled() {
         correctness(&config, &fixtures, &javac_dir, &njavac_dir).map_err(AppError::Runtime)?;
         println!("correctness only; no report generated");
@@ -361,8 +373,8 @@ fn run(args: impl IntoIterator<Item = String>) -> Result<(), AppError> {
     }
     let context = report::collect_context(&config).map_err(AppError::Runtime)?;
     let workload = measurement::load_workload(&fixtures).map_err(AppError::Runtime)?;
-    let measurements = measurement::run(&config, &workload, &javac_dir, &njavac_dir)
-        .map_err(AppError::Runtime)?;
+    let measurements =
+        measurement::run(&config, &workload, &javac_dir, &njavac_dir).map_err(AppError::Runtime)?;
     let document = ReportDocument::new(
         context.metadata,
         context.provenance,
@@ -408,18 +420,26 @@ mod tests {
             vec!["--offline", "--json", "x.json"],
             vec!["A.java", "--samples", "1"],
         ] {
-            assert!(matches!(parse(&arguments), Err(AppError::Usage(_))), "{arguments:?}");
+            assert!(
+                matches!(parse(&arguments), Err(AppError::Usage(_))),
+                "{arguments:?}"
+            );
         }
-        assert!(matches!(parse(&["--warmup", "0"]), Ok(ParseOutcome::Run(_))));
+        assert!(matches!(
+            parse(&["--warmup", "0"]),
+            Ok(ParseOutcome::Run(_))
+        ));
         assert!(matches!(parse(&["--help"]), Ok(ParseOutcome::Help)));
     }
 
     #[test]
     fn duplicate_class_basenames_are_rejected() {
-        assert!(reject_duplicate_class_names(&[
-            PathBuf::from("a/Same.java"),
-            PathBuf::from("b/Same.java"),
-        ])
-        .is_err());
+        assert!(
+            reject_duplicate_class_names(&[
+                PathBuf::from("a/Same.java"),
+                PathBuf::from("b/Same.java"),
+            ])
+            .is_err()
+        );
     }
 }

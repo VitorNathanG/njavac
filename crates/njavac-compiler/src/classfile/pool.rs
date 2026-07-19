@@ -48,12 +48,10 @@ impl Entry {
             | Entry::Float(_)
             | Entry::Double(_) => [None, None],
             Entry::Class(n) => [Some(Entry::Utf8(n)), None],
-            Entry::NameAndType(n, d) =>
-                [Some(Entry::Utf8(n)), Some(Entry::Utf8(d))],
-            Entry::Fieldref(o, n, d) | Entry::Methodref(o, n, d) => [
-                Some(Entry::Class(o)),
-                Some(Entry::NameAndType(n, d)),
-            ],
+            Entry::NameAndType(n, d) => [Some(Entry::Utf8(n)), Some(Entry::Utf8(d))],
+            Entry::Fieldref(o, n, d) | Entry::Methodref(o, n, d) => {
+                [Some(Entry::Class(o)), Some(Entry::NameAndType(n, d))]
+            }
             Entry::StringConst(s) => [Some(Entry::Utf8(s)), None],
         }
     }
@@ -155,7 +153,10 @@ impl ConstantPool {
     }
 
     fn entry_index(&self, entry: Entry) -> u16 {
-        *self.index.get(&entry).expect("constant-pool entry not interned")
+        *self
+            .index
+            .get(&entry)
+            .expect("constant-pool entry not interned")
     }
 
     // Public interning API, one method per operand kind.
@@ -178,7 +179,11 @@ impl ConstantPool {
     }
     pub fn double(&mut self, v: f64) -> u16 {
         // Same canonicalization via `Double.doubleToLongBits` (`0x7ff8000000000000`).
-        let bits = if v.is_nan() { 0x7ff8_0000_0000_0000 } else { v.to_bits() };
+        let bits = if v.is_nan() {
+            0x7ff8_0000_0000_0000
+        } else {
+            v.to_bits()
+        };
         self.intern(Entry::Double(bits))
     }
     pub fn class(&mut self, internal_name: &str) -> u16 {

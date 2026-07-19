@@ -12,8 +12,10 @@ deterministic test target, and three runtime capability targets:
 ```mermaid
 flowchart LR
     Fetch[jdk-fetch] --> Reference[reference]
-    Rust[rust-build] --> Tests[test]
-    Rust[rust-build] --> Acceptance[acceptance]
+    Toolchain[rust-toolchain] --> Format[rust-format-check]
+    Format --> Rust[rust-build]
+    Rust --> Tests[test]
+    Rust --> Acceptance[acceptance]
     Rust --> Fuzz[fuzz]
     Reference --> Acceptance
     Reference --> Fuzz
@@ -26,10 +28,17 @@ and verifies its repository-recorded SHA-256 before extraction. The runtime and
 Rust base images are digest-pinned; the Rust build copies all workspace members
 and uses `Cargo.lock` through `cargo build --release --locked --workspace`.
 BuildKit caches the Cargo registry and shared workspace target data across local
-rebuilds.
+rebuilds. The digest-pinned Rust base installs the rustfmt component for the exact
+toolchain in `rust-toolchain.toml`. `rust-format-check` copies the complete Rust
+workspace and runs the policy in `rustfmt.toml` before `rust-build`; every compiler,
+test, acceptance, and fuzz image therefore rejects unformatted Rust. `make fmt`
+uses the earlier toolchain stage with a writable host-identity bind mount, while
+`make fmt-check` exposes the read-only build stage directly.
 
 | Target | Image variable | Contents and purpose |
 | --- | --- | --- |
+| `rust-toolchain` | `RUST_TOOLCHAIN_IMAGE` | Exact Rust release plus its matching rustfmt component; used only by the mutating `make fmt` command. |
+| `rust-format-check` | No runtime tag required | Complete Rust source snapshot checked against the committed rustfmt policy before any workspace build. |
 | `reference` | `REFERENCE_IMAGE` | Complete verified JDK and reference tools; used by `probe` and as the base for reference-dependent targets. |
 | `acceptance` | `IMAGE` | Reference JDK, `njavac`, the unified `benchmark` runner, its internal allocation helper, `classdiff`, and the fixture snapshot. It sets `NJAVAC_IN_CONTAINER` and defaults to the benchmark harness. |
 | `fuzz` | `FUZZ_IMAGE` | Reference JDK, `fuzz`, and the two source-launched Java workers copied from `tools/`. Absolute worker paths bind the image to one repository revision. |
@@ -48,6 +57,7 @@ verification, so cache state cannot silently select different javac bytes.
 | `correctness` | Acceptance | None | No timing controls |
 | `benchmark` | Acceptance | Host `RESULTS` directory for JSON; the default is ignored | One selected CPU, fixed CPU quota, memory and swap cap, PID limit |
 | Workspace Rust tests | Rust `test` build target | None | No timing controls; test results are deterministic assertions |
+| Rust formatting | Rust toolchain or format-check target | Writable repository mount only for `make fmt`; copied read-only build context for checks | No timing controls |
 | `probe` | Reference | Repository source mount | Diagnostic only |
 | `src-diff`, `diff` | Acceptance | Repository source/class mount | Diagnostic only |
 | Fuzzer targets | Fuzz | Only repository-root `fuzz-out/` | Not CPU-pinned; fuzzing is not a timing benchmark |
@@ -89,14 +99,14 @@ read-only repository mount. See [Documentation Tooling](documentation.md).
 | Direct host `javac` comparison | No | No; disallowed as reference evidence |
 | `make verify` | Yes | Cached inner-loop evidence; cache may be stale |
 | `make correctness` | Yes | Fresh exact-byte fixture evidence |
-| `make test` | Yes | Complete deterministic pass/fail repository evidence across Rust, fixtures, instrumentation, fuzzer infrastructure, fixed-seed smoke, and documentation |
+| `make test` | Yes | Complete deterministic pass/fail repository evidence across Rust formatting/tests, fixtures, instrumentation, fuzzer infrastructure, fixed-seed smoke, and documentation |
 | `make benchmark` | Yes | Controlled same-host performance and resource evidence only; no compatibility claim |
 | Fuzzer worker and observer gates | Yes | Evidence for their specific oracle contracts |
 | `make docs-check` | Yes | Documentation rendering and internal-link evidence |
 
-Direct host `cargo test` is not sanctioned. `make test` is the Docker-backed
-aggregate test route; focused debugging uses the narrower targets from the command
-surface.
+Direct host `cargo test` and `cargo fmt` are not sanctioned. `make test` is the
+Docker-backed aggregate test route, `make fmt` and `make fmt-check` own formatting,
+and focused debugging uses the narrower targets from the command surface.
 
 ## Current CI state
 

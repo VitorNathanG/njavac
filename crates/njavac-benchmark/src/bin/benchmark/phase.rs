@@ -40,9 +40,7 @@ impl PhaseName {
             Self::Parse => "parse",
             Self::SemanticAnalysis => "semantic_analysis",
             Self::CodegenPlanning => "codegen_planning",
-            Self::ClassfileSerializationAndPlanDrop => {
-                "classfile_serialization_and_plan_drop"
-            }
+            Self::ClassfileSerializationAndPlanDrop => "classfile_serialization_and_plan_drop",
             Self::AnalysisAndSyntaxDrop => "analysis_and_syntax_drop",
             Self::ResultBytesDrop => "result_bytes_drop",
         }
@@ -107,15 +105,16 @@ impl<T> PhaseValues<T> {
         }
     }
 
-    pub(super) fn try_map<U, E>(self, mut map: impl FnMut(T) -> Result<U, E>) -> Result<PhaseValues<U>, E> {
+    pub(super) fn try_map<U, E>(
+        self,
+        mut map: impl FnMut(T) -> Result<U, E>,
+    ) -> Result<PhaseValues<U>, E> {
         Ok(PhaseValues {
             lex: map(self.lex)?,
             parse: map(self.parse)?,
             semantic_analysis: map(self.semantic_analysis)?,
             codegen_planning: map(self.codegen_planning)?,
-            classfile_serialization_and_plan_drop: map(
-                self.classfile_serialization_and_plan_drop,
-            )?,
+            classfile_serialization_and_plan_drop: map(self.classfile_serialization_and_plan_drop)?,
             analysis_and_syntax_drop: map(self.analysis_and_syntax_drop)?,
             result_bytes_drop: map(self.result_bytes_drop)?,
         })
@@ -124,11 +123,22 @@ impl<T> PhaseValues<T> {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum SequenceError {
-    Nested { active: PhaseName, started: PhaseName },
-    UnexpectedStart { expected: PhaseName, actual: PhaseName },
+    Nested {
+        active: PhaseName,
+        started: PhaseName,
+    },
+    UnexpectedStart {
+        expected: PhaseName,
+        actual: PhaseName,
+    },
     FinishWithoutStart(PhaseName),
-    UnexpectedFinish { active: PhaseName, actual: PhaseName },
-    Incomplete { expected: PhaseName },
+    UnexpectedFinish {
+        active: PhaseName,
+        actual: PhaseName,
+    },
+    Incomplete {
+        expected: PhaseName,
+    },
 }
 
 impl fmt::Display for SequenceError {
@@ -147,7 +157,11 @@ impl fmt::Display for SequenceError {
                 actual.as_str(),
             ),
             Self::FinishWithoutStart(phase) => {
-                write!(formatter, "phase {} finished without starting", phase.as_str())
+                write!(
+                    formatter,
+                    "phase {} finished without starting",
+                    phase.as_str()
+                )
             }
             Self::UnexpectedFinish { active, actual } => write!(
                 formatter,
@@ -156,7 +170,11 @@ impl fmt::Display for SequenceError {
                 active.as_str(),
             ),
             Self::Incomplete { expected } => {
-                write!(formatter, "successful compilation omitted phase {}", expected.as_str())
+                write!(
+                    formatter,
+                    "successful compilation omitted phase {}",
+                    expected.as_str()
+                )
             }
         }
     }
@@ -176,7 +194,10 @@ impl SequenceValidator {
         }
         let phase = PhaseName::from(phase);
         if let Some(active) = self.active {
-            self.error = Some(SequenceError::Nested { active, started: phase });
+            self.error = Some(SequenceError::Nested {
+                active,
+                started: phase,
+            });
             return;
         }
         let expected = PhaseName::COMPILER.get(self.next).copied();
@@ -198,7 +219,10 @@ impl SequenceValidator {
         match self.active {
             None => self.error = Some(SequenceError::FinishWithoutStart(phase)),
             Some(active) if active != phase => {
-                self.error = Some(SequenceError::UnexpectedFinish { active, actual: phase });
+                self.error = Some(SequenceError::UnexpectedFinish {
+                    active,
+                    actual: phase,
+                });
             }
             Some(_) => {
                 self.active = None;
@@ -214,7 +238,10 @@ impl SequenceValidator {
         }
         if let Some(active) = self.active {
             self.reset();
-            return Err(SequenceError::UnexpectedFinish { active, actual: active });
+            return Err(SequenceError::UnexpectedFinish {
+                active,
+                actual: active,
+            });
         }
         if self.next != PhaseName::COMPILER.len() {
             let expected = PhaseName::COMPILER[self.next];
@@ -233,7 +260,10 @@ impl SequenceValidator {
         }
         if let Some(active) = self.active {
             self.reset();
-            return Err(SequenceError::UnexpectedFinish { active, actual: active });
+            return Err(SequenceError::UnexpectedFinish {
+                active,
+                actual: active,
+            });
         }
         self.reset();
         Ok(())
@@ -290,7 +320,10 @@ mod tests {
         out_of_order.started(CompilePhase::Parse);
         assert!(out_of_order.complete_error().is_err());
 
-        assert_eq!(PhaseName::from_protocol("result_bytes_drop"), Some(PhaseName::ResultBytesDrop));
+        assert_eq!(
+            PhaseName::from_protocol("result_bytes_drop"),
+            Some(PhaseName::ResultBytesDrop)
+        );
         assert_eq!(PhaseName::from_protocol("unknown"), None);
     }
 }

@@ -1,3 +1,3 @@
 # Rust reference<TAB>source path<TAB>symbol text
 njavac::compile	crates/njavac/src/lib.rs	pub fn compile
-njavac_classdump::dump	crates/njavac-classdump/src/lib.rs	pub use reader::{dump, Field};
+njavac_classdump::dump	crates/njavac-classdump/src/lib.rs	pub use reader::{Field, dump};

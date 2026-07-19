@@ -53,20 +53,30 @@ fn panic_payload(payload: &Box<dyn Any + Send>) -> String {
 /// distinct without depending on malformed input to trigger compiler internals.
 pub(super) fn selftest_outcome_capture() -> Result<(), String> {
     let unsupported = capture_outcome(|| {
-        Err(Diagnostic::unsupported_syntax(Span::empty(0), "selftest unsupported"))
+        Err(Diagnostic::unsupported_syntax(
+            Span::empty(0),
+            "selftest unsupported",
+        ))
     });
-    if !matches!(classify(Some(&[]), unsupported), ByteOutcome::NjavacUnsupported(_)) {
+    if !matches!(
+        classify(Some(&[]), unsupported),
+        ByteOutcome::NjavacUnsupported(_)
+    ) {
         return Err("unsupported diagnostic was misclassified".to_string());
     }
 
     let syntax = capture_outcome(|| Err(Diagnostic::parse(Span::empty(0), "selftest syntax")));
-    if !matches!(classify(Some(&[]), syntax), ByteOutcome::NjavacSyntaxError(_)) {
+    if !matches!(
+        classify(Some(&[]), syntax),
+        ByteOutcome::NjavacSyntaxError(_)
+    ) {
         return Err("syntax diagnostic was not classified as an invalid rejection".to_string());
     }
 
     let panic = capture_outcome(|| panic!("selftest injected invariant panic"));
     match classify(Some(&[]), panic) {
-        ByteOutcome::NjavacInternalPanic(detail) if detail == "selftest injected invariant panic" => {}
+        ByteOutcome::NjavacInternalPanic(detail)
+            if detail == "selftest injected invariant panic" => {}
         ByteOutcome::NjavacInternalPanic(detail) => {
             return Err(format!("panic payload was not preserved: {detail}"));
         }
@@ -98,6 +108,9 @@ pub(super) fn classify<'a>(javac: Option<&'a [u8]>, njavac: NjavacOutcome) -> By
         NjavacOutcome::SyntaxError(diagnostic) => ByteOutcome::NjavacSyntaxError(diagnostic),
         NjavacOutcome::InternalPanic(detail) => ByteOutcome::NjavacInternalPanic(detail),
         NjavacOutcome::Accepted(bytes) if javac == bytes => ByteOutcome::Identical,
-        NjavacOutcome::Accepted(bytes) => ByteOutcome::Divergent { javac, njavac: bytes },
+        NjavacOutcome::Accepted(bytes) => ByteOutcome::Divergent {
+            javac,
+            njavac: bytes,
+        },
     }
 }

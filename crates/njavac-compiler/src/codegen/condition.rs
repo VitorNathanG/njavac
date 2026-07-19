@@ -1,4 +1,4 @@
-use super::instruction::{Label, IFNE};
+use super::instruction::{IFNE, Label};
 use super::ops::negate_op;
 
 /// njavac's empirically reconstructed conditional-item model for the supported

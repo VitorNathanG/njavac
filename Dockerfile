@@ -39,11 +39,19 @@ COPY --from=jdk-fetch /opt/graalvm /opt/graalvm
 ENV JAVA_HOME=/opt/graalvm
 ENV JAVAC=$JAVA_HOME/bin/javac
 
-# ---- Stage 3: build the Rust workspace with the pinned toolchain ------------
-FROM rust:1.95-slim-bookworm@sha256:d7482085ff5b415f84dba5647ae71606650bdef00db7aeb69f4b3d170c3e4082 AS rust-build
+# ---- Stage 3: pinned Rust toolchain and formatting policy --------------------
+FROM rust:1.95-slim-bookworm@sha256:d7482085ff5b415f84dba5647ae71606650bdef00db7aeb69f4b3d170c3e4082 AS rust-toolchain
+RUN rustup component add --toolchain 1.95.0 rustfmt \
+    && rustfmt --version
 WORKDIR /src
-COPY Cargo.toml Cargo.lock ./
+
+FROM rust-toolchain AS rust-format-check
+COPY Cargo.toml Cargo.lock rust-toolchain.toml rustfmt.toml ./
 COPY crates ./crates
+RUN cargo fmt --all -- --check
+
+# ---- Stage 4: build the Rust workspace with the pinned toolchain ------------
+FROM rust-format-check AS rust-build
 # target/ is a cache mount (not in the layer), so copy the binaries out to a
 # real path for downstream capability targets.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \

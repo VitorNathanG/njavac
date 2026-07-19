@@ -14,11 +14,20 @@ pub struct Field {
 /// magic, an unknown constant-pool tag) — the caller falls back to a raw byte
 /// diff in that case.
 pub fn dump(bytes: &[u8]) -> Result<Vec<Field>, String> {
-    let mut r = Reader { b: bytes, pos: 0, fields: Vec::new(), utf8: HashMap::new() };
+    let mut r = Reader {
+        b: bytes,
+        pos: 0,
+        fields: Vec::new(),
+        utf8: HashMap::new(),
+    };
     r.parse()?;
     if r.pos != bytes.len() {
         let off = r.pos;
-        r.fields.push(Field { offset: off, path: "<trailing>".into(), value: raw(&bytes[off..]) });
+        r.fields.push(Field {
+            offset: off,
+            path: "<trailing>".into(),
+            value: raw(&bytes[off..]),
+        });
     }
     Ok(r.fields)
 }
@@ -35,7 +44,11 @@ impl<'a> Reader<'a> {
     fn parse(&mut self) -> Result<(), String> {
         let m_off = self.pos;
         let magic = self.ru32()?;
-        self.fields.push(Field { offset: m_off, path: "magic".into(), value: format!("0x{magic:08X}") });
+        self.fields.push(Field {
+            offset: m_off,
+            path: "magic".into(),
+            value: format!("0x{magic:08X}"),
+        });
         if magic != 0xCAFE_BABE {
             return Err(format!("bad magic 0x{magic:08X}"));
         }
@@ -89,12 +102,20 @@ impl<'a> Reader<'a> {
                 3 => {
                     let o = self.pos;
                     let v = self.ru32()?;
-                    self.fields.push(Field { offset: o, path: format!("cp[{i}].int"), value: (v as i32).to_string() });
+                    self.fields.push(Field {
+                        offset: o,
+                        path: format!("cp[{i}].int"),
+                        value: (v as i32).to_string(),
+                    });
                 }
                 4 => {
                     let o = self.pos;
                     let v = self.ru32()?;
-                    self.fields.push(Field { offset: o, path: format!("cp[{i}].float_bits"), value: format!("0x{v:08X}") });
+                    self.fields.push(Field {
+                        offset: o,
+                        path: format!("cp[{i}].float_bits"),
+                        value: format!("0x{v:08X}"),
+                    });
                 }
                 5 => {
                     self.fu32(format!("cp[{i}].long_hi"))?;
@@ -103,10 +124,18 @@ impl<'a> Reader<'a> {
                 6 => {
                     let o = self.pos;
                     let hi = self.ru32()?;
-                    self.fields.push(Field { offset: o, path: format!("cp[{i}].double_hi"), value: format!("0x{hi:08X}") });
+                    self.fields.push(Field {
+                        offset: o,
+                        path: format!("cp[{i}].double_hi"),
+                        value: format!("0x{hi:08X}"),
+                    });
                     let o = self.pos;
                     let lo = self.ru32()?;
-                    self.fields.push(Field { offset: o, path: format!("cp[{i}].double_lo"), value: format!("0x{lo:08X}") });
+                    self.fields.push(Field {
+                        offset: o,
+                        path: format!("cp[{i}].double_lo"),
+                        value: format!("0x{lo:08X}"),
+                    });
                 }
                 7 => {
                     self.fu16_utf8(format!("cp[{i}].Class.name_index"))?;
@@ -151,7 +180,11 @@ impl<'a> Reader<'a> {
                 20 => {
                     self.fu16_utf8(format!("cp[{i}].Package.name_index"))?;
                 }
-                _ => return Err(format!("unknown constant-pool tag {tag} at cp[{i}] (offset {tag_off})")),
+                _ => {
+                    return Err(format!(
+                        "unknown constant-pool tag {tag} at cp[{i}] (offset {tag_off})"
+                    ));
+                }
             }
             // Long and Double each consume two pool indices (JVMS 4.4.5).
             i += if tag == 5 || tag == 6 { 2 } else { 1 };
@@ -175,7 +208,10 @@ impl<'a> Reader<'a> {
             let len = self.fu32(format!("{owner}.attr[{a}].length"))?;
             let name = self.utf8.get(&name_index).cloned().unwrap_or_default();
             let end = self.pos + len as usize;
-            let ap = format!("{owner}.attr[{a}].{}", if name.is_empty() { "?" } else { &name });
+            let ap = format!(
+                "{owner}.attr[{a}].{}",
+                if name.is_empty() { "?" } else { &name }
+            );
             match name.as_str() {
                 "Code" => self.code_attr(&ap)?,
                 "LineNumberTable" => self.line_number_table(&ap)?,
@@ -193,7 +229,9 @@ impl<'a> Reader<'a> {
             if self.pos < end {
                 self.fraw(format!("{ap}.<unparsed-tail>"), end - self.pos)?;
             } else if self.pos > end {
-                return Err(format!("attribute {ap} overran its declared length ({len})"));
+                return Err(format!(
+                    "attribute {ap} overran its declared length ({len})"
+                ));
             }
         }
         Ok(())
@@ -292,21 +330,33 @@ impl<'a> Reader<'a> {
     fn fu8(&mut self, path: impl Into<String>) -> Result<u8, String> {
         let o = self.pos;
         let v = self.ru8()?;
-        self.fields.push(Field { offset: o, path: path.into(), value: v.to_string() });
+        self.fields.push(Field {
+            offset: o,
+            path: path.into(),
+            value: v.to_string(),
+        });
         Ok(v)
     }
 
     fn fu16(&mut self, path: impl Into<String>) -> Result<u16, String> {
         let o = self.pos;
         let v = self.ru16()?;
-        self.fields.push(Field { offset: o, path: path.into(), value: v.to_string() });
+        self.fields.push(Field {
+            offset: o,
+            path: path.into(),
+            value: v.to_string(),
+        });
         Ok(v)
     }
 
     fn fu32(&mut self, path: impl Into<String>) -> Result<u32, String> {
         let o = self.pos;
         let v = self.ru32()?;
-        self.fields.push(Field { offset: o, path: path.into(), value: v.to_string() });
+        self.fields.push(Field {
+            offset: o,
+            path: path.into(),
+            value: v.to_string(),
+        });
         Ok(v)
     }
 
@@ -314,7 +364,11 @@ impl<'a> Reader<'a> {
     fn fflags(&mut self, path: impl Into<String>) -> Result<u16, String> {
         let o = self.pos;
         let v = self.ru16()?;
-        self.fields.push(Field { offset: o, path: path.into(), value: format!("0x{v:04X}") });
+        self.fields.push(Field {
+            offset: o,
+            path: path.into(),
+            value: format!("0x{v:04X}"),
+        });
         Ok(v)
     }
 
@@ -328,14 +382,22 @@ impl<'a> Reader<'a> {
             Some(s) => format!("{v} -> {}", quote(s)),
             None => v.to_string(),
         };
-        self.fields.push(Field { offset: o, path: path.into(), value });
+        self.fields.push(Field {
+            offset: o,
+            path: path.into(),
+            value,
+        });
         Ok(v)
     }
 
     fn fraw(&mut self, path: impl Into<String>, n: usize) -> Result<(), String> {
         let o = self.pos;
         let bytes = self.rbytes(n)?;
-        self.fields.push(Field { offset: o, path: path.into(), value: format!("[{n} bytes] {}", raw(bytes)) });
+        self.fields.push(Field {
+            offset: o,
+            path: path.into(),
+            value: format!("[{n} bytes] {}", raw(bytes)),
+        });
         Ok(())
     }
 
@@ -343,7 +405,11 @@ impl<'a> Reader<'a> {
 
     fn need(&self, n: usize) -> Result<(), String> {
         if self.pos + n > self.b.len() {
-            Err(format!("unexpected EOF at offset {} (need {n} more bytes, have {})", self.pos, self.b.len() - self.pos))
+            Err(format!(
+                "unexpected EOF at offset {} (need {n} more bytes, have {})",
+                self.pos,
+                self.b.len() - self.pos
+            ))
         } else {
             Ok(())
         }

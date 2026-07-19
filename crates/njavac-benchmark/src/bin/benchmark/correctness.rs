@@ -13,7 +13,11 @@ pub(super) fn class_name(fixture: &Path) -> Result<&str, String> {
 }
 
 fn expected_path(cfg: &Config, javac_dir: &Path, base: &str) -> PathBuf {
-    let directory = if cfg.offline { Path::new(&cfg.golden_dir) } else { javac_dir };
+    let directory = if cfg.offline {
+        Path::new(&cfg.golden_dir)
+    } else {
+        javac_dir
+    };
     directory.join(format!("{base}.class"))
 }
 
@@ -31,7 +35,11 @@ pub(super) fn correctness(
     javac_dir: &Path,
     njavac_dir: &Path,
 ) -> Result<(), String> {
-    let source = if cfg.offline { "golden cache" } else { "live javac" };
+    let source = if cfg.offline {
+        "golden cache"
+    } else {
+        "live javac"
+    };
     println!("correctness ({} fixtures, vs {source}):", fixtures.len());
 
     for fixture in fixtures {
@@ -64,15 +72,29 @@ pub(super) fn correctness(
         let base = class_name(fixture)?;
         let expected_file = expected_path(cfg, javac_dir, base);
         let actual_file = njavac_dir.join(format!("{base}.class"));
-        let expected = std::fs::read(&expected_file)
-            .map_err(|error| format!("reference output missing at {}: {error}", expected_file.display()))?;
-        let actual = std::fs::read(&actual_file)
-            .map_err(|error| format!("njavac output missing at {}: {error}", actual_file.display()))?;
+        let expected = std::fs::read(&expected_file).map_err(|error| {
+            format!(
+                "reference output missing at {}: {error}",
+                expected_file.display()
+            )
+        })?;
+        let actual = std::fs::read(&actual_file).map_err(|error| {
+            format!(
+                "njavac output missing at {}: {error}",
+                actual_file.display()
+            )
+        })?;
         if expected == actual {
             println!("  PASS  {base}  ({} bytes)", expected.len());
         } else {
             println!("  FAIL  {base}");
-            failures.push((base.to_string(), expected_file, actual_file, expected, actual));
+            failures.push((
+                base.to_string(),
+                expected_file,
+                actual_file,
+                expected,
+                actual,
+            ));
         }
     }
     if failures.is_empty() {
@@ -102,7 +124,11 @@ pub(super) fn correctness(
     let expected_lines = javap_lines(cfg, expected_file)?;
     let actual_lines = javap_lines(cfg, actual_file)?;
     print_first_divergence(&expected_lines, &actual_lines);
-    Err(format!("{}/{} fixtures differed", failures.len(), fixtures.len()))
+    Err(format!(
+        "{}/{} fixtures differed",
+        failures.len(),
+        fixtures.len()
+    ))
 }
 
 pub(super) fn record_goldens(
@@ -110,8 +136,12 @@ pub(super) fn record_goldens(
     fixtures: &[PathBuf],
     golden_dir: &Path,
 ) -> Result<(), String> {
-    std::fs::create_dir_all(golden_dir)
-        .map_err(|error| format!("cannot create golden directory {}: {error}", golden_dir.display()))?;
+    std::fs::create_dir_all(golden_dir).map_err(|error| {
+        format!(
+            "cannot create golden directory {}: {error}",
+            golden_dir.display()
+        )
+    })?;
     for fixture in fixtures {
         remove_if_exists(&golden_dir.join(format!("{}.class", class_name(fixture)?)))?;
     }
@@ -133,7 +163,11 @@ pub(super) fn record_goldens(
             return Err(format!("golden recording omitted {}", path.display()));
         }
     }
-    println!("  -> recorded {}/{} goldens", fixtures.len(), fixtures.len());
+    println!(
+        "  -> recorded {}/{} goldens",
+        fixtures.len(),
+        fixtures.len()
+    );
     Ok(())
 }
 
@@ -202,7 +236,10 @@ fn print_first_divergence(expected: &[String], actual: &[String]) {
         return;
     };
     let start = index.saturating_sub(4);
-    println!("first divergence at javap line {} ('<' javac, '>' njavac):", index + 1);
+    println!(
+        "first divergence at javap line {} ('<' javac, '>' njavac):",
+        index + 1
+    );
     for line_index in start..=index {
         if let Some(line) = expected.get(line_index) {
             println!("  {} < {line}", if line_index == index { "*" } else { " " });

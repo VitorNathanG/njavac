@@ -69,25 +69,45 @@ pub(super) fn collect_context(cfg: &Config) -> Result<ReportContext, String> {
 
 pub(super) fn preflight_destination(path: &Path) -> Result<(), String> {
     if path.exists() {
-        return Err(format!("report destination already exists: {}", path.display()));
+        return Err(format!(
+            "report destination already exists: {}",
+            path.display()
+        ));
     }
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
-    std::fs::create_dir_all(parent)
-        .map_err(|error| format!("cannot create report directory {}: {error}", parent.display()))?;
+    std::fs::create_dir_all(parent).map_err(|error| {
+        format!(
+            "cannot create report directory {}: {error}",
+            parent.display()
+        )
+    })?;
     let temporary = temporary_path(path);
     let file = OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(&temporary)
-        .map_err(|error| format!("cannot create report preflight file {}: {error}", temporary.display()))?;
+        .map_err(|error| {
+            format!(
+                "cannot create report preflight file {}: {error}",
+                temporary.display()
+            )
+        })?;
     drop(file);
-    std::fs::remove_file(&temporary)
-        .map_err(|error| format!("cannot remove report preflight file {}: {error}", temporary.display()))
+    std::fs::remove_file(&temporary).map_err(|error| {
+        format!(
+            "cannot remove report preflight file {}: {error}",
+            temporary.display()
+        )
+    })
 }
 
-pub(super) fn print_and_publish(document: &ReportDocument, path: Option<&Path>) -> Result<(), String> {
+pub(super) fn print_and_publish(
+    document: &ReportDocument,
+    path: Option<&Path>,
+) -> Result<(), String> {
     let stdout = std::io::stdout();
-    render(document, &mut stdout.lock()).map_err(|error| format!("cannot render benchmark report: {error}"))?;
+    render(document, &mut stdout.lock())
+        .map_err(|error| format!("cannot render benchmark report: {error}"))?;
     if let Some(path) = path {
         publish(document, path)?;
         println!("\nraw report      {}", path.display());
@@ -97,13 +117,15 @@ pub(super) fn print_and_publish(document: &ReportDocument, path: Option<&Path>) 
 
 fn render(document: &ReportDocument, output: &mut impl Write) -> io::Result<()> {
     writeln!(output, "\nbenchmark report")?;
-    writeln!(output, "  evidence       exploratory (not a numerical baseline)")?;
+    writeln!(
+        output,
+        "  evidence       exploratory (not a numerical baseline)"
+    )?;
     writeln!(output, "  revision       {}", document.metadata.revision)?;
     writeln!(
         output,
         "  architecture   {}-{}",
-        document.metadata.operating_system,
-        document.metadata.architecture,
+        document.metadata.operating_system, document.metadata.architecture,
     )?;
     writeln!(output, "  CPU            {}", document.metadata.cpu)?;
     writeln!(output, "  power mode     {}", document.metadata.power_mode)?;
@@ -111,8 +133,7 @@ fn render(document: &ReportDocument, output: &mut impl Write) -> io::Result<()> 
     writeln!(
         output,
         "  controls       CPU={} memory={}",
-        document.metadata.cpu_control,
-        document.metadata.memory_control,
+        document.metadata.cpu_control, document.metadata.memory_control,
     )?;
     writeln!(
         output,
@@ -123,9 +144,21 @@ fn render(document: &ReportDocument, output: &mut impl Write) -> io::Result<()> 
         document.workload.nonblank_lines,
     )?;
     writeln!(output, "  corpus         {}", document.workload.fingerprint)?;
-    writeln!(output, "  class output   {} bytes", document.workload.output_class_bytes)?;
-    writeln!(output, "  njavac binary  {}", document.provenance.njavac_binary_sha256)?;
-    writeln!(output, "  runner binary  {}", document.provenance.benchmark_binary_sha256)?;
+    writeln!(
+        output,
+        "  class output   {} bytes",
+        document.workload.output_class_bytes
+    )?;
+    writeln!(
+        output,
+        "  njavac binary  {}",
+        document.provenance.njavac_binary_sha256
+    )?;
+    writeln!(
+        output,
+        "  runner binary  {}",
+        document.provenance.benchmark_binary_sha256
+    )?;
 
     writeln!(output, "\nend-to-end performance (uninstrumented)")?;
     print_process_summary(
@@ -188,8 +221,7 @@ fn render(document: &ReportDocument, output: &mut impl Write) -> io::Result<()> 
     writeln!(
         output,
         "  allocation balance invariant         final {} == baseline {} bytes",
-        allocations.final_live_bytes,
-        allocations.baseline_live_bytes,
+        allocations.final_live_bytes, allocations.baseline_live_bytes,
     )?;
     Ok(())
 }
@@ -258,18 +290,29 @@ fn publish_with(
     write: impl FnOnce(&mut File) -> io::Result<()>,
 ) -> Result<(), String> {
     if path.exists() {
-        return Err(format!("report destination already exists: {}", path.display()));
+        return Err(format!(
+            "report destination already exists: {}",
+            path.display()
+        ));
     }
     let temporary = temporary_path(path);
     let mut guard = TemporaryFile::create(&temporary)?;
     write(guard.file_mut()).map_err(|error| {
-        format!("cannot write temporary report {}: {error}", temporary.display())
+        format!(
+            "cannot write temporary report {}: {error}",
+            temporary.display()
+        )
     })?;
     guard
         .file_mut()
         .flush()
         .and_then(|()| guard.file_mut().sync_all())
-        .map_err(|error| format!("cannot flush temporary report {}: {error}", temporary.display()))?;
+        .map_err(|error| {
+            format!(
+                "cannot flush temporary report {}: {error}",
+                temporary.display()
+            )
+        })?;
     std::fs::hard_link(&temporary, path).map_err(|error| {
         format!(
             "cannot atomically publish {} without clobbering: {error}",
@@ -291,8 +334,13 @@ impl TemporaryFile {
             .write(true)
             .create_new(true)
             .open(path)
-            .map_err(|error| format!("cannot create temporary report {}: {error}", path.display()))?;
-        Ok(Self { path: path.to_path_buf(), file: Some(file) })
+            .map_err(|error| {
+                format!("cannot create temporary report {}: {error}", path.display())
+            })?;
+        Ok(Self {
+            path: path.to_path_buf(),
+            file: Some(file),
+        })
     }
 
     fn file_mut(&mut self) -> &mut File {
@@ -359,8 +407,7 @@ fn cpu_model() -> String {
         .and_then(|contents| {
             contents.lines().find_map(|line| {
                 let (name, value) = line.split_once(':')?;
-                matches!(name.trim(), "model name" | "Hardware")
-                    .then(|| value.trim().to_string())
+                matches!(name.trim(), "model name" | "Hardware").then(|| value.trim().to_string())
             })
         })
         .unwrap_or_else(|| "unknown".to_string())

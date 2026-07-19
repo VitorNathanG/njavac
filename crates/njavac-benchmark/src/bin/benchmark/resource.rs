@@ -17,9 +17,16 @@ pub(super) struct InvocationContext {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "outcome", rename_all = "snake_case", deny_unknown_fields)]
 enum ResourceResponse {
-    Success { sample: ResourceSample },
-    ChildFailure { status: String, sample: ResourceSample },
-    SpawnFailure { error: String },
+    Success {
+        sample: ResourceSample,
+    },
+    ChildFailure {
+        status: String,
+        sample: ResourceSample,
+    },
+    SpawnFailure {
+        error: String,
+    },
 }
 
 pub(super) fn measure(
@@ -147,7 +154,9 @@ pub(super) fn child(args: Vec<OsString>) -> ! {
                 }
             }
         }
-        Err(error) => ResourceResponse::SpawnFailure { error: error.to_string() },
+        Err(error) => ResourceResponse::SpawnFailure {
+            error: error.to_string(),
+        },
     };
     serde_json::to_writer(std::io::stdout(), &response).unwrap_or_else(|error| {
         eprintln!("cannot serialize resource response: {error}");
@@ -182,7 +191,11 @@ struct ChildUsage {
     involuntary_context_switches: u64,
 }
 
-fn usage_delta(before: &ChildUsage, after: &ChildUsage, wall_ns: u64) -> Result<ResourceSample, String> {
+fn usage_delta(
+    before: &ChildUsage,
+    after: &ChildUsage,
+    wall_ns: u64,
+) -> Result<ResourceSample, String> {
     let difference = |name: &str, before: u64, after: u64| {
         after
             .checked_sub(before)
@@ -258,7 +271,10 @@ fn child_usage() -> Result<ChildUsage, String> {
     let mut usage = ResourceUsage::default();
     let result = unsafe { getrusage(RUSAGE_CHILDREN, &mut usage) };
     if result != 0 {
-        return Err(format!("getrusage failed: {}", std::io::Error::last_os_error()));
+        return Err(format!(
+            "getrusage failed: {}",
+            std::io::Error::last_os_error()
+        ));
     }
     let micros = |value: &TimeVal| {
         (value.seconds.max(0) as u64) * 1_000_000 + value.microseconds.max(0) as u64
@@ -301,7 +317,10 @@ pub(super) fn resolve_executable(value: &str) -> Result<String, String> {
         .canonicalize()
         .map_err(|error| format!("cannot resolve executable {}: {error}", candidate.display()))?;
     if !canonical.is_file() {
-        return Err(format!("executable path is not a file: {}", canonical.display()));
+        return Err(format!(
+            "executable path is not a file: {}",
+            canonical.display()
+        ));
     }
     #[cfg(unix)]
     {
@@ -312,7 +331,10 @@ pub(super) fn resolve_executable(value: &str) -> Result<String, String> {
             .permissions()
             .mode();
         if mode & 0o111 == 0 {
-            return Err(format!("executable path has no execute bit: {}", canonical.display()));
+            return Err(format!(
+                "executable path has no execute bit: {}",
+                canonical.display()
+            ));
         }
     }
     Ok(canonical.to_string_lossy().into_owned())
@@ -340,8 +362,13 @@ mod tests {
     fn parses_success_child_failure_and_spawn_failure() {
         for response in [
             ResourceResponse::Success { sample: sample() },
-            ResourceResponse::ChildFailure { status: "with code 7".into(), sample: sample() },
-            ResourceResponse::SpawnFailure { error: "missing".into() },
+            ResourceResponse::ChildFailure {
+                status: "with code 7".into(),
+                sample: sample(),
+            },
+            ResourceResponse::SpawnFailure {
+                error: "missing".into(),
+            },
         ] {
             let json = serde_json::to_vec(&response).unwrap();
             assert!(parse_response(&json).is_ok());
@@ -352,14 +379,21 @@ mod tests {
 
     #[test]
     fn resource_deltas_reject_counter_regression() {
-        let before = ChildUsage { user_us: 10, ..ChildUsage::default() };
-        let after = ChildUsage { user_us: 9, ..ChildUsage::default() };
+        let before = ChildUsage {
+            user_us: 10,
+            ..ChildUsage::default()
+        };
+        let after = ChildUsage {
+            user_us: 9,
+            ..ChildUsage::default()
+        };
         assert!(usage_delta(&before, &after, 1).is_err());
     }
 
     #[test]
     fn executable_resolution_rejects_non_executable_files() {
-        let path = std::env::temp_dir().join(format!("njavac-non-executable-{}", std::process::id()));
+        let path =
+            std::env::temp_dir().join(format!("njavac-non-executable-{}", std::process::id()));
         std::fs::write(&path, b"not executable").unwrap();
         assert!(resolve_executable(path.to_str().unwrap()).is_err());
         std::fs::remove_file(path).unwrap();

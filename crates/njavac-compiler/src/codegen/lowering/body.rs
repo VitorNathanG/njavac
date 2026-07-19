@@ -52,7 +52,10 @@ impl Gen<'_> {
         match &self.exprs[expr] {
             ExprKind::Call { args, .. } => {
                 let result = self.gen_call(expr, args);
-                assert!(result.is_void(), "value-returning expression statement is unsupported");
+                assert!(
+                    result.is_void(),
+                    "value-returning expression statement is unsupported"
+                );
             }
             other => panic!("unsupported expression statement: {other:?}"),
         }
@@ -87,7 +90,9 @@ impl Gen<'_> {
                     None if parameter_type.is_string() => "(Ljava/lang/String;)V",
                     None => unreachable!("unsupported resolved println parameter"),
                 };
-                let method = self.cp.methodref("java/io/PrintStream", "println", descriptor);
+                let method = self
+                    .cp
+                    .methodref("java/io/PrintStream", "println", descriptor);
                 self.emitter.emit(Instruction::Invoke {
                     opcode: INVOKEVIRTUAL,
                     index: method,

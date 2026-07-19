@@ -34,7 +34,11 @@ struct Lexer<'a> {
 
 impl<'a> Lexer<'a> {
     fn new(source: &'a str) -> Self {
-        Lexer { bytes: source.as_bytes(), pos: 0, line: 1 }
+        Lexer {
+            bytes: source.as_bytes(),
+            pos: 0,
+            line: 1,
+        }
     }
 
     fn peek(&self) -> Option<u8> {
@@ -66,7 +70,11 @@ impl<'a> Lexer<'a> {
             let start = self.pos;
             let b = match self.peek() {
                 None => {
-                    tokens.push(Token { kind: TokenKind::Eof, line, span: Span::empty(start) });
+                    tokens.push(Token {
+                        kind: TokenKind::Eof,
+                        line,
+                        span: Span::empty(start),
+                    });
                     return Ok(tokens);
                 }
                 Some(b) => b,
@@ -85,7 +93,11 @@ impl<'a> Lexer<'a> {
             } else {
                 self.punct()?
             };
-            tokens.push(Token { kind, line, span: Span::new(start, self.pos) });
+            tokens.push(Token {
+                kind,
+                line,
+                span: Span::new(start, self.pos),
+            });
         }
     }
 

@@ -20,12 +20,22 @@ impl Lexer<'_> {
             b'!' => self.if_eq(TokenKind::NotEq, TokenKind::Bang),
             b'=' => self.if_eq(TokenKind::EqEq, TokenKind::Assign),
             b'+' => self.after('+', TokenKind::PlusPlus, TokenKind::PlusEq, TokenKind::Plus),
-            b'-' => self.after('-', TokenKind::MinusMinus, TokenKind::MinusEq, TokenKind::Minus),
+            b'-' => self.after(
+                '-',
+                TokenKind::MinusMinus,
+                TokenKind::MinusEq,
+                TokenKind::Minus,
+            ),
             b'*' => self.if_eq(TokenKind::StarEq, TokenKind::Star),
             b'/' => self.if_eq(TokenKind::SlashEq, TokenKind::Slash),
             b'%' => self.if_eq(TokenKind::PercentEq, TokenKind::Percent),
             b'&' => self.if_eq2(b'&', TokenKind::AmpAmp, TokenKind::AmpEq, TokenKind::Amp),
-            b'|' => self.if_eq2(b'|', TokenKind::PipePipe, TokenKind::PipeEq, TokenKind::Pipe),
+            b'|' => self.if_eq2(
+                b'|',
+                TokenKind::PipePipe,
+                TokenKind::PipeEq,
+                TokenKind::Pipe,
+            ),
             b'^' => self.if_eq(TokenKind::CaretEq, TokenKind::Caret),
             b'<' => self.less(),
             b'>' => self.greater(),
@@ -46,7 +56,13 @@ impl Lexer<'_> {
     }
 
     /// For `+`/`-`: a doubled form (`++`/`--`), an `=` form (`+=`), else single.
-    fn after(&mut self, ch: char, doubled: TokenKind, eq: TokenKind, single: TokenKind) -> TokenKind {
+    fn after(
+        &mut self,
+        ch: char,
+        doubled: TokenKind,
+        eq: TokenKind,
+        single: TokenKind,
+    ) -> TokenKind {
         match self.peek() {
             Some(c) if c == ch as u8 => {
                 self.bump();
@@ -72,7 +88,13 @@ impl Lexer<'_> {
 
     /// For `&`/`|`: the doubled logical form (`&&`/`||`), the `op=` compound form,
     /// else the single operator. Longest-match: the doubled form is checked first.
-    fn if_eq2(&mut self, ch: u8, doubled: TokenKind, eq: TokenKind, single: TokenKind) -> TokenKind {
+    fn if_eq2(
+        &mut self,
+        ch: u8,
+        doubled: TokenKind,
+        eq: TokenKind,
+        single: TokenKind,
+    ) -> TokenKind {
         match self.peek() {
             Some(c) if c == ch => {
                 self.bump();

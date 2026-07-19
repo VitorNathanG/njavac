@@ -41,10 +41,12 @@ benchmark path. Wall-clock results remain non-deterministic and non-portable.
 
 | Target | Purpose | Gate semantics |
 | --- | --- | --- |
+| `fmt` | Format the complete Rust workspace through the repository-pinned Docker toolchain and committed rustfmt policy. | Mutates Rust sources in the checkout as the host UID/GID. Review the diff; this is not a correctness gate. |
+| `fmt-check` | Run rustfmt in check mode through the pinned Docker toolchain. | Non-mutating formatting gate. Every Docker-backed njavac workspace build and the aggregate `make test` target depend on this check. |
 | `verify` | Compile with njavac in Docker and compare against the persisted golden volume. It auto-records only when that volume has no class files. | Fast cached inner-loop gate. A nonempty cache is not freshness-checked and can be stale. |
 | `correctness` | Compile with both njavac and the configured in-image `javac`, then byte-compare fresh outputs. | Authoritative focused exact-byte fixture gate with no timing pass. The complete pre-commit gate is `make test`. |
 | `record` | Rebuild the golden cache from the configured in-image `javac`, then run an offline verification. | Cache-maintenance operation followed by a cached check. With `FILE`, recording still covers the whole suite; only the second verification is filtered. |
-| `test` | Run all deterministic pass/fail checks: Rust tests, fresh exact-byte fixtures, instrumentation equivalence, fuzzer self-test, observer lifecycle, fixed-seed worker verification and fuzz smoke, and documentation checks. | Complete repository test gate. It makes no performance assertion and does not invoke `make benchmark`. |
+| `test` | Run all deterministic pass/fail checks: Rust formatting and tests, fresh exact-byte fixtures, instrumentation equivalence, fuzzer self-test, observer lifecycle, fixed-seed worker verification and fuzz smoke, and documentation checks. | Complete repository test gate. It makes no performance assertion and does not invoke `make benchmark`. |
 | `benchmark` | Run uninstrumented process and compiler-core measurements, phase attribution, allocation attribution, and one unified report under Docker controls. | Performance/resource evidence only. It rejects `FILE`, performs no reference byte comparison, and fails only when measurement or publication cannot complete. |
 
 See [Fixtures and Goldens](fixtures-and-goldens.md) for cache lifecycle and

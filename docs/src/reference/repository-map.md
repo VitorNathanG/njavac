@@ -217,9 +217,10 @@ The Java helpers are fuzzer protocol peers, not compiler inputs. `fuzz-out/`,
 | Path | Responsibility |
 | --- | --- |
 | `Cargo.toml`, `Cargo.lock` | Virtual workspace definition and complete dependency lock |
+| `rust-toolchain.toml`, `rustfmt.toml` | Exact Rust release/component request and workspace formatting policy |
 | `crates/*/Cargo.toml` | Member ownership, direct dependencies, publication policy, and binary targets |
 | `Makefile` | Sanctioned command surface; `make help` is the exact catalog |
-| `Dockerfile` | Pinned workspace build/test stage plus reference, acceptance, and fuzz targets |
+| `Dockerfile` | Pinned formatting/build/test stages plus reference, acceptance, and fuzz targets |
 | `docs/book.toml`, `docs/Dockerfile` | Pinned mdBook and Mermaid configuration |
 | `.github/` | Repository automation |
 | `docs/src/` | Maintainer guide and current reference authorities |

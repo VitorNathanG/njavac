@@ -9,11 +9,6 @@ Language coverage belongs in [Language Rungs](language-rungs.md), not here.
 
 ## Toolchain and development loop
 
-- **Define a sanctioned rustfmt surface.** The repository is not normalized to
-  the current host rustfmt, so `cargo fmt --all` rewrites unrelated files. Pin the
-  formatter and configuration through the repository toolchain, expose it through
-  `make fmt-check`, and decide separately whether to perform one explicit
-  normalization change.
 - **Automate baseline/current benchmark comparisons.** Build an isolated baseline
   compiler and compare its unified benchmark JSON with the candidate under the
   same current runner, corpus fingerprint, and container controls. Interleave

@@ -1,7 +1,7 @@
 use crate::classfile::{StackFrame, VerificationType};
 
 use super::instruction::{
-    CodePosition, Instruction, InstructionAnchor, Label, GOTO, GOTO_W, IINC, WIDE,
+    CodePosition, GOTO, GOTO_W, IINC, Instruction, InstructionAnchor, Label, WIDE,
     is_cond_branch_opcode, negate_conditional,
 };
 

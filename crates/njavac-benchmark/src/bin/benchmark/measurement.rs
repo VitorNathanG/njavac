@@ -57,15 +57,19 @@ pub(super) fn load_workload(paths: &[PathBuf]) -> Result<Workload, String> {
             .checked_add(line_count(&source) as u64)
             .ok_or("physical line count overflow")?;
         nonblank_lines = nonblank_lines
-            .checked_add(source.lines().filter(|line| !line.trim().is_empty()).count() as u64)
+            .checked_add(
+                source
+                    .lines()
+                    .filter(|line| !line.trim().is_empty())
+                    .count() as u64,
+            )
             .ok_or("nonblank line count overflow")?;
         hash_bytes(&mut hash, path.to_string_lossy().as_bytes());
         hash_bytes(&mut hash, &[0]);
         hash_bytes(&mut hash, source.as_bytes());
         hash_bytes(&mut hash, &[0xff]);
-        let baseline_output = njavac::compile(&source, &source_file).map_err(|diagnostic| {
-            diagnostic.render(&path.display().to_string(), &source)
-        })?;
+        let baseline_output = njavac::compile(&source, &source_file)
+            .map_err(|diagnostic| diagnostic.render(&path.display().to_string(), &source))?;
         fixtures.push(Fixture {
             path: path.clone(),
             source,
@@ -118,14 +122,19 @@ pub(super) fn run(
     println!("\nallocation attribution (separate instrumented helper)");
     let allocations = allocation_profile(cfg, workload)?;
 
-    Ok(Measurements { performance, phase_profile, allocations })
+    Ok(Measurements {
+        performance,
+        phase_profile,
+        allocations,
+    })
 }
 
 pub(super) fn instrumented_preflight(workload: &Workload) -> Result<(), String> {
     for fixture in &workload.fixtures {
-        let ordinary = njavac::compile(&fixture.source, &fixture.source_file).map_err(|diagnostic| {
-            diagnostic.render(&fixture.path.display().to_string(), &fixture.source)
-        })?;
+        let ordinary =
+            njavac::compile(&fixture.source, &fixture.source_file).map_err(|diagnostic| {
+                diagnostic.render(&fixture.path.display().to_string(), &fixture.source)
+            })?;
         if ordinary != fixture.baseline_output {
             return Err(format!(
                 "ordinary compile preflight differs from the loaded baseline for {}",
@@ -133,14 +142,11 @@ pub(super) fn instrumented_preflight(workload: &Workload) -> Result<(), String> 
             ));
         }
         let mut observer = TimingObserver::new();
-        let observed = njavac_compiler::compile_observed(
-            &fixture.source,
-            &fixture.source_file,
-            &mut observer,
-        )
-        .map_err(|diagnostic| {
-            diagnostic.render(&fixture.path.display().to_string(), &fixture.source)
-        })?;
+        let observed =
+            njavac_compiler::compile_observed(&fixture.source, &fixture.source_file, &mut observer)
+                .map_err(|diagnostic| {
+                    diagnostic.render(&fixture.path.display().to_string(), &fixture.source)
+                })?;
         observer.complete_compile()?;
         if observed != ordinary {
             return Err(format!(
@@ -150,7 +156,10 @@ pub(super) fn instrumented_preflight(workload: &Workload) -> Result<(), String> 
         }
         observer.drop_result(observed);
     }
-    println!("  ordinary and timing-observed output match {} fixtures", workload.fixtures.len());
+    println!(
+        "  ordinary and timing-observed output match {} fixtures",
+        workload.fixtures.len()
+    );
     Ok(())
 }
 
@@ -200,26 +209,42 @@ fn process_scenario(
                 &javac_command,
                 javac_dir,
                 fixtures,
-                &InvocationContext { compiler: "javac".into(), scenario: scenario.into(), iteration: iteration.clone() },
+                &InvocationContext {
+                    compiler: "javac".into(),
+                    scenario: scenario.into(),
+                    iteration: iteration.clone(),
+                },
             )?;
             measure_compiler(
                 &njavac_command,
                 njavac_dir,
                 fixtures,
-                &InvocationContext { compiler: "njavac".into(), scenario: scenario.into(), iteration },
+                &InvocationContext {
+                    compiler: "njavac".into(),
+                    scenario: scenario.into(),
+                    iteration,
+                },
             )?;
         } else {
             measure_compiler(
                 &njavac_command,
                 njavac_dir,
                 fixtures,
-                &InvocationContext { compiler: "njavac".into(), scenario: scenario.into(), iteration: iteration.clone() },
+                &InvocationContext {
+                    compiler: "njavac".into(),
+                    scenario: scenario.into(),
+                    iteration: iteration.clone(),
+                },
             )?;
             measure_compiler(
                 &javac_command,
                 javac_dir,
                 fixtures,
-                &InvocationContext { compiler: "javac".into(), scenario: scenario.into(), iteration },
+                &InvocationContext {
+                    compiler: "javac".into(),
+                    scenario: scenario.into(),
+                    iteration,
+                },
             )?;
         }
     }
@@ -233,43 +258,80 @@ fn process_scenario(
                 &javac_command,
                 javac_dir,
                 fixtures,
-                &InvocationContext { compiler: "javac".into(), scenario: scenario.into(), iteration: iteration.clone() },
+                &InvocationContext {
+                    compiler: "javac".into(),
+                    scenario: scenario.into(),
+                    iteration: iteration.clone(),
+                },
             )?);
             njavac_samples.push(measure_compiler(
                 &njavac_command,
                 njavac_dir,
                 fixtures,
-                &InvocationContext { compiler: "njavac".into(), scenario: scenario.into(), iteration },
+                &InvocationContext {
+                    compiler: "njavac".into(),
+                    scenario: scenario.into(),
+                    iteration,
+                },
             )?);
         } else {
             njavac_samples.push(measure_compiler(
                 &njavac_command,
                 njavac_dir,
                 fixtures,
-                &InvocationContext { compiler: "njavac".into(), scenario: scenario.into(), iteration: iteration.clone() },
+                &InvocationContext {
+                    compiler: "njavac".into(),
+                    scenario: scenario.into(),
+                    iteration: iteration.clone(),
+                },
             )?);
             javac_samples.push(measure_compiler(
                 &javac_command,
                 javac_dir,
                 fixtures,
-                &InvocationContext { compiler: "javac".into(), scenario: scenario.into(), iteration },
+                &InvocationContext {
+                    compiler: "javac".into(),
+                    scenario: scenario.into(),
+                    iteration,
+                },
             )?);
         }
     }
 
     Ok(ProcessScenario {
         files: fixtures.len() as u64,
-        source_bytes: fixtures.iter().map(|fixture| fixture.source.len() as u64).sum(),
-        physical_lines: fixtures.iter().map(|fixture| line_count(&fixture.source) as u64).sum(),
-        output_bytes: fixtures.iter().map(|fixture| fixture.baseline_output.len() as u64).sum(),
-        javac: ResourceSeries { samples: javac_samples },
-        njavac: ResourceSeries { samples: njavac_samples },
+        source_bytes: fixtures
+            .iter()
+            .map(|fixture| fixture.source.len() as u64)
+            .sum(),
+        physical_lines: fixtures
+            .iter()
+            .map(|fixture| line_count(&fixture.source) as u64)
+            .sum(),
+        output_bytes: fixtures
+            .iter()
+            .map(|fixture| fixture.baseline_output.len() as u64)
+            .sum(),
+        javac: ResourceSeries {
+            samples: javac_samples,
+        },
+        njavac: ResourceSeries {
+            samples: njavac_samples,
+        },
     })
 }
 
 fn compiler_command(compiler: &str, out_dir: &Path, fixtures: &[Fixture]) -> Vec<OsString> {
-    let mut command = vec![OsString::from(compiler), OsString::from("-d"), out_dir.as_os_str().into()];
-    command.extend(fixtures.iter().map(|fixture| fixture.path.as_os_str().into()));
+    let mut command = vec![
+        OsString::from(compiler),
+        OsString::from("-d"),
+        out_dir.as_os_str().into(),
+    ];
+    command.extend(
+        fixtures
+            .iter()
+            .map(|fixture| fixture.path.as_os_str().into()),
+    );
     command
 }
 
@@ -317,8 +379,10 @@ fn hot_series(cfg: &Config, workload: &Workload) -> Result<ScalarSeries, String>
 
 fn compile_round(workload: &Workload) -> Result<(), String> {
     for fixture in &workload.fixtures {
-        let bytes = njavac::compile(&fixture.source, &fixture.source_file)
-            .map_err(|diagnostic| diagnostic.render(&fixture.path.display().to_string(), &fixture.source))?;
+        let bytes =
+            njavac::compile(&fixture.source, &fixture.source_file).map_err(|diagnostic| {
+                diagnostic.render(&fixture.path.display().to_string(), &fixture.source)
+            })?;
         black_box(bytes);
     }
     Ok(())
@@ -340,7 +404,9 @@ impl TimingObserver {
     }
 
     fn complete_compile(&mut self) -> Result<(), String> {
-        self.sequence.complete_success().map_err(|error| error.to_string())
+        self.sequence
+            .complete_success()
+            .map_err(|error| error.to_string())
     }
 
     fn drop_result(&mut self, bytes: Vec<u8>) {
@@ -406,23 +472,24 @@ fn phase_profile(cfg: &Config, workload: &Workload) -> Result<PhaseProfile, Stri
         let wall_ns = duration_ns(start.elapsed());
         let attributed = PhaseName::ALL
             .into_iter()
-            .try_fold(0_u64, |total, phase| total.checked_add(*phases_ns.get(phase)))
+            .try_fold(0_u64, |total, phase| {
+                total.checked_add(*phases_ns.get(phase))
+            })
             .ok_or("phase duration sum overflow")?;
         let unattributed_wall_ns = wall_ns.checked_sub(attributed).ok_or_else(|| {
-            format!(
-                "attributed phase time {attributed}ns exceeded profile wall time {wall_ns}ns"
-            )
+            format!("attributed phase time {attributed}ns exceeded profile wall time {wall_ns}ns")
         })?;
         println!("  phase sample {}/{} complete", sample + 1, cfg.samples);
-        samples.push(PhaseSample { wall_ns, phases_ns, unattributed_wall_ns });
+        samples.push(PhaseSample {
+            wall_ns,
+            phases_ns,
+            unattributed_wall_ns,
+        });
     }
     Ok(PhaseProfile { samples })
 }
 
-fn allocation_profile(
-    cfg: &Config,
-    workload: &Workload,
-) -> Result<AllocationProfile, String> {
+fn allocation_profile(cfg: &Config, workload: &Workload) -> Result<AllocationProfile, String> {
     let mut command = Command::new(&cfg.alloc_helper);
     command.arg(cfg.allocation_rounds.to_string());
     command.args(workload.fixtures.iter().map(|fixture| &fixture.path));
@@ -440,10 +507,16 @@ fn allocation_profile(
             String::from_utf8_lossy(&output.stderr).trim(),
         ));
     }
-    parse_allocation_profile(&String::from_utf8_lossy(&output.stdout), workload.fixtures.len())
+    parse_allocation_profile(
+        &String::from_utf8_lossy(&output.stdout),
+        workload.fixtures.len(),
+    )
 }
 
-fn parse_allocation_profile(output: &str, expected_fixtures: usize) -> Result<AllocationProfile, String> {
+fn parse_allocation_profile(
+    output: &str,
+    expected_fixtures: usize,
+) -> Result<AllocationProfile, String> {
     let mut phases: PhaseValues<Option<AllocationMetric>> = PhaseValues::default();
     let mut baseline_live_bytes = None;
     let mut peak_live_growth_bytes = None;
@@ -475,11 +548,9 @@ fn parse_allocation_profile(output: &str, expected_fixtures: usize) -> Result<Al
                 parse_u64(bytes, line)?,
                 "peak_live_growth",
             )?,
-            ["final_live", bytes] => set_once(
-                &mut final_live_bytes,
-                parse_u64(bytes, line)?,
-                "final_live",
-            )?,
+            ["final_live", bytes] => {
+                set_once(&mut final_live_bytes, parse_u64(bytes, line)?, "final_live")?
+            }
             ["total", requested, released] => set_once(
                 &mut total,
                 (parse_u64(requested, line)?, parse_u64(released, line)?),
@@ -489,15 +560,18 @@ fn parse_allocation_profile(output: &str, expected_fixtures: usize) -> Result<Al
         }
     }
     let _ = expected_fixtures;
-    let phases = phases.try_map(|metric| metric.ok_or("allocation helper omitted a named phase"))?;
-    let baseline_live_bytes = baseline_live_bytes.ok_or("allocation helper omitted baseline_live")?;
+    let phases =
+        phases.try_map(|metric| metric.ok_or("allocation helper omitted a named phase"))?;
+    let baseline_live_bytes =
+        baseline_live_bytes.ok_or("allocation helper omitted baseline_live")?;
     let final_live_bytes = final_live_bytes.ok_or("allocation helper omitted final_live")?;
     if final_live_bytes != baseline_live_bytes {
         return Err(format!(
             "allocation helper final live bytes {final_live_bytes} differ from baseline {baseline_live_bytes}"
         ));
     }
-    let (total_requested_bytes, total_released_bytes) = total.ok_or("allocation helper omitted total")?;
+    let (total_requested_bytes, total_released_bytes) =
+        total.ok_or("allocation helper omitted total")?;
     if total_requested_bytes != total_released_bytes {
         return Err(format!(
             "allocation requested total {total_requested_bytes} differs from released total {total_released_bytes}"
@@ -509,8 +583,12 @@ fn parse_allocation_profile(output: &str, expected_fixtures: usize) -> Result<Al
     let phase_released = PhaseName::ALL.into_iter().try_fold(0_u64, |sum, phase| {
         sum.checked_add(phases.get(phase).released_bytes)
     });
-    if phase_requested != Some(total_requested_bytes) || phase_released != Some(total_released_bytes) {
-        return Err("allocation named-phase totals differ from complete workload totals".to_string());
+    if phase_requested != Some(total_requested_bytes)
+        || phase_released != Some(total_released_bytes)
+    {
+        return Err(
+            "allocation named-phase totals differ from complete workload totals".to_string(),
+        );
     }
     Ok(AllocationProfile {
         phases,
@@ -524,7 +602,9 @@ fn parse_allocation_profile(output: &str, expected_fixtures: usize) -> Result<Al
 }
 
 fn parse_u64(value: &str, line: &str) -> Result<u64, String> {
-    value.parse().map_err(|_| format!("invalid numeric allocation field: {line}"))
+    value
+        .parse()
+        .map_err(|_| format!("invalid numeric allocation field: {line}"))
 }
 
 fn set_once<T>(slot: &mut Option<T>, value: T, name: &str) -> Result<(), String> {
@@ -539,8 +619,7 @@ fn line_count(source: &str) -> usize {
     if source.is_empty() {
         0
     } else {
-        source.bytes().filter(|&byte| byte == b'\n').count()
-            + usize::from(!source.ends_with('\n'))
+        source.bytes().filter(|&byte| byte == b'\n').count() + usize::from(!source.ends_with('\n'))
     }
 }
 
@@ -568,11 +647,20 @@ mod tests {
             "{PHASES}baseline_live\t10\npeak_live_growth\t20\nfinal_live\t10\ntotal\t14\t14\n"
         );
         assert!(parse_allocation_profile(&valid, 2).is_ok());
-        assert!(parse_allocation_profile(&valid.replace("final_live\t10", "final_live\t11"), 2).is_err());
-        assert!(parse_allocation_profile(&valid.replace("phase\tlex", "phase\tunknown"), 2).is_err());
-        assert!(parse_allocation_profile(&valid.replace("phase\tparse\t1\t2\t2\n", ""), 2).is_err());
+        assert!(
+            parse_allocation_profile(&valid.replace("final_live\t10", "final_live\t11"), 2)
+                .is_err()
+        );
+        assert!(
+            parse_allocation_profile(&valid.replace("phase\tlex", "phase\tunknown"), 2).is_err()
+        );
+        assert!(
+            parse_allocation_profile(&valid.replace("phase\tparse\t1\t2\t2\n", ""), 2).is_err()
+        );
         assert!(parse_allocation_profile(&(valid.clone() + "baseline_live\t10\n"), 2).is_err());
-        assert!(parse_allocation_profile(&valid.replace("total\t14\t14", "total\t14\t13"), 2).is_err());
+        assert!(
+            parse_allocation_profile(&valid.replace("total\t14\t14", "total\t14\t13"), 2).is_err()
+        );
     }
 
     #[test]

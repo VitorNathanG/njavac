@@ -54,14 +54,18 @@ impl ObserveWorker {
         reference: &[u8],
         candidate: &[u8],
     ) -> ObservationPair {
-        let pair = self.request_pair(name, reference, candidate).unwrap_or_else(|e| {
-            panic!("fuzz: observer worker protocol error ({e}) - worker crashed?")
-        });
-        if pair.reference.termination == Termination::TimedOut {
-            self.restart();
-            let reversed = self.request_pair(name, candidate, reference).unwrap_or_else(|e| {
+        let pair = self
+            .request_pair(name, reference, candidate)
+            .unwrap_or_else(|e| {
                 panic!("fuzz: observer worker protocol error ({e}) - worker crashed?")
             });
+        if pair.reference.termination == Termination::TimedOut {
+            self.restart();
+            let reversed = self
+                .request_pair(name, candidate, reference)
+                .unwrap_or_else(|e| {
+                    panic!("fuzz: observer worker protocol error ({e}) - worker crashed?")
+                });
             if reversed.reference.termination == Termination::TimedOut
                 || reversed.candidate.termination == Termination::TimedOut
             {
@@ -201,7 +205,12 @@ fn read_observation(r: &mut impl Read) -> std::io::Result<Observation> {
             ));
         }
     };
-    Ok(Observation { termination, stdout, stderr, detail })
+    Ok(Observation {
+        termination,
+        stdout,
+        stderr,
+        detail,
+    })
 }
 
 fn validate_pair(pair: &ObservationPair) -> std::io::Result<()> {
@@ -210,8 +219,9 @@ fn validate_pair(pair: &ObservationPair) -> std::io::Result<()> {
         Termination::TimedOut => pair.candidate.termination == Termination::NotRun,
         _ => pair.candidate.termination != Termination::NotRun,
     };
-    if !valid || (pair.candidate.termination == Termination::NotRun
-        && (!pair.candidate.stdout.is_empty() || !pair.candidate.stderr.is_empty()))
+    if !valid
+        || (pair.candidate.termination == Termination::NotRun
+            && (!pair.candidate.stdout.is_empty() || !pair.candidate.stderr.is_empty()))
     {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,

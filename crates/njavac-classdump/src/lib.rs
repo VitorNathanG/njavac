@@ -26,4 +26,4 @@ mod diff;
 mod reader;
 
 pub use diff::{diff_report, render_dump};
-pub use reader::{dump, Field};
+pub use reader::{Field, dump};

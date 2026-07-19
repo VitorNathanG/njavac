@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
+use crate::Config;
 use crate::model::Prog;
 use crate::observe::{Observation, ObservationPair};
-use crate::Config;
 
 /// One distinct finding class: how many programs hit it, and one example.
 pub(super) struct SigInfo {
@@ -13,7 +13,9 @@ pub(super) struct SigInfo {
 /// A stable signature for a finding: the normalized structural divergence path
 /// from `diff_report` (bracketed indices collapsed to `N`).
 pub(super) fn finding_sig(report: Option<&str>) -> String {
-    let Some(rep) = report else { return "bytes-differ".to_string() };
+    let Some(rep) = report else {
+        return "bytes-differ".to_string();
+    };
     for line in rep.lines() {
         let t = line.trim();
         if let Some(rest) = t.strip_prefix("path") {
@@ -92,7 +94,10 @@ pub(super) fn report_finding(
     let out_java = cfg.out_dir.join(&prog.name.java_file);
     std::fs::write(&out_java, src).expect("write finding source");
     if let Some(report) = class_report {
-        let _ = std::fs::write(cfg.out_dir.join(format!("{}.diff", prog.name.class)), report);
+        let _ = std::fs::write(
+            cfg.out_dir.join(format!("{}.diff", prog.name.class)),
+            report,
+        );
     }
     let observation_report = format!(
         "reference:\n{}\n\ncandidate:\n{}\n",

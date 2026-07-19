@@ -286,9 +286,13 @@ impl ReportDocument {
         configuration: BenchmarkConfiguration,
         measurements: Measurements,
     ) -> Result<Self, String> {
-        let summaries = ReportSummaries::from_measurements(&measurements, &workload, &configuration)?;
+        let summaries =
+            ReportSummaries::from_measurements(&measurements, &workload, &configuration)?;
         let profile_wall = summaries.phase_profile.wall_ns.median;
-        let hot_wall = summaries.hot_in_process_corpus_compile.sample_wall_ns.median;
+        let hot_wall = summaries
+            .hot_in_process_corpus_compile
+            .sample_wall_ns
+            .median;
         if hot_wall <= 0.0 {
             return Err("hot compiler wall time must be positive".to_string());
         }
@@ -339,7 +343,9 @@ impl ReportDocument {
         if self.measurements.allocations.final_live_bytes
             != self.measurements.allocations.baseline_live_bytes
         {
-            return Err("allocation final live bytes do not match the measured baseline".to_string());
+            return Err(
+                "allocation final live bytes do not match the measured baseline".to_string(),
+            );
         }
         if self.measurements.allocations.total_requested_bytes
             != self.measurements.allocations.total_released_bytes
@@ -356,11 +362,14 @@ impl ReportDocument {
             return Err("persisted summaries do not match raw measurements".to_string());
         }
         let expected_analysis = ReportAnalysis {
-            profile_wall_delta_percent: (
-                self.summaries.phase_profile.wall_ns.median
-                    / self.summaries.hot_in_process_corpus_compile.sample_wall_ns.median
-                    - 1.0
-            ) * 100.0,
+            profile_wall_delta_percent: (self.summaries.phase_profile.wall_ns.median
+                / self
+                    .summaries
+                    .hot_in_process_corpus_compile
+                    .sample_wall_ns
+                    .median
+                - 1.0)
+                * 100.0,
         };
         if self.analysis != expected_analysis {
             return Err("persisted analysis does not match report summaries".to_string());
@@ -383,7 +392,10 @@ impl ReportDocument {
         for (name, scenario) in [
             (
                 "minimal_input_fresh_process_compile",
-                &self.measurements.performance.minimal_input_fresh_process_compile,
+                &self
+                    .measurements
+                    .performance
+                    .minimal_input_fresh_process_compile,
             ),
             (
                 "whole_corpus_cli_compile",
@@ -393,7 +405,9 @@ impl ReportDocument {
             if scenario.javac.samples.len() != expected_samples
                 || scenario.njavac.samples.len() != expected_samples
             {
-                return Err(format!("{name} raw sample count does not match configuration"));
+                return Err(format!(
+                    "{name} raw sample count does not match configuration"
+                ));
             }
         }
         if self
@@ -413,7 +427,9 @@ impl ReportDocument {
             || batch.physical_lines != self.workload.physical_lines
             || batch.output_bytes != self.workload.output_class_bytes
         {
-            return Err("whole-corpus process quantities do not match workload identity".to_string());
+            return Err(
+                "whole-corpus process quantities do not match workload identity".to_string(),
+            );
         }
         let minimal = &self
             .measurements
@@ -424,7 +440,9 @@ impl ReportDocument {
             || minimal.physical_lines != self.workload.minimal_input_physical_lines
             || minimal.output_bytes != self.workload.minimal_input_output_bytes
         {
-            return Err("minimal-input process quantities do not match workload identity".to_string());
+            return Err(
+                "minimal-input process quantities do not match workload identity".to_string(),
+            );
         }
         for sample in &self.measurements.phase_profile.samples {
             let attributed = PhaseName::ALL.into_iter().try_fold(0_u64, |total, phase| {
@@ -432,19 +450,36 @@ impl ReportDocument {
             });
             let attributed = attributed.ok_or("phase duration sum overflow")?;
             if attributed.checked_add(sample.unattributed_wall_ns) != Some(sample.wall_ns) {
-                return Err("phase attribution and unattributed time do not equal profile wall time".to_string());
+                return Err(
+                    "phase attribution and unattributed time do not equal profile wall time"
+                        .to_string(),
+                );
             }
         }
         let phase_requested = PhaseName::ALL.into_iter().try_fold(0_u64, |total, phase| {
-            total.checked_add(self.measurements.allocations.phases.get(phase).requested_bytes)
+            total.checked_add(
+                self.measurements
+                    .allocations
+                    .phases
+                    .get(phase)
+                    .requested_bytes,
+            )
         });
         let phase_released = PhaseName::ALL.into_iter().try_fold(0_u64, |total, phase| {
-            total.checked_add(self.measurements.allocations.phases.get(phase).released_bytes)
+            total.checked_add(
+                self.measurements
+                    .allocations
+                    .phases
+                    .get(phase)
+                    .released_bytes,
+            )
         });
         if phase_requested != Some(self.measurements.allocations.total_requested_bytes)
             || phase_released != Some(self.measurements.allocations.total_released_bytes)
         {
-            return Err("allocation phase totals do not match complete workload totals".to_string());
+            return Err(
+                "allocation phase totals do not match complete workload totals".to_string(),
+            );
         }
         Ok(())
     }
@@ -456,7 +491,8 @@ impl ReportSummaries {
         workload: &WorkloadIdentity,
         configuration: &BenchmarkConfiguration,
     ) -> Result<Self, String> {
-        if workload.files == 0 || configuration.rounds == 0 || configuration.allocation_rounds == 0 {
+        if workload.files == 0 || configuration.rounds == 0 || configuration.allocation_rounds == 0
+        {
             return Err("benchmark summary denominators must be positive".to_string());
         }
         let phase_operations = configuration
@@ -466,7 +502,8 @@ impl ReportSummaries {
         let allocation_operations = configuration
             .allocation_rounds
             .checked_mul(workload.files)
-            .ok_or("allocation operation count overflow")? as f64;
+            .ok_or("allocation operation count overflow")?
+            as f64;
         let phase_medians = measurements.phase_profile.median_phases()?;
         let phase_total = PhaseName::ALL
             .into_iter()
@@ -499,9 +536,12 @@ impl ReportSummaries {
         for phase in PhaseName::ALL {
             let allocation = measurements.allocations.phases.get(phase);
             let summary = phases.get_mut(phase);
-            summary.allocation_calls_per_file = allocation.allocation_calls as f64 / allocation_operations;
-            summary.requested_bytes_per_file = allocation.requested_bytes as f64 / allocation_operations;
-            summary.released_bytes_per_file = allocation.released_bytes as f64 / allocation_operations;
+            summary.allocation_calls_per_file =
+                allocation.allocation_calls as f64 / allocation_operations;
+            summary.requested_bytes_per_file =
+                allocation.requested_bytes as f64 / allocation_operations;
+            summary.released_bytes_per_file =
+                allocation.released_bytes as f64 / allocation_operations;
         }
 
         let phase_wall = measurements.phase_profile.wall_summary()?;
@@ -530,9 +570,7 @@ impl ReportSummaries {
                 wall_ns: phase_wall,
                 phases,
                 median_unattributed_wall_ns,
-                unattributed_wall_percent: median_unattributed_wall_ns
-                    / phase_wall.median
-                    * 100.0,
+                unattributed_wall_percent: median_unattributed_wall_ns / phase_wall.median * 100.0,
             },
         })
     }
@@ -549,7 +587,12 @@ impl ProcessScenario {
 
 impl ResourceSeries {
     fn summarize(&self, scenario: &ProcessScenario) -> Result<ProcessSeriesSummary, String> {
-        let wall_ns = summary(self.samples.iter().map(|sample| sample.wall_ns as f64).collect())?;
+        let wall_ns = summary(
+            self.samples
+                .iter()
+                .map(|sample| sample.wall_ns as f64)
+                .collect(),
+        )?;
         if wall_ns.median <= 0.0 {
             return Err("process wall time must be positive".to_string());
         }
@@ -561,13 +604,15 @@ impl ResourceSeries {
                     .collect(),
             )?,
             median_max_rss_kib: median(
-                self.samples.iter().map(|sample| sample.max_rss_kib as f64).collect(),
+                self.samples
+                    .iter()
+                    .map(|sample| sample.max_rss_kib as f64)
+                    .collect(),
             )?,
             effective_files_per_second: scenario.files as f64 / wall_ns.median * 1_000_000_000.0,
             normalized_source_mb_per_second: scenario.source_bytes as f64 / wall_ns.median * 1000.0,
             normalized_output_mb_per_second: scenario.output_bytes as f64 / wall_ns.median * 1000.0,
-            physical_lines_per_second: scenario.physical_lines as f64
-                / wall_ns.median
+            physical_lines_per_second: scenario.physical_lines as f64 / wall_ns.median
                 * 1_000_000_000.0,
             wall_ns,
         })
@@ -598,7 +643,12 @@ impl ScalarSeries {
 
 impl PhaseProfile {
     fn wall_summary(&self) -> Result<Summary, String> {
-        summary(self.samples.iter().map(|sample| sample.wall_ns as f64).collect())
+        summary(
+            self.samples
+                .iter()
+                .map(|sample| sample.wall_ns as f64)
+                .collect(),
+        )
     }
 
     fn median_phases(&self) -> Result<PhaseValues<f64>, String> {
@@ -630,7 +680,10 @@ pub(super) fn summary(mut values: Vec<f64>) -> Result<Summary, String> {
     }
     values.sort_by(f64::total_cmp);
     let mean = values.iter().sum::<f64>() / values.len() as f64;
-    let variance = values.iter().map(|value| (value - mean).powi(2)).sum::<f64>()
+    let variance = values
+        .iter()
+        .map(|value| (value - mean).powi(2))
+        .sum::<f64>()
         / values.len() as f64;
     let center = median_sorted(&values);
     let mut deviations: Vec<f64> = values.iter().map(|value| (value - center).abs()).collect();
@@ -773,8 +826,12 @@ mod tests {
             source_bytes: 1,
             physical_lines: 1,
             output_bytes: 1,
-            javac: ResourceSeries { samples: vec![sample_resource()] },
-            njavac: ResourceSeries { samples: vec![sample_resource()] },
+            javac: ResourceSeries {
+                samples: vec![sample_resource()],
+            },
+            njavac: ResourceSeries {
+                samples: vec![sample_resource()],
+            },
         }
     }
 
@@ -834,12 +891,19 @@ mod tests {
                 minimal_input_physical_lines: 1,
                 minimal_input_output_bytes: 1,
             },
-            BenchmarkConfiguration { samples: 1, warmup: 0, rounds: 1, allocation_rounds: 1 },
+            BenchmarkConfiguration {
+                samples: 1,
+                warmup: 0,
+                rounds: 1,
+                allocation_rounds: 1,
+            },
             Measurements {
                 performance: PerformanceMeasurements {
                     minimal_input_fresh_process_compile: sample_scenario(),
                     whole_corpus_cli_compile: sample_scenario(),
-                    hot_in_process_corpus_compile: ScalarSeries { samples_ns: vec![10] },
+                    hot_in_process_corpus_compile: ScalarSeries {
+                        samples_ns: vec![10],
+                    },
                 },
                 phase_profile: PhaseProfile {
                     samples: vec![PhaseSample {
@@ -863,7 +927,10 @@ mod tests {
 
     #[test]
     fn statistics_cover_single_even_odd_and_identical_samples() {
-        assert_eq!(summary(vec![]), Err("statistics require at least one sample".to_string()));
+        assert_eq!(
+            summary(vec![]),
+            Err("statistics require at least one sample".to_string())
+        );
         assert_eq!(summary(vec![3.0]).unwrap().median, 3.0);
         assert_eq!(summary(vec![1.0, 3.0]).unwrap().median, 2.0);
         let odd = summary(vec![1.0, 2.0, 100.0]).unwrap();
@@ -884,7 +951,10 @@ mod tests {
         assert_eq!(ReportDocument::from_json(&bytes).unwrap(), report);
 
         let mut unknown: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        unknown.as_object_mut().unwrap().insert("unknown".into(), true.into());
+        unknown
+            .as_object_mut()
+            .unwrap()
+            .insert("unknown".into(), true.into());
         assert!(ReportDocument::from_json(&serde_json::to_vec(&unknown).unwrap()).is_err());
 
         let mut wrong_version = report.clone();
@@ -896,7 +966,10 @@ mod tests {
         assert!(non_finite.validate().is_err());
 
         let mut contradictory = document();
-        contradictory.summaries.hot_in_process_corpus_compile.effective_files_per_second += 1.0;
+        contradictory
+            .summaries
+            .hot_in_process_corpus_compile
+            .effective_files_per_second += 1.0;
         assert!(contradictory.validate().is_err());
 
         let mut missing_samples = document();

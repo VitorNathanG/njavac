@@ -13,7 +13,5 @@ mod modified_utf8;
 mod pool;
 mod writer;
 
-pub use model::{
-    Attribute, ClassFile, CodeAttribute, Method, StackFrame, VerificationType,
-};
+pub use model::{Attribute, ClassFile, CodeAttribute, Method, StackFrame, VerificationType};
 pub use pool::ConstantPool;

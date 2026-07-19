@@ -7,6 +7,8 @@
 #   make verify      [FILE=fixtures/x/F.java]  # fast gate: njavac vs cached goldens (may be stale)
 #   make correctness [FILE=..]                 # fresh authoritative exact fixture check, no timing
 #   make record      [FILE=..]                 # re-record goldens (after fixtures/JDK change), then verify
+#   make fmt                                    # format all Rust through the pinned Docker toolchain
+#   make fmt-check                              # verify Rust formatting without modifying the checkout
 #   make test                                  # every deterministic pass/fail repository check
 #   make benchmark                             # controlled performance/resource report only
 #   make benchmark-help                        # benchmark modes, controls, and binary help
@@ -25,6 +27,7 @@
 IMAGE           ?= njavac-acceptance
 REFERENCE_IMAGE ?= njavac-reference
 FUZZ_IMAGE      ?= njavac-fuzz
+RUST_TOOLCHAIN_IMAGE ?= njavac-rust-toolchain
 VOLUME          ?= njavac-goldens
 GOLDENS         ?= /goldens
 # Performance controls reduce same-host noise: pin one core, fix memory, no swap.
@@ -57,8 +60,10 @@ DOCS_IMAGE ?= njavac-docs:mdbook-0.5.4
 DOCS_PORT  ?= 3000
 DOCS_UID   := $(shell id -u)
 DOCS_GID   := $(shell id -g)
+RUST_UID   := $(shell id -u)
+RUST_GID   := $(shell id -g)
 
-.PHONY: help test image reference-image fuzz-image benchmark-help probe src-diff verify correctness record benchmark diff fuzz fuzz-verify fuzz-selftest fuzz-observe-verify docs-image docs docs-build docs-check
+.PHONY: help test image reference-image fuzz-image rust-toolchain-image fmt fmt-check benchmark-help probe src-diff verify correctness record benchmark diff fuzz fuzz-verify fuzz-selftest fuzz-observe-verify docs-image docs docs-build docs-check
 
 help:  ## show this help
 	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | sed -E 's/:.*## /\t/' | sort
@@ -72,7 +77,21 @@ reference-image:
 fuzz-image:
 	docker build --target fuzz -t $(FUZZ_IMAGE) .
 
-test: image fuzz-image docs-check  ## run every deterministic pass/fail repository check
+rust-toolchain-image:
+	docker build --target rust-toolchain -t $(RUST_TOOLCHAIN_IMAGE) .
+
+fmt: rust-toolchain-image  ## format all Rust with the pinned Docker toolchain
+	docker run --rm \
+	  --user "$(RUST_UID):$(RUST_GID)" \
+	  --mount type=bind,source="$(CURDIR)",target=/work \
+	  --workdir /work \
+	  $(RUST_TOOLCHAIN_IMAGE) \
+	  cargo fmt --all
+
+fmt-check:  ## verify Rust formatting with the pinned Docker toolchain
+	docker build --target rust-format-check .
+
+test: fmt-check image fuzz-image docs-check  ## run every deterministic pass/fail repository check
 	docker build --target test .
 	docker run --rm $(IMAGE) --no-performance
 	docker run --rm $(IMAGE) --verify-instrumentation
@@ -153,7 +172,7 @@ diff: image  ## structural class-file diff in-container: make diff A=x.class B=y
 	@test -n "$(A)" && test -n "$(B)" || { echo "usage: make diff A=a.class B=b.class"; exit 2; }
 	docker run --rm -v "$(CURDIR):/w" -w /w --entrypoint classdiff $(IMAGE) $(A) $(B)
 
-fuzz: fuzz-image  ## exact + behavioral fuzz of random in-scope Java: make fuzz [SEED=n] [COUNT=n] [BATCH=n]
+fuzz: fuzz-image  ## exact + behavioral fuzz of scheduled and random in-scope Java: make fuzz [SEED=n] [COUNT=n] [BATCH=n]
 	docker run --rm -v "$(CURDIR)/fuzz-out:/work/fuzz-out" $(FUZZ_IMAGE) \
 	  $(if $(SEED),--seed $(SEED),) --count $(COUNT) $(if $(BATCH),--batch $(BATCH),) $(FUZZFLAGS)
 

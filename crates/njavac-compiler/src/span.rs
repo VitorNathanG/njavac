@@ -15,8 +15,16 @@ impl Span {
     }
 
     pub const fn join(self, other: Self) -> Self {
-        let start = if self.start < other.start { self.start } else { other.start };
-        let end = if self.end > other.end { self.end } else { other.end };
+        let start = if self.start < other.start {
+            self.start
+        } else {
+            other.start
+        };
+        let end = if self.end > other.end {
+            self.end
+        } else {
+            other.end
+        };
         Self::new(start, end)
     }
 }

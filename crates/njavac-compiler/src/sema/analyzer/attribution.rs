@@ -3,9 +3,9 @@ use crate::diagnostic::{CompileResult, Diagnostic};
 use crate::span::Span;
 
 use super::super::constants::{
-    boolean_flow, eval_numeric_constant, is_constant_expression, NumericConst,
+    NumericConst, boolean_flow, eval_numeric_constant, is_constant_expression,
 };
-use super::super::{binary_promote, unary_promote, ResolvedCall};
+use super::super::{ResolvedCall, binary_promote, unary_promote};
 use super::MethodAnalyzer;
 
 fn is_numeric(ty: &Type) -> bool {
@@ -189,7 +189,9 @@ impl MethodAnalyzer {
                 ));
             }
         };
-        Ok(ResolvedCall::Println { parameter_type: parameter })
+        Ok(ResolvedCall::Println {
+            parameter_type: parameter,
+        })
     }
 
     fn validate_binary(
@@ -252,8 +254,7 @@ impl MethodAnalyzer {
                     "reference comparison is unsupported",
                 ));
             }
-            if (is_numeric(left) && is_numeric(right))
-                || (left.is_boolean() && right.is_boolean())
+            if (is_numeric(left) && is_numeric(right)) || (left.is_boolean() && right.is_boolean())
             {
                 return Ok(());
             }
@@ -316,7 +317,10 @@ impl MethodAnalyzer {
         if valid {
             Ok(())
         } else {
-            Err(Diagnostic::semantic(span, "invalid compound assignment operands"))
+            Err(Diagnostic::semantic(
+                span,
+                "invalid compound assignment operands",
+            ))
         }
     }
 
@@ -324,7 +328,10 @@ impl MethodAnalyzer {
         if is_numeric(ty) {
             Ok(())
         } else {
-            Err(Diagnostic::semantic(span, format!("{context} requires numeric operands")))
+            Err(Diagnostic::semantic(
+                span,
+                format!("{context} requires numeric operands"),
+            ))
         }
     }
 
@@ -332,7 +339,10 @@ impl MethodAnalyzer {
         if is_integral(ty) {
             Ok(())
         } else {
-            Err(Diagnostic::semantic(span, format!("{context} requires integral operands")))
+            Err(Diagnostic::semantic(
+                span,
+                format!("{context} requires integral operands"),
+            ))
         }
     }
 
@@ -340,7 +350,10 @@ impl MethodAnalyzer {
         if ty.is_boolean() {
             Ok(())
         } else {
-            Err(Diagnostic::semantic(span, format!("{context} requires boolean operands")))
+            Err(Diagnostic::semantic(
+                span,
+                format!("{context} requires boolean operands"),
+            ))
         }
     }
 }

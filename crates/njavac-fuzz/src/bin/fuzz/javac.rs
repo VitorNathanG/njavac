@@ -65,11 +65,18 @@ impl JavacWorker {
             .stderr(Stdio::null())
             .spawn()
             .unwrap_or_else(|e| {
-                panic!("fuzz: cannot spawn javac worker `{java} {}`: {e}", worker_src.display())
+                panic!(
+                    "fuzz: cannot spawn javac worker `{java} {}`: {e}",
+                    worker_src.display()
+                )
             });
         let stdin = child.stdin.take().expect("worker stdin");
         let stdout = BufReader::new(child.stdout.take().expect("worker stdout"));
-        JavacWorker { child, stdin: Some(stdin), stdout }
+        JavacWorker {
+            child,
+            stdin: Some(stdin),
+            stdout,
+        }
     }
 
     /// Compile a whole batch in one javac task. Missing expected classes are
@@ -79,7 +86,10 @@ impl JavacWorker {
             .unwrap_or_else(|e| panic!("fuzz: javac worker protocol error ({e}) — worker crashed?"))
     }
 
-    fn request_batch(&mut self, units: &[(&str, &str)]) -> std::io::Result<HashMap<String, Vec<u8>>> {
+    fn request_batch(
+        &mut self,
+        units: &[(&str, &str)],
+    ) -> std::io::Result<HashMap<String, Vec<u8>>> {
         let stdin = self.stdin.as_mut().expect("worker stdin already closed");
         stdin.write_all(&(units.len() as u32).to_be_bytes())?;
         for (name, src) in units {
@@ -90,8 +100,9 @@ impl JavacWorker {
         let n = read_i32(&mut self.stdout)?;
         let mut classes = HashMap::with_capacity(n.max(0) as usize);
         for _ in 0..n {
-            let name = String::from_utf8(read_frame(&mut self.stdout)?)
-                .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidData, "non-utf8 class name"))?;
+            let name = String::from_utf8(read_frame(&mut self.stdout)?).map_err(|_| {
+                std::io::Error::new(std::io::ErrorKind::InvalidData, "non-utf8 class name")
+            })?;
             let bytes = read_frame(&mut self.stdout)?;
             classes.insert(name, bytes);
         }
@@ -121,7 +132,10 @@ fn read_i32(r: &mut impl Read) -> std::io::Result<i32> {
 fn read_frame(r: &mut impl Read) -> std::io::Result<Vec<u8>> {
     let len = read_i32(r)?;
     if len < 0 {
-        return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "negative frame length"));
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "negative frame length",
+        ));
     }
     let mut buf = vec![0u8; len as usize];
     r.read_exact(&mut buf)?;
@@ -141,7 +155,10 @@ pub(super) fn assert_batch_classes(classes: &HashMap<String, Vec<u8>>, progs: &[
 }
 
 pub(super) fn assert_no_unexpected_classes(javac_out: &Path, progs: &[Prog]) {
-    let expected: HashSet<String> = progs.iter().map(|p| format!("{}.class", p.name.class)).collect();
+    let expected: HashSet<String> = progs
+        .iter()
+        .map(|p| format!("{}.class", p.name.class))
+        .collect();
     if let Ok(rd) = std::fs::read_dir(javac_out) {
         for e in rd.flatten() {
             let fname = e.file_name().to_string_lossy().into_owned();

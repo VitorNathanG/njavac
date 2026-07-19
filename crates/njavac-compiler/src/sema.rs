@@ -82,7 +82,10 @@ impl ResolvedCall {
 impl MethodInfo {
     pub fn local_id(&self, name: &Name) -> LocalId {
         *self.resolutions.get(&name.span).unwrap_or_else(|| {
-            panic!("sema did not resolve local occurrence `{}` at {:?}", name.text, name.span)
+            panic!(
+                "sema did not resolve local occurrence `{}` at {:?}",
+                name.text, name.span
+            )
         })
     }
 
@@ -156,7 +159,10 @@ pub fn analyze(unit: &CompilationUnit) -> CompileResult<Analysis> {
     validate_class_shape(unit)?;
     Ok(Analysis {
         arena_identity: unit.exprs.identity(),
-        methods: vec![analyzer::analyze_method(&unit.class.methods[0], &unit.exprs)?],
+        methods: vec![analyzer::analyze_method(
+            &unit.class.methods[0],
+            &unit.exprs,
+        )?],
     })
 }
 
@@ -214,7 +220,10 @@ fn validate_class_shape(unit: &CompilationUnit) -> CompileResult<()> {
         ));
     }
     if method.params.len() != 1 {
-        let span = method.params.get(1).map_or(method.name_span, |param| param.span);
+        let span = method
+            .params
+            .get(1)
+            .map_or(method.name_span, |param| param.span);
         return Err(Diagnostic::unsupported_semantic(
             span,
             "the supported `main` method must have one String[] parameter",

@@ -9,7 +9,10 @@ fn test_directory(name: &str) -> PathBuf {
     let path = std::env::temp_dir().join(format!(
         "njavac-benchmark-cli-{name}-{}-{}",
         std::process::id(),
-        SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos(),
     ));
     std::fs::create_dir_all(&path).unwrap();
     path
@@ -22,8 +25,11 @@ fn prepare(name: &str) -> (PathBuf, PathBuf, PathBuf) {
     std::fs::write(&source, source_text).unwrap();
     let golden = directory.join("golden");
     std::fs::create_dir(&golden).unwrap();
-    std::fs::write(golden.join("Empty.class"), njavac::compile(source_text, "Empty.java").unwrap())
-        .unwrap();
+    std::fs::write(
+        golden.join("Empty.class"),
+        njavac::compile(source_text, "Empty.java").unwrap(),
+    )
+    .unwrap();
     (directory, source, golden)
 }
 
@@ -63,7 +69,10 @@ fn script(directory: &Path, name: &str, body: &str) -> PathBuf {
 
 fn matching_compiler(directory: &Path, golden: &Path) -> PathBuf {
     let golden = golden.join("Empty.class");
-    let quoted = format!("'{}'", golden.display().to_string().replace('\'', "'\"'\"'"));
+    let quoted = format!(
+        "'{}'",
+        golden.display().to_string().replace('\'', "'\"'\"'")
+    );
     script(
         directory,
         "matching",
@@ -76,10 +85,13 @@ fn focused_correctness_produces_no_report() {
     let (directory, source, golden) = prepare("focused");
     let compiler = matching_compiler(&directory, &golden);
     let output = run_offline(&directory, &source, &golden, &compiler);
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
     assert!(
-        String::from_utf8_lossy(&output.stdout)
-            .contains("correctness only; no report generated")
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("correctness only; no report generated")
     );
     assert!(!directory.read_dir().unwrap().any(|entry| {
         entry
@@ -116,7 +128,11 @@ fn compiler_failure_missing_output_and_wrong_output_are_distinct_failures() {
     let output = run_offline(&directory, &source, &golden, &failing);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(!output.status.success());
-    assert!(stderr.contains("status") && stderr.contains("sentinel-error") && stderr.contains("command:"));
+    assert!(
+        stderr.contains("status")
+            && stderr.contains("sentinel-error")
+            && stderr.contains("command:")
+    );
 
     let stale_dir = directory.join("out/njavac");
     std::fs::create_dir_all(&stale_dir).unwrap();
@@ -158,7 +174,11 @@ fn resource_child_and_allocation_helper_protocols_work_end_to_end() {
             .args(["--resource-child", command])
             .output()
             .unwrap();
-        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
         let response: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
         assert_eq!(response["outcome"], outcome);
     }
@@ -167,7 +187,11 @@ fn resource_child_and_allocation_helper_protocols_work_end_to_end() {
         .arg("--selftest-accounting")
         .output()
         .unwrap();
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 
     let (directory, source, _golden) = prepare("allocation-preflight");
     let output = Command::new(env!("CARGO_BIN_EXE_benchmark_alloc"))
@@ -175,7 +199,11 @@ fn resource_child_and_allocation_helper_protocols_work_end_to_end() {
         .arg(&source)
         .output()
         .unwrap();
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     assert!(
         String::from_utf8_lossy(&output.stdout)
             .contains("allocation instrumentation verified for 1 fixtures")

@@ -155,7 +155,8 @@ impl Type {
     }
 
     pub fn primitive(&self) -> PrimitiveType {
-        self.as_primitive().expect("reference type used as a primitive")
+        self.as_primitive()
+            .expect("reference type used as a primitive")
     }
 
     pub fn is_boolean(&self) -> bool {
@@ -238,10 +239,7 @@ pub enum StmtKind {
         init: Option<ExprId>,
     },
     /// `name = value;` — plain assignment to an already-declared local.
-    Assign {
-        name: Name,
-        value: ExprId,
-    },
+    Assign { name: Name, value: ExprId },
     /// `name <op>= value;` — compound assignment. `++`/`--` are lowered here with
     /// `op = Add`/`Sub` and `value = IntLit(1)`. Pre/post form is irrelevant in
     /// statement position (the produced value is discarded), so it is not stored.
@@ -323,10 +321,7 @@ pub enum ExprKind {
     Name(Name),
     /// One dotted-name selection used structurally in a call target. Sema resolves
     /// the complete chain; this is not yet a general field-access value.
-    Select {
-        qualifier: ExprId,
-        name: Name,
-    },
+    Select { qualifier: ExprId, name: Name },
     /// Unary minus, e.g. `-x`. A literal operand is constant-folded by codegen.
     Neg(ExprId),
     /// Unary bitwise complement `~x` (int/long).
@@ -338,10 +333,7 @@ pub enum ExprKind {
     /// survive parsing.
     Paren(ExprId),
     /// An explicit primitive cast `(Type) expr`.
-    Cast {
-        ty: Type,
-        expr: ExprId,
-    },
+    Cast { ty: Type, expr: ExprId },
     /// A binary arithmetic / bitwise / shift expression.
     Binary {
         op: BinOp,
@@ -367,10 +359,7 @@ pub enum ExprKind {
     },
     /// A method invocation. The parser preserves the dotted target as source names;
     /// semantic analysis resolves its receiver, owner, signature, and return type.
-    Call {
-        target: ExprId,
-        args: CallArgs,
-    },
+    Call { target: ExprId, args: CallArgs },
 }
 
 /// Call arguments optimized for the current one-argument surface while retaining
@@ -411,11 +400,11 @@ pub enum BinOp {
     Mul,
     Div,
     Rem,
-    And, // &
-    Or,  // |
-    Xor, // ^
-    Shl, // <<
-    Shr, // >>
+    And,  // &
+    Or,   // |
+    Xor,  // ^
+    Shl,  // <<
+    Shr,  // >>
     UShr, // >>>
 }
 

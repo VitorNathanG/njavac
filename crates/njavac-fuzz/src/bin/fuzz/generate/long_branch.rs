@@ -1,4 +1,4 @@
-use crate::model::{ident, BinOp, CaseKind, CmpOp, FExpr, FStmt, LogOp, PrintArg, Prog, Ty, Val};
+use crate::model::{BinOp, CaseKind, CmpOp, FExpr, FStmt, LogOp, PrintArg, Prog, Ty, Val, ident};
 
 const CATEGORY_2_PADS: usize = 127;
 const SELF_ADDS: usize = 2519;
@@ -218,7 +218,10 @@ mod tests {
 
         let boundary = scheduled(0).unwrap();
         let x = CATEGORY_2_PADS + 1;
-        assert_eq!(boundary.locals[..CATEGORY_2_PADS], [Ty::Long; CATEGORY_2_PADS]);
+        assert_eq!(
+            boundary.locals[..CATEGORY_2_PADS],
+            [Ty::Long; CATEGORY_2_PADS]
+        );
         assert_eq!(boundary.locals[CATEGORY_2_PADS..], [Ty::Int, Ty::Int]);
         assert_eq!(local_slot(&boundary.locals, x), 256);
         let FStmt::If { then_b, .. } = &boundary.body[CATEGORY_2_PADS + 2] else {
@@ -243,7 +246,11 @@ mod tests {
         assert_negate(&then_b[SELF_ADDS + 1], x);
 
         let goto_fat = scheduled(2).unwrap();
-        let FStmt::If { else_b: Some(else_b), .. } = &goto_fat.body[CATEGORY_2_PADS + 2] else {
+        let FStmt::If {
+            else_b: Some(else_b),
+            ..
+        } = &goto_fat.body[CATEGORY_2_PADS + 2]
+        else {
             panic!("long goto fat case lost its padding branch");
         };
         assert_eq!(else_b.len(), SELF_ADDS + 2);
@@ -255,8 +262,12 @@ mod tests {
     #[test]
     fn scheduled_prefix_preserves_the_later_random_stream() {
         let seed = 0x6A09_E667_F3BC_C909;
-        let mut mixed = Gen { rng: Rng::new(seed) };
-        let mut random = Gen { rng: Rng::new(seed) };
+        let mut mixed = Gen {
+            rng: Rng::new(seed),
+        };
+        let mut random = Gen {
+            rng: Rng::new(seed),
+        };
 
         for index in 0..10 {
             let actual = mixed.gen_prog(index);

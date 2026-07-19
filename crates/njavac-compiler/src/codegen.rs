@@ -73,11 +73,7 @@ pub fn plan(
 
     let mut methods = Vec::new();
     // `<init>` first: its `Methodref` is interned before any of main's operands.
-    methods.push(lowering::gen_init(
-        &mut cp,
-        &class.super_class,
-        class.line,
-    ));
+    methods.push(lowering::gen_init(&mut cp, &class.super_class, class.line));
     for (m, info) in class.methods.iter().zip(&analysis.methods) {
         methods.push(lowering::gen_method(&mut cp, m, info, &unit.exprs));
     }

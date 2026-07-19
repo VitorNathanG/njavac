@@ -1,4 +1,6 @@
-use crate::ast::{CompilationUnit, ExprArena, ExprId, ExprKind, LogOp, PrimitiveType, Stmt, StmtKind};
+use crate::ast::{
+    CompilationUnit, ExprArena, ExprId, ExprKind, LogOp, PrimitiveType, Stmt, StmtKind,
+};
 use crate::diagnostic::{CompileResult, Diagnostic};
 use crate::sema::{Analysis, MethodInfo};
 use crate::span::Span;
@@ -9,10 +11,7 @@ use super::constant::{fold, lowering_const, to_i32};
 /// cannot yet represent: materializing a branch boolean over a live base stack.
 /// This runs before constant-pool interning or byte emission; the corresponding
 /// emitter assert remains a post-preflight invariant.
-pub(super) fn preflight_codegen(
-    unit: &CompilationUnit,
-    analysis: &Analysis,
-) -> CompileResult<()> {
+pub(super) fn preflight_codegen(unit: &CompilationUnit, analysis: &Analysis) -> CompileResult<()> {
     for (method, info) in unit.class.methods.iter().zip(&analysis.methods) {
         for stmt in &method.body {
             preflight_stmt(stmt, info, &unit.exprs)?;

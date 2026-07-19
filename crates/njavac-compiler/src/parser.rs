@@ -21,8 +21,8 @@ mod expression;
 mod statement;
 
 use crate::ast::{
-    Class, CompilationUnit, ExprArena, ExprId, ExprKind, Method, Name, Param, PrimitiveType, Type,
-    JAVA_LANG_OBJECT,
+    Class, CompilationUnit, ExprArena, ExprId, ExprKind, JAVA_LANG_OBJECT, Method, Name, Param,
+    PrimitiveType, Type,
 };
 use crate::diagnostic::{CompileResult, Diagnostic};
 use crate::lexer::{Token, TokenKind};
@@ -30,7 +30,12 @@ use crate::span::Span;
 
 /// Parse a token stream (as produced by `lexer::lex`) into a `CompilationUnit`.
 pub fn parse(tokens: Vec<Token>) -> CompileResult<CompilationUnit> {
-    Parser { tokens, pos: 0, exprs: ExprArena::default() }.compilation_unit()
+    Parser {
+        tokens,
+        pos: 0,
+        exprs: ExprArena::default(),
+    }
+    .compilation_unit()
 }
 
 struct Parser {
@@ -97,7 +102,9 @@ impl Parser {
     fn expect_ident_spanned(&mut self) -> CompileResult<(String, Span)> {
         if matches!(self.peek(), TokenKind::Ident(_)) {
             let token = self.bump();
-            let TokenKind::Ident(name) = token.kind else { unreachable!() };
+            let TokenKind::Ident(name) = token.kind else {
+                unreachable!()
+            };
             Ok((name, token.span))
         } else {
             Err(Diagnostic::parse(
@@ -117,7 +124,11 @@ impl Parser {
                 format!("unexpected trailing token: {:?}", self.peek()),
             ));
         }
-        Ok(CompilationUnit { span: class.span, class, exprs: self.exprs })
+        Ok(CompilationUnit {
+            span: class.span,
+            class,
+            exprs: self.exprs,
+        })
     }
 
     // `public class Name { <methods> }`

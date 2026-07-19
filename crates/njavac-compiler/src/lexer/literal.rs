@@ -157,7 +157,11 @@ impl Lexer<'_> {
         // Hex / binary integer prefixes: 0x.. / 0b.. (never floating in the subset).
         if self.peek() == Some(b'0') && matches!(self.peek2(), Some(b'x' | b'X' | b'b' | b'B')) {
             self.bump(); // 0
-            let radix: u32 = if matches!(self.bump(), b'x' | b'X') { 16 } else { 2 };
+            let radix: u32 = if matches!(self.bump(), b'x' | b'X') {
+                16
+            } else {
+                2
+            };
             let mut digits = String::new();
             while let Some(c) = self.peek() {
                 if c == b'_' {

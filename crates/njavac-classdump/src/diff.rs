@@ -1,4 +1,4 @@
-use super::reader::{dump, raw, Field};
+use super::reader::{Field, dump, raw};
 
 /// A "derived" field is a count or byte-length fully determined by the content
 /// that follows it — when it differs, the divergence is a *consequence*, not the
@@ -39,14 +39,19 @@ pub fn diff_report(a: &[u8], b: &[u8]) -> Option<String> {
     match (dump(a), dump(b)) {
         (Ok(fa), Ok(fb)) => {
             let n = fa.len().max(fb.len());
-            let diffs: Vec<usize> =
-                (0..n).filter(|&i| field_differs(fa.get(i), fb.get(i))).collect();
+            let diffs: Vec<usize> = (0..n)
+                .filter(|&i| field_differs(fa.get(i), fb.get(i)))
+                .collect();
             // Prefer the first SUBSTANTIVE (non-derived) divergence: a derived
             // count/length differs only as a *consequence* of the content it
             // measures, so headlining it (`constant_pool_count`, `attr[..].length`)
             // buries the cause. Fall back to the first divergence if all are derived.
-            let path_at =
-                |i: usize| fa.get(i).or(fb.get(i)).map(|f| f.path.as_str()).unwrap_or("");
+            let path_at = |i: usize| {
+                fa.get(i)
+                    .or(fb.get(i))
+                    .map(|f| f.path.as_str())
+                    .unwrap_or("")
+            };
             let substantive = diffs.iter().copied().find(|&i| !is_derived(path_at(i)));
             let idx = substantive.or_else(|| diffs.first().copied());
             match idx {
@@ -56,8 +61,12 @@ pub fn diff_report(a: &[u8], b: &[u8]) -> Option<String> {
                     // so the count/length change stays visible but is not the headline.
                     if let Some(&d) = diffs.first() {
                         if d != i && is_derived(path_at(d)) {
-                            let da = fa.get(d).map_or("∅".to_string(), |f| clip(&f.value).to_string());
-                            let db = fb.get(d).map_or("∅".to_string(), |f| clip(&f.value).to_string());
+                            let da = fa
+                                .get(d)
+                                .map_or("∅".to_string(), |f| clip(&f.value).to_string());
+                            let db = fb
+                                .get(d)
+                                .map_or("∅".to_string(), |f| clip(&f.value).to_string());
                             out.push_str(&format!(
                                 "derived {} differs (javac {da} / njavac {db}) — a \
                                  consequence of the divergence below\n",
@@ -96,7 +105,12 @@ pub fn diff_report(a: &[u8], b: &[u8]) -> Option<String> {
                     if lo < hi {
                         out.push_str("  preceding context (matches on both sides):\n");
                         for f in &fa[lo..hi] {
-                            out.push_str(&format!("    {} {} = {}\n", off(f.offset), f.path, clip(&f.value)));
+                            out.push_str(&format!(
+                                "    {} {} = {}\n",
+                                off(f.offset),
+                                f.path,
+                                clip(&f.value)
+                            ));
                         }
                     }
                 }
@@ -128,7 +142,12 @@ pub fn diff_report(a: &[u8], b: &[u8]) -> Option<String> {
 pub fn render_dump(fields: &[Field]) -> String {
     let mut out = String::new();
     for f in fields {
-        out.push_str(&format!("{}  {} = {}\n", off(f.offset), f.path, clip(&f.value)));
+        out.push_str(&format!(
+            "{}  {} = {}\n",
+            off(f.offset),
+            f.path,
+            clip(&f.value)
+        ));
     }
     out
 }

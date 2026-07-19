@@ -1,11 +1,11 @@
+use crate::Config;
 use crate::generate::{Gen, Rng};
 use crate::javac::{
-    assert_batch_classes, assert_no_unexpected_classes, derive_java, reset_dir, run_javac_batch,
-    worker_src_path, JavacWorker,
+    JavacWorker, assert_batch_classes, assert_no_unexpected_classes, derive_java, reset_dir,
+    run_javac_batch, worker_src_path,
 };
 use crate::model::Prog;
 use crate::render::render;
-use crate::Config;
 
 /// Prove the in-memory worker is byte-identical to the `javac` CLI over `count`
 /// generated programs. The CLI remains the ground truth.
@@ -18,7 +18,9 @@ pub(crate) fn verify_worker(cfg: &Config) -> i32 {
 
     let worker_src = worker_src_path();
     let mut worker = JavacWorker::spawn(&derive_java(&cfg.javac), &worker_src);
-    let mut g = Gen { rng: Rng::new(cfg.seed) };
+    let mut g = Gen {
+        rng: Rng::new(cfg.seed),
+    };
 
     let mut agree = 0u64;
     let mut agree_reject = 0u64;
@@ -27,7 +29,10 @@ pub(crate) fn verify_worker(cfg: &Config) -> i32 {
 
     println!(
         "verify-worker: seed={} count={} — worker={} vs CLI={}",
-        cfg.seed, cfg.count, worker_src.display(), cfg.javac
+        cfg.seed,
+        cfg.count,
+        worker_src.display(),
+        cfg.javac
     );
 
     let mut n = 0u64;
@@ -89,7 +94,8 @@ pub(crate) fn verify_worker(cfg: &Config) -> i32 {
                         let _ = std::fs::write(dir.join(format!("{}.cli.class", p.name.class)), a);
                     }
                     if let Some(b) = &wrk {
-                        let _ = std::fs::write(dir.join(format!("{}.worker.class", p.name.class)), b);
+                        let _ =
+                            std::fs::write(dir.join(format!("{}.worker.class", p.name.class)), b);
                     }
                     dumped += 1;
                 }

@@ -7,8 +7,8 @@ use crate::diagnostic::{CompileResult, Diagnostic};
 use crate::fxhash::{FxHashMap, FxHashSet};
 use crate::span::Span;
 
-use super::{FrameLocal, LocalId, LocalInfo, MethodInfo, ResolvedCall, StmtFrameLocals};
 use super::constants::boolean_flow;
+use super::{FrameLocal, LocalId, LocalInfo, MethodInfo, ResolvedCall, StmtFrameLocals};
 
 pub(super) fn analyze_method(method: &Method, exprs: &ExprArena) -> CompileResult<MethodInfo> {
     let mut frame_locals = Vec::with_capacity(method.body.len() + 2);
@@ -17,7 +17,10 @@ pub(super) fn analyze_method(method: &Method, exprs: &ExprArena) -> CompileResul
         locals: Vec::new(),
         resolutions: FxHashMap::default(),
         stmt_frame_locals: FxHashMap::default(),
-        scopes: vec![Scope { symbols: FxHashMap::default(), allocator_base: 0 }],
+        scopes: vec![Scope {
+            symbols: FxHashMap::default(),
+            allocator_base: 0,
+        }],
         assigned: FxHashSet::default(),
         reachable: true,
         frame_locals,
@@ -92,9 +95,10 @@ fn frame_local(ty: &Type) -> FrameLocal {
         Type::Primitive(PrimitiveType::Float) => FrameLocal::Float,
         Type::Primitive(PrimitiveType::Double) => FrameLocal::Double,
         Type::Primitive(_) => FrameLocal::Integer,
-        Type::Class(_) | Type::Array(_) => {
-            FrameLocal::Object(ty.verifier_name().expect("reference type has no verifier name"))
-        }
+        Type::Class(_) | Type::Array(_) => FrameLocal::Object(
+            ty.verifier_name()
+                .expect("reference type has no verifier name"),
+        ),
     }
 }
 
@@ -134,7 +138,11 @@ impl MethodAnalyzer {
     }
 
     fn declare(&mut self, name: &Name, ty: Type) -> CompileResult<LocalId> {
-        if self.scopes.iter().any(|scope| scope.symbols.contains_key(&name.text)) {
+        if self
+            .scopes
+            .iter()
+            .any(|scope| scope.symbols.contains_key(&name.text))
+        {
             return Err(Diagnostic::semantic(
                 name.span,
                 format!("duplicate local `{}`", name.text),
@@ -176,7 +184,10 @@ impl MethodAnalyzer {
 
     fn record_resolution(&mut self, name: &Name, id: LocalId) {
         let previous = self.resolutions.insert(name.span, id);
-        assert!(previous.is_none(), "name occurrence resolved more than once");
+        assert!(
+            previous.is_none(),
+            "name occurrence resolved more than once"
+        );
     }
 
     fn local_type(&self, id: LocalId) -> Type {
@@ -200,7 +211,11 @@ impl MethodAnalyzer {
         for id in &self.assigned {
             let local = &self.locals[id.0];
             let previous = starts[local.slot as usize].replace(frame_local(&local.ty));
-            assert!(previous.is_none(), "assigned locals overlap at slot {}", local.slot);
+            assert!(
+                previous.is_none(),
+                "assigned locals overlap at slot {}",
+                local.slot
+            );
         }
 
         let mut locals = Vec::new();
@@ -293,12 +308,22 @@ impl MethodAnalyzer {
                     ));
                 }
                 let ty = self.validate_expr(*expr, stmt.span, exprs)?;
-                debug_assert!(ty.is_void(), "supported expression statement returns a value");
+                debug_assert!(
+                    ty.is_void(),
+                    "supported expression statement returns a value"
+                );
             }
-            StmtKind::If { cond, then_branch, else_branch } => {
+            StmtKind::If {
+                cond,
+                then_branch,
+                else_branch,
+            } => {
                 let ty = self.validate_expr(*cond, stmt.span, exprs)?;
                 if !ty.is_boolean() {
-                    return Err(Diagnostic::semantic(stmt.span, "if condition must be boolean"));
+                    return Err(Diagnostic::semantic(
+                        stmt.span,
+                        "if condition must be boolean",
+                    ));
                 }
 
                 let outcomes = boolean_flow(exprs, *cond);
@@ -338,9 +363,16 @@ impl MethodAnalyzer {
         }
         let previous = self.stmt_frame_locals.insert(
             stmt.span,
-            StmtFrameLocals { entry, exit: self.current_frame_locals },
+            StmtFrameLocals {
+                entry,
+                exit: self.current_frame_locals,
+            },
         );
-        assert!(previous.is_none(), "duplicate statement span recorded at {:?}", stmt.span);
+        assert!(
+            previous.is_none(),
+            "duplicate statement span recorded at {:?}",
+            stmt.span
+        );
         Ok(())
     }
 
