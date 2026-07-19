@@ -1,4 +1,110 @@
-use crate::ast::{BinOp, ExprArena, ExprId, ExprKind, PrimitiveType};
+use crate::ast::{BinOp, CmpOp, ExprArena, ExprId, ExprKind, LogOp, PrimitiveType};
+
+#[derive(Clone, Copy)]
+pub(super) struct BooleanFlow {
+    pub when_true: bool,
+    pub when_false: bool,
+}
+
+impl BooleanFlow {
+    const BOTH: Self = Self {
+        when_true: true,
+        when_false: true,
+    };
+
+    fn exact(value: bool) -> Self {
+        Self {
+            when_true: value,
+            when_false: !value,
+        }
+    }
+
+    fn negate(self) -> Self {
+        Self {
+            when_true: self.when_false,
+            when_false: self.when_true,
+        }
+    }
+}
+
+/// Compute the outcomes that semantic definite-assignment flow must consider.
+/// `&&` and `||` propagate impossible outcomes structurally, while ordinary
+/// boolean `&`/`|`/`^` affect flow only when the complete expression is constant.
+/// `DefiniteShortCircuitPaths.java` pins the short-circuit cells; the negative
+/// semantic controls pin that javac does not infer an impossible outcome from
+/// `false & runtime` or `true | runtime`.
+pub(super) fn boolean_flow(exprs: &ExprArena, expr: ExprId) -> BooleanFlow {
+    match &exprs[expr] {
+        ExprKind::BoolLit(value) => BooleanFlow::exact(*value),
+        ExprKind::Not(inner) => boolean_flow(exprs, *inner).negate(),
+        ExprKind::Paren(inner) => boolean_flow(exprs, *inner),
+        ExprKind::Cast { ty, expr } if ty.is_boolean() => boolean_flow(exprs, *expr),
+        ExprKind::Logical { op, left, right } => {
+            let left = boolean_flow(exprs, *left);
+            let right = boolean_flow(exprs, *right);
+            match op {
+                LogOp::And => BooleanFlow {
+                    when_true: left.when_true && right.when_true,
+                    when_false: left.when_false || (left.when_true && right.when_false),
+                },
+                LogOp::Or => BooleanFlow {
+                    when_true: left.when_true || (left.when_false && right.when_true),
+                    when_false: left.when_false && right.when_false,
+                },
+            }
+        }
+        ExprKind::Binary { .. } | ExprKind::Compare { .. } => {
+            eval_boolean_constant(exprs, expr).map_or(BooleanFlow::BOTH, BooleanFlow::exact)
+        }
+        _ => BooleanFlow::BOTH,
+    }
+}
+
+fn eval_boolean_constant(exprs: &ExprArena, expr: ExprId) -> Option<bool> {
+    Some(match &exprs[expr] {
+        ExprKind::BoolLit(value) => *value,
+        ExprKind::Not(inner) => !eval_boolean_constant(exprs, *inner)?,
+        ExprKind::Paren(inner) => eval_boolean_constant(exprs, *inner)?,
+        ExprKind::Cast { ty, expr } if ty.is_boolean() => eval_boolean_constant(exprs, *expr)?,
+        ExprKind::Binary { op, left, right }
+            if matches!(op, BinOp::And | BinOp::Or | BinOp::Xor) =>
+        {
+            let left = eval_boolean_constant(exprs, *left)?;
+            let right = eval_boolean_constant(exprs, *right)?;
+            match op {
+                BinOp::And => left & right,
+                BinOp::Or => left | right,
+                BinOp::Xor => left ^ right,
+                _ => unreachable!(),
+            }
+        }
+        ExprKind::Compare { op, left, right } => {
+            if let (Some(left), Some(right)) = (
+                eval_numeric_constant(exprs, *left),
+                eval_numeric_constant(exprs, *right),
+            ) {
+                compare_numeric(*op, left, right)
+            } else {
+                let left = eval_boolean_constant(exprs, *left)?;
+                let right = eval_boolean_constant(exprs, *right)?;
+                match op {
+                    CmpOp::Eq => left == right,
+                    CmpOp::Ne => left != right,
+                    _ => return None,
+                }
+            }
+        }
+        ExprKind::Logical { op, left, right } => {
+            let left = eval_boolean_constant(exprs, *left)?;
+            let right = eval_boolean_constant(exprs, *right)?;
+            match op {
+                LogOp::And => left && right,
+                LogOp::Or => left || right,
+            }
+        }
+        _ => return None,
+    })
+}
 
 /// A syntax-only approximation used for assignment conversion. It recognizes the
 /// constant-expression shape but does not prove that a folded value fits a narrow
@@ -134,6 +240,26 @@ pub(super) fn eval_numeric_constant(exprs: &ExprArena, expr: ExprId) -> Option<N
         | ExprKind::Logical { .. }
         | ExprKind::Call { .. } => return None,
     })
+}
+
+fn compare_numeric(op: CmpOp, left: NumericConst, right: NumericConst) -> bool {
+    match left.rank().max(right.rank()) {
+        0 => compare_values(op, left.to_i32(), right.to_i32()),
+        1 => compare_values(op, left.to_i64(), right.to_i64()),
+        2 => compare_values(op, left.to_f32(), right.to_f32()),
+        _ => compare_values(op, left.to_f64(), right.to_f64()),
+    }
+}
+
+fn compare_values<T: PartialOrd>(op: CmpOp, left: T, right: T) -> bool {
+    match op {
+        CmpOp::Lt => left < right,
+        CmpOp::Le => left <= right,
+        CmpOp::Gt => left > right,
+        CmpOp::Ge => left >= right,
+        CmpOp::Eq => left == right,
+        CmpOp::Ne => left != right,
+    }
 }
 
 fn eval_numeric_binary(

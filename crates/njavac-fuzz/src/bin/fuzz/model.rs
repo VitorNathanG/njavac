@@ -151,7 +151,7 @@ pub(super) enum PrintArg {
 
 #[derive(Clone, Debug)]
 pub(super) enum FStmt {
-    Decl { ty: Ty, local: usize, init: FExpr },
+    Decl { ty: Ty, local: usize, init: Option<FExpr> },
     Assign { local: usize, value: FExpr },
     Compound { local: usize, op: BinOp, value: FExpr },
     IncDec { local: usize, prefix: bool, inc: bool },

@@ -85,9 +85,13 @@ Declaration limits are narrower than the parser's block syntax:
 - Standalone nested blocks are not supported.
 - Multiple declarators, `final`, `var`, array locals, reference locals, and local
   type declarations are not supported.
-- Local reads require definite assignment. Assignment in both arms of an
-  `if`/`else` makes a predeclared local definitely assigned after the join;
-  assignment in only one arm does not.
+- Local reads require definite assignment. Assignment in both reachable arms of
+  an `if`/`else` makes a predeclared local definitely assigned after the join.
+  When a constant or short-circuit condition makes only one outcome possible,
+  that outcome alone determines the joined state. Reads in impossible arms and
+  dead `&&`/`||` operands are vacuously definitely assigned but remain subject to
+  name resolution and type checking. Assignment in only one of two possible arms
+  does not establish definite assignment after the join.
 - Local names are ASCII Java-like identifiers: ASCII letters, digits after the
   first character, `_`, and `$`. Java's wider Unicode identifier set is not
   supported.

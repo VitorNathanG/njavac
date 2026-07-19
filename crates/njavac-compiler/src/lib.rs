@@ -93,7 +93,8 @@ pub fn compile_observed<O: CompileObserver>(
 
 #[cfg(test)]
 mod tests {
-    use super::{CompileObserver, CompilePhase, compile_observed};
+    use super::{CompileObserver, CompilePhase, compile, compile_observed};
+    use crate::diagnostic::DiagnosticCode;
 
     #[derive(Default)]
     struct Recorder(Vec<(bool, CompilePhase)>);
@@ -163,6 +164,27 @@ mod tests {
                 CompilePhase::ClassfileEmit,
                 CompilePhase::Cleanup,
             ],
+        );
+    }
+
+    #[test]
+    fn definite_assignment_still_checks_live_mistyped_and_bitwise_paths() {
+        let live_read = "public class X { public static void main(String[] args) { boolean c = true; boolean x; if (c && x) { System.out.println(1); } } }";
+        assert_eq!(
+            compile(live_read, "X.java").unwrap_err().code,
+            DiagnosticCode::SemanticError,
+        );
+
+        let dead_wrong_type = "public class X { public static void main(String[] args) { int x; if (false && x) { System.out.println(1); } } }";
+        assert_eq!(
+            compile(dead_wrong_type, "X.java").unwrap_err().code,
+            DiagnosticCode::SemanticError,
+        );
+
+        let bitwise_condition = "public class X { public static void main(String[] args) { boolean c = true; int x; if (false & c) {} else { x = 1; } System.out.println(x); } }";
+        assert_eq!(
+            compile(bitwise_condition, "X.java").unwrap_err().code,
+            DiagnosticCode::SemanticError,
         );
     }
 }

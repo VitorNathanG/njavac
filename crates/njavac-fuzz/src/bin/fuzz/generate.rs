@@ -50,6 +50,7 @@ enum BoolMode {
 struct ScopeCaps {
     decls_in_branches: bool,
     boolean_boundaries: bool,
+    definite_assignment_paths: bool,
     #[allow(dead_code)]
     has_ternary: bool,
     #[allow(dead_code)]
@@ -59,6 +60,7 @@ struct ScopeCaps {
 const CAPS: ScopeCaps = ScopeCaps {
     decls_in_branches: false,
     boolean_boundaries: true,
+    definite_assignment_paths: true,
     has_ternary: false,
     has_loops: false,
 };

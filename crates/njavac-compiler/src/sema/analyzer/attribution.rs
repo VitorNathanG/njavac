@@ -1,8 +1,10 @@
-use crate::ast::{BinOp, CallArgs, CmpOp, ExprArena, ExprId, ExprKind, PrimitiveType, Type};
+use crate::ast::{BinOp, CallArgs, CmpOp, ExprArena, ExprId, ExprKind, LogOp, PrimitiveType, Type};
 use crate::diagnostic::{CompileResult, Diagnostic};
 use crate::span::Span;
 
-use super::super::constants::{eval_numeric_constant, is_constant_expression, NumericConst};
+use super::super::constants::{
+    boolean_flow, eval_numeric_constant, is_constant_expression, NumericConst,
+};
 use super::super::{binary_promote, unary_promote, ResolvedCall};
 use super::MethodAnalyzer;
 
@@ -100,9 +102,18 @@ impl MethodAnalyzer {
                 self.validate_compare(*op, &left_ty, &right_ty, span)?;
                 PrimitiveType::Boolean.into()
             }
-            ExprKind::Logical { left, right, .. } => {
+            ExprKind::Logical { op, left, right } => {
                 let left_ty = self.validate_expr(*left, span, exprs)?;
-                let right_ty = self.validate_expr(*right, span, exprs)?;
+                let left_flow = boolean_flow(exprs, *left);
+                let incoming_reachable = self.reachable;
+                self.reachable = incoming_reachable
+                    && match op {
+                        LogOp::And => left_flow.when_true,
+                        LogOp::Or => left_flow.when_false,
+                    };
+                let right_ty = self.validate_expr(*right, span, exprs);
+                self.reachable = incoming_reachable;
+                let right_ty = right_ty?;
                 self.require_boolean(&left_ty, span, "logical operator")?;
                 self.require_boolean(&right_ty, span, "logical operator")?;
                 PrimitiveType::Boolean.into()

@@ -8,6 +8,7 @@ use crate::fxhash::{FxHashMap, FxHashSet};
 use crate::span::Span;
 
 use super::{FrameLocal, LocalId, LocalInfo, MethodInfo, ResolvedCall, StmtFrameLocals};
+use super::constants::boolean_flow;
 
 pub(super) fn analyze_method(method: &Method, exprs: &ExprArena) -> CompileResult<MethodInfo> {
     let mut frame_locals = Vec::with_capacity(method.body.len() + 2);
@@ -18,6 +19,7 @@ pub(super) fn analyze_method(method: &Method, exprs: &ExprArena) -> CompileResul
         stmt_frame_locals: FxHashMap::default(),
         scopes: vec![Scope { symbols: FxHashMap::default(), allocator_base: 0 }],
         assigned: FxHashSet::default(),
+        reachable: true,
         frame_locals,
         expr_type_base: None,
         expr_types: Vec::new(),
@@ -62,6 +64,10 @@ struct MethodAnalyzer {
     stmt_frame_locals: FxHashMap<Span, StmtFrameLocals>,
     scopes: Vec<Scope>,
     assigned: FxHashSet<LocalId>,
+    /// Whether the current statement or expression can complete from method entry.
+    /// Reads on an impossible path are vacuously definitely assigned but still
+    /// resolve and type-check.
+    reachable: bool,
     /// Arena of immutable snapshots, extended only when `assigned` changes.
     frame_locals: Vec<Vec<FrameLocal>>,
     current_frame_locals: usize,
@@ -70,6 +76,13 @@ struct MethodAnalyzer {
     calls: Vec<(ExprId, ResolvedCall)>,
     next_slot: u16,
     max_locals: u16,
+}
+
+#[derive(Clone)]
+struct FlowState {
+    assigned: FxHashSet<LocalId>,
+    reachable: bool,
+    frame_locals: usize,
 }
 
 fn frame_local(ty: &Type) -> FrameLocal {
@@ -86,6 +99,20 @@ fn frame_local(ty: &Type) -> FrameLocal {
 }
 
 impl MethodAnalyzer {
+    fn flow_state(&self) -> FlowState {
+        FlowState {
+            assigned: self.assigned.clone(),
+            reachable: self.reachable,
+            frame_locals: self.current_frame_locals,
+        }
+    }
+
+    fn restore_flow(&mut self, flow: &FlowState) {
+        self.assigned = flow.assigned.clone();
+        self.reachable = flow.reachable;
+        self.current_frame_locals = flow.frame_locals;
+    }
+
     fn enter_scope(&mut self) {
         self.scopes.push(Scope {
             symbols: FxHashMap::default(),
@@ -213,7 +240,7 @@ impl MethodAnalyzer {
 
     fn read_local(&mut self, name: &Name) -> CompileResult<(LocalId, Type)> {
         let id = self.resolve(name)?;
-        if !self.assigned.contains(&id) {
+        if self.reachable && !self.assigned.contains(&id) {
             return Err(Diagnostic::semantic(
                 name.span,
                 format!("local `{}` might not have been initialized", name.text),
@@ -274,26 +301,38 @@ impl MethodAnalyzer {
                     return Err(Diagnostic::semantic(stmt.span, "if condition must be boolean"));
                 }
 
-                let incoming = self.assigned.clone();
-                let incoming_frame = self.current_frame_locals;
+                let outcomes = boolean_flow(exprs, *cond);
+                let incoming = self.flow_state();
+                self.reachable = incoming.reachable && outcomes.when_true;
                 self.validate_branch(then_branch, exprs)?;
-                let then_assigned = self.assigned.clone();
-                let then_frame = self.current_frame_locals;
+                let then_flow = self.flow_state();
 
-                self.assigned = incoming;
-                self.current_frame_locals = incoming_frame;
+                self.restore_flow(&incoming);
+                self.reachable = incoming.reachable && outcomes.when_false;
                 if let Some(else_branch) = else_branch {
                     self.validate_branch(else_branch, exprs)?;
                 }
-                let else_assigned = self.assigned.clone();
-                let else_frame = self.current_frame_locals;
-                self.assigned = then_assigned.intersection(&else_assigned).cloned().collect();
-                if self.assigned == then_assigned {
-                    self.current_frame_locals = then_frame;
-                } else if self.assigned == else_assigned {
-                    self.current_frame_locals = else_frame;
-                } else {
-                    self.refresh_frame_locals();
+                let else_flow = self.flow_state();
+
+                match (then_flow.reachable, else_flow.reachable) {
+                    (true, false) => self.restore_flow(&then_flow),
+                    (false, true) => self.restore_flow(&else_flow),
+                    (false, false) => self.restore_flow(&incoming),
+                    (true, true) => {
+                        self.reachable = true;
+                        self.assigned = then_flow
+                            .assigned
+                            .intersection(&else_flow.assigned)
+                            .cloned()
+                            .collect();
+                        if self.assigned == then_flow.assigned {
+                            self.current_frame_locals = then_flow.frame_locals;
+                        } else if self.assigned == else_flow.assigned {
+                            self.current_frame_locals = else_flow.frame_locals;
+                        } else {
+                            self.refresh_frame_locals();
+                        }
+                    }
                 }
             }
         }

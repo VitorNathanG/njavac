@@ -1,6 +1,6 @@
 use super::expression::{INTEGRAL, NUMERIC};
 use super::{BoolMode, Gen, CAPS};
-use crate::model::{ident, BinOp, FExpr, FStmt, PrintArg, Prog, Ty};
+use crate::model::{ident, BinOp, CmpOp, FExpr, FStmt, LogOp, PrintArg, Prog, Ty, Val};
 use Ty::*;
 
 const STRINGS: [&str; 6] = ["", "x", "hello", "a b c", "12345", "Java"];
@@ -52,7 +52,7 @@ impl Gen {
         let init = self.expr(env, ty, mode, &mut budget);
         let local = env.len();
         env.push(ty);
-        FStmt::Decl { ty, local, init }
+        FStmt::Decl { ty, local, init: Some(init) }
     }
 
     fn gen_assign(&mut self, env: &[Ty]) -> FStmt {
@@ -157,6 +157,120 @@ impl Gen {
         out
     }
 
+    fn definite_condition(&mut self, env: &[Ty], verdict: bool) -> FExpr {
+        match self.rng.below(6) {
+            0 => FExpr::Lit(Val::Bool(verdict)),
+            1 => FExpr::Not(Box::new(FExpr::Lit(Val::Bool(!verdict)))),
+            2 => FExpr::Paren(Box::new(FExpr::Lit(Val::Bool(verdict)))),
+            3 => FExpr::Cast(Boolean, Box::new(FExpr::Lit(Val::Bool(verdict)))),
+            4 => {
+                let (left, right) = if verdict { (1, 2) } else { (2, 1) };
+                FExpr::Cmp(
+                    CmpOp::Lt,
+                    Box::new(FExpr::Lit(Val::I(left))),
+                    Box::new(FExpr::Lit(Val::I(right))),
+                )
+            }
+            _ => {
+                let left = self
+                    .local_of(env, |ty| ty == Boolean)
+                    .map(FExpr::Local)
+                    .unwrap_or(FExpr::Lit(Val::Bool(self.rng.boolean())));
+                if verdict {
+                    FExpr::Logic(
+                        LogOp::Or,
+                        Box::new(left),
+                        Box::new(FExpr::Lit(Val::Bool(true))),
+                    )
+                } else {
+                    FExpr::Logic(
+                        LogOp::And,
+                        Box::new(left),
+                        Box::new(FExpr::Lit(Val::Bool(false))),
+                    )
+                }
+            }
+        }
+    }
+
+    fn gen_definite_assignment_path(&mut self, env: &mut Vec<Ty>, out: &mut Vec<FStmt>) {
+        if self.rng.boolean() {
+            let ty = *self.rng.pick(&[Int, Long, Float, Double, Boolean, Char, Byte, Short]);
+            let local = env.len();
+            let prior_env = env.clone();
+            env.push(ty);
+            out.push(FStmt::Decl { ty, local, init: None });
+
+            let verdict = self.rng.boolean();
+            let cond = self.definite_condition(&prior_env, verdict);
+            let mut budget = self.fresh_budget();
+            let mode = if ty == Boolean { BoolMode::Branch } else { BoolMode::Value };
+            let assign = FStmt::Assign {
+                local,
+                value: self.expr(&prior_env, ty, mode, &mut budget),
+            };
+            let dead_read = FStmt::Println(PrintArg::Expr(FExpr::Local(local)));
+            let (then_b, else_b) = if verdict {
+                (vec![assign], Some(vec![dead_read]))
+            } else {
+                (vec![dead_read], Some(vec![assign]))
+            };
+            Self::push_observed(out, FStmt::If { cond, then_b, else_b }, env.len());
+        } else {
+            let local = env.len();
+            let prior_env = env.clone();
+            env.push(Boolean);
+            out.push(FStmt::Decl { ty: Boolean, local, init: None });
+
+            let verdict = self.rng.boolean();
+            let runtime = self
+                .local_of(&prior_env, |ty| ty == Boolean)
+                .map(FExpr::Local)
+                .unwrap_or(FExpr::Lit(Val::Bool(self.rng.boolean())));
+            let deciding = if verdict {
+                FExpr::Logic(
+                    LogOp::Or,
+                    Box::new(runtime),
+                    Box::new(FExpr::Lit(Val::Bool(true))),
+                )
+            } else {
+                FExpr::Logic(
+                    LogOp::And,
+                    Box::new(runtime),
+                    Box::new(FExpr::Lit(Val::Bool(false))),
+                )
+            };
+            let deciding = match self.rng.below(3) {
+                0 => deciding,
+                1 => FExpr::Paren(Box::new(deciding)),
+                _ => FExpr::Cast(Boolean, Box::new(deciding)),
+            };
+            let cond = if verdict {
+                FExpr::Logic(
+                    LogOp::Or,
+                    Box::new(deciding),
+                    Box::new(FExpr::Local(local)),
+                )
+            } else {
+                FExpr::Logic(
+                    LogOp::And,
+                    Box::new(deciding),
+                    Box::new(FExpr::Local(local)),
+                )
+            };
+            out.push(FStmt::If {
+                cond,
+                then_b: vec![FStmt::Println(PrintArg::Str("then".to_string()))],
+                else_b: Some(vec![FStmt::Println(PrintArg::Str("else".to_string()))]),
+            });
+            Self::push_observed(
+                out,
+                FStmt::Assign { local, value: FExpr::Lit(Val::Bool(self.rng.boolean())) },
+                env.len(),
+            );
+        }
+    }
+
     pub(crate) fn gen_prog(&mut self, n: u64) -> Prog {
         let mut env: Vec<Ty> = Vec::new();
         let nstmt = 5 + self.rng.below(10);
@@ -164,6 +278,9 @@ impl Gen {
         for i in 0..nstmt {
             let stmt = if i < 2 { self.gen_decl(&mut env) } else { self.top_stmt(&mut env, 0) };
             Self::push_observed(&mut body, stmt, env.len());
+        }
+        if CAPS.definite_assignment_paths && self.rng.ratio(1, 3) {
+            self.gen_definite_assignment_path(&mut env, &mut body);
         }
         Prog { name: ident(n), locals: env, body }
     }

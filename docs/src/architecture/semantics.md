@@ -75,14 +75,18 @@ though sema can allocate them as `u16`. See
 
 ## Definite assignment and verifier locals
 
-`MethodAnalyzer.assigned` is a set of definitely assigned `LocalId`s. Parameters
-are assigned at method entry. A declaration with an initializer and every plain
-or compound assignment mark their target assigned after validating the right
-side.
+`MethodAnalyzer.assigned` is a set of definitely assigned `LocalId`s, paired with
+whether the current path can complete from method entry. Parameters are assigned
+at method entry. A declaration with an initializer and every plain or compound
+assignment mark their target assigned after validating the right side.
 
-An `if` starts both arms from the same incoming set and intersects the resulting
-sets at the join. An absent `else` behaves as the unchanged incoming path. Reads
-of IDs outside the current assigned set return `NJS0001`.
+An `if` starts both arms from the same incoming set and uses semantic boolean
+outcomes to mark impossible entries. It intersects the resulting sets when both
+arms can complete normally, or retains the sole reachable exit. An absent `else`
+provides the unchanged incoming state for the false outcome. `&&` and `||`
+similarly validate a dead right operand under an impossible path. Reads outside
+the assigned set return `NJS0001` only on reachable paths; impossible-path reads
+still resolve and type-check.
 
 Verifier-local snapshots are derived from assigned IDs and physical slots:
 
@@ -116,10 +120,11 @@ used only to recognize `System.out.println` are inspected textually and can reta
 
 `sema::unary_promote` and `sema::binary_promote` are the shared current promotion
 functions. `sema::constants` contains the narrow constant queries attribution
-needs. That module is not the general javac-compatible folding authority; its
+needs. That module is not the general javac-compatible folding authority. Its
 constant-expression test is currently a syntax-only approximation used for
-assignment conversion, and its numeric evaluator exists to detect integral zero
-divisors.
+assignment conversion, its numeric evaluator supports integral-zero detection
+and constant comparisons, and its conservative boolean-flow query distinguishes
+impossible constant and short-circuit outcomes for definite assignment.
 
 Two consequences prevent sema from serving as a complete Java-validity oracle:
 

@@ -146,7 +146,7 @@ flowchart LR
 | `crates/njavac-compiler/src/sema.rs` | Semantic model, class-shape validation, promotion helpers, and `analyze` |
 | `crates/njavac-compiler/src/sema/analyzer.rs` | Method scopes, local IDs, slots, definite assignment, and frame-local snapshots |
 | `crates/njavac-compiler/src/sema/analyzer/attribution.rs` | Expression validation, types, assignment checks, and call resolution |
-| `crates/njavac-compiler/src/sema/constants.rs` | Attribution-time constant predicates and zero-divisor evaluation |
+| `crates/njavac-compiler/src/sema/constants.rs` | Attribution-time constant predicates, boolean outcome flow, and zero-divisor evaluation |
 
 See [Frontend](../architecture/frontend.md) and
 [Semantics](../architecture/semantics.md).

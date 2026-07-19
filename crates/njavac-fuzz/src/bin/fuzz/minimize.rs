@@ -41,8 +41,10 @@ fn stmt_paren_reductions(stmt: &FStmt) -> Vec<FStmt> {
     let mut out = Vec::new();
     match stmt {
         FStmt::Decl { ty, local, init } => {
-            for e in expr_paren_reductions(init) {
-                out.push(FStmt::Decl { ty: *ty, local: *local, init: e });
+            if let Some(init) = init {
+                for e in expr_paren_reductions(init) {
+                    out.push(FStmt::Decl { ty: *ty, local: *local, init: Some(e) });
+                }
             }
         }
         FStmt::Assign { local, value } => {

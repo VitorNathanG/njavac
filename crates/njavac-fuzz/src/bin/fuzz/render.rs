@@ -16,7 +16,11 @@ fn render_stmt(st: &FStmt, indent: usize, out: &mut String) {
     let pad = "    ".repeat(indent);
     match st {
         FStmt::Decl { ty, local, init } => {
-            out.push_str(&format!("{pad}{} v{} = {};\n", ty.kw(), local, render_expr(init)));
+            if let Some(init) = init {
+                out.push_str(&format!("{pad}{} v{} = {};\n", ty.kw(), local, render_expr(init)));
+            } else {
+                out.push_str(&format!("{pad}{} v{};\n", ty.kw(), local));
+            }
         }
         FStmt::Assign { local, value } => {
             out.push_str(&format!("{pad}v{} = {};\n", local, render_expr(value)));

@@ -167,6 +167,11 @@ Boolean generation distinguishes branch booleans from value booleans so it does
 not manufacture unsupported nonempty-stack materialization. Deliberate grouping
 is represented explicitly because grouping can change javac's bytecode. Generated
 mutations and branch choices are printed to maximize the observer's visible trace.
+The generator also creates bounded uninitialized-local scenarios: assignment on
+the sole reachable constant-condition arm, reads in impossible arms, and boolean
+reads confined to dead `&&`/`||` operands. These scenarios are appended after
+ordinary random statements and leave every new local assigned after its final
+observed read.
 
 This is a generator coverage boundary, not the authoritative language-support
 ledger. A feature is not proven merely because the fuzzer can generate it, and a
