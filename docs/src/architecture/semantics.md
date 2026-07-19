@@ -69,9 +69,8 @@ scope's base, allowing sibling scopes to reuse slots. Unbraced branch bodies use
 the enclosing scope. In current accepted programs this reuse machinery is mostly
 latent because every declaration inside a branch is refused with `NJS1001`.
 
-General local load/store instructions do not yet support slots above 255 even
-though sema can allocate them as `u16`. See
-[assembler limits](assembler-and-metadata.md#current-encoding-limits).
+Lowering and the assembler consume semantic `u16` slots without narrowing the
+layout. They select and encode a wide local instruction when required.
 
 ## Definite assignment and verifier locals
 

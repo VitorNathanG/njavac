@@ -97,9 +97,8 @@ Declaration limits are narrower than the parser's block syntax:
   supported.
 
 Slots are allocated with category-2 widths and method-level high-water tracking.
-Although semantic slot numbers are `u16`, local loads and stores above slot 255
-are a known reachable assembler defect described under
-[Known reachable defects](#known-reachable-defects).
+Local loads and stores use the JVM `wide` prefix when their semantic `u16` slot
+does not fit in the ordinary one-byte operand.
 
 ## Statements
 
@@ -312,21 +311,16 @@ outside this page is diagnosed gracefully.
 
 ## Known reachable defects
 
-Two current assembler gaps are reachable from otherwise supported source. They
-are defects, not deliberate subset exclusions:
+One current assembler gap is reachable from otherwise supported source. It is a
+defect, not a deliberate subset exclusion:
 
-- **Local slots above 255.** Loads and stores use a one-byte operand and currently
-  truncate a larger semantic slot instead of emitting the JVM `wide` prefix.
-  `wide iinc` already exists, but general wide loads/stores do not. A method with
-  enough top-level primitive locals can therefore produce invalid class bytes and
-  behavior.
 - **Long branches.** Every conditional and unconditional branch is currently
   encoded in the narrow signed-16-bit form. If final layout places a target more
   than 32,767 bytes away (or less than -32,768), assembly panics instead of
   selecting javac-compatible long forms and conditional expansion.
 
-Their repair order and the semantic/source defects excluded earlier on this page
-are tracked in [active work](../direction/active-work.md). Until fixed, the
+Its repair order and the semantic/source defects excluded earlier on this page are
+tracked in [active work](../direction/active-work.md). Until fixed, the
 compatibility contract excludes programs that reach those signatures even though
 their syntax and semantics otherwise fit the general operator or source surface.
 

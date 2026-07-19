@@ -16,6 +16,7 @@ physical instruction forms, and their stack-word effects.
 | --- | --- |
 | `Simple` | Operand-free opcode |
 | `U8`, `U16` | Opcode with a fixed one- or two-byte operand |
+| `WideLocal` | `wide` primitive load and store forms |
 | `Iinc`, `WideIinc` | Narrow and `wide iinc` forms |
 | `Field` | Constant-pool field operand plus explicit push words |
 | `Invoke` | Constant-pool method operand plus explicit argument/return words |
@@ -146,18 +147,13 @@ materialization and future object/control-flow forms.
 
 ## Current encoding limits
 
-Two absent forms are reachable from otherwise supported syntax:
+One absent form is reachable from otherwise supported syntax:
 
-- **Wide local loads and stores:** `Gen::emit_load` and `Gen::emit_store` use
-  short forms for slots 0 through 3 and otherwise cast the `u16` slot to a
-  one-byte operand. Slots above 255 are truncated. Only `wide iinc` exists.
 - **Long branches:** `Instruction::Branch` has only the three-byte narrow form.
   `encode` panics when the final relative offset does not fit `i16`; it cannot
   emit `goto_w` or expand a long conditional branch.
 
-These are defects, not deliberate diagnostics. They are also why sema's `u16`
-slot model and the assembler's representable instruction set do not yet have a
-complete checked handoff.
+This is a defect, not a deliberate diagnostic.
 
 Other current limits follow the supported language: there are no switches and
 therefore no alignment-sensitive instructions, no exception ranges, no local

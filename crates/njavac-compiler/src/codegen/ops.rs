@@ -5,7 +5,7 @@ use super::instruction::*;
 
 // ---- opcode/table helpers ----
 
-/// (slot-0 short opcode, wide opcode) for a load of type `ty`.
+/// (slot-0 short opcode, indexed opcode) for a load of type `ty`.
 pub(super) fn load_ops(ty: PrimitiveType) -> (u8, u8) {
     match ty.stack() {
         StackTy::Int => (ILOAD_0, ILOAD),

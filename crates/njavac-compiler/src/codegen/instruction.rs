@@ -14,7 +14,7 @@ pub(super) const LDC: u8 = 0x12;
 pub(super) const LDC_W: u8 = 0x13;
 pub(super) const LDC2_W: u8 = 0x14;
 
-// Loads: wide form (opcode + 1-byte slot) and the slot-0 short form.
+// Loads: indexed form (opcode + 1-byte slot) and the slot-0 short form.
 pub(super) const ILOAD: u8 = 0x15;
 pub(super) const LLOAD: u8 = 0x16;
 pub(super) const FLOAD: u8 = 0x17;
@@ -145,9 +145,10 @@ pub(super) struct CodePosition(pub(super) usize);
 pub(super) struct Label(pub(super) usize);
 
 /// One already-selected physical JVM instruction form. Lowering chooses exact
-/// forms (`ldc` vs `ldc_w`, short local forms, narrow vs wide `iinc`); the emitter
-/// records that choice and derives its stack effect. Finalization only lays out
-/// and encodes it; it never substitutes an equivalent form.
+/// forms (`ldc` vs `ldc_w`, short/indexed/wide local forms, narrow vs wide
+/// `iinc`); the emitter records that choice and derives its stack effect.
+/// Finalization only lays out and encodes it; it never substitutes an equivalent
+/// form.
 #[derive(Clone, Copy)]
 pub(super) enum Instruction {
     Simple(u8),
@@ -162,6 +163,10 @@ pub(super) enum Instruction {
     Iinc {
         slot: u8,
         delta: i8,
+    },
+    WideLocal {
+        opcode: u8,
+        slot: u16,
     },
     WideIinc {
         slot: u16,
@@ -189,7 +194,8 @@ impl Instruction {
         match self {
             Instruction::Simple(opcode)
             | Instruction::U8 { opcode, .. }
-            | Instruction::U16 { opcode, .. } => fixed_stack_effect(opcode),
+            | Instruction::U16 { opcode, .. }
+            | Instruction::WideLocal { opcode, .. } => fixed_stack_effect(opcode),
             Instruction::Iinc { .. } | Instruction::WideIinc { .. } => StackEffect::new(0, 0),
             Instruction::Field {
                 opcode: GETSTATIC,
@@ -224,6 +230,7 @@ impl Instruction {
             | Instruction::Field { .. }
             | Instruction::Invoke { .. }
             | Instruction::Branch { .. } => 3,
+            Instruction::WideLocal { .. } => 4,
             Instruction::WideIinc { .. } => 6,
         }
     }

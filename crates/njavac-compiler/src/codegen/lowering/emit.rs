@@ -101,26 +101,33 @@ impl Gen<'_> {
     }
 
     pub(super) fn emit_load(&mut self, slot: u16, ty: PrimitiveType) {
-        let (short0, wide) = load_ops(ty);
-        if slot <= 3 {
-            self.emit_op(short0 + slot as u8);
-        } else {
-            self.emitter.emit(Instruction::U8 {
-                opcode: wide,
-                operand: slot as u8,
-            });
-        }
+        let (short0, indexed) = load_ops(ty);
+        self.emit_local_access(slot, short0, indexed);
     }
 
     pub(super) fn emit_store(&mut self, slot: u16, ty: PrimitiveType) {
-        let (short0, wide) = store_ops(ty);
-        if slot <= 3 {
-            self.emit_op(short0 + slot as u8);
-        } else {
-            self.emitter.emit(Instruction::U8 {
-                opcode: wide,
-                operand: slot as u8,
-            });
+        let (short0, indexed) = store_ops(ty);
+        self.emit_local_access(slot, short0, indexed);
+    }
+
+    /// Select the pinned compiler's local form: short through slot 3, indexed
+    /// through 255, and `wide` from 256. `WideLocalBoundary.java` covers the
+    /// transition and every currently supported primitive opcode family.
+    fn emit_local_access(&mut self, slot: u16, short0: u8, indexed: u8) {
+        match slot {
+            0..=3 => self.emit_op(short0 + slot as u8),
+            4..=255 => {
+                self.emitter.emit(Instruction::U8 {
+                    opcode: indexed,
+                    operand: slot as u8,
+                });
+            }
+            _ => {
+                self.emitter.emit(Instruction::WideLocal {
+                    opcode: indexed,
+                    slot,
+                });
+            }
         }
     }
 

@@ -403,6 +403,11 @@ impl Emitter {
                     code.push(slot);
                     code.push(delta as u8);
                 }
+                Instruction::WideLocal { opcode, slot } => {
+                    code.push(WIDE);
+                    code.push(opcode);
+                    push_u16(&mut code, slot);
+                }
                 Instruction::WideIinc { slot, delta } => {
                     code.push(WIDE);
                     code.push(IINC);

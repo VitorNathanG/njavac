@@ -116,9 +116,8 @@ modified-UTF-8 payload. The unchecked `u16` source-line counter panics in debug
 builds and wraps in release builds rather than returning a diagnostic.
 
 Known long-branch overflow currently panics because branch-form selection is
-missing. Wide ordinary local slots currently truncate rather than return a
-diagnostic. Both are documented reachable defects, not additions to the
-diagnostic surface.
+missing. It is a documented reachable defect, not an addition to the diagnostic
+surface.
 
 The library does not catch panics. The CLI catches no panics either; it only
 continues to the next source after a returned `Diagnostic` or filesystem error.
